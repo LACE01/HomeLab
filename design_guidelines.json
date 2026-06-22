@@ -1,0 +1,93 @@
+{
+  "project_name": "Enterprise Vulnerability Tracking Platform",
+  "theme": "Dark",
+  "archetype": "Archetype 4: Swiss & High-Contrast (Dark Mode Variant - Command Center)",
+  "design_philosophy": "Functional over flashy. High information density, analyst-focused. Objective, rigid, functional. Color is used for function only (e.g., severity flags, KEV chips). 95% of the UI is monochrome dark to reduce eye strain during long operations. No generic purple/teal gradients. Command center feel similar to Splunk/Datadog/DefectDojo.",
+  "colors": {
+    "background": {
+      "main": "#090C10",
+      "sidebar": "#0D1117",
+      "card": "#0D1117",
+      "surface": "#161B22",
+      "border": "#30363D"
+    },
+    "text": {
+      "primary": "#E6EDF3",
+      "secondary": "#8B949E",
+      "muted": "#484F58",
+      "accent": "#2F81F7"
+    },
+    "severity": {
+      "critical": { "bg": "bg-red-900/20", "border": "border-red-500/30", "text": "text-red-400" },
+      "high": { "bg": "bg-orange-900/20", "border": "border-orange-500/30", "text": "text-orange-400" },
+      "medium": { "bg": "bg-amber-900/20", "border": "border-amber-500/30", "text": "text-amber-400" },
+      "low": { "bg": "bg-blue-900/20", "border": "border-blue-500/30", "text": "text-blue-400" },
+      "info": { "bg": "bg-slate-800/30", "border": "border-slate-500/30", "text": "text-slate-400" }
+    },
+    "brand": {
+      "primary": "#2F81F7",
+      "focus": "ring-blue-500"
+    }
+  },
+  "typography": {
+    "fonts": {
+      "headings": "IBM Plex Sans, sans-serif",
+      "body": "IBM Plex Sans, sans-serif",
+      "monospace": "JetBrains Mono, monospace"
+    },
+    "rules": {
+      "anti_default": "Strictly avoid Inter, Roboto, Open Sans.",
+      "hierarchy": "Maximum text size is text-2xl or text-3xl for dashboards. No massive text.",
+      "monospace_usage": "Must use JetBrains Mono for CVSS scores, IPs, hashes, KEV IDs, and dense table data."
+    },
+    "scale": {
+      "h1": "text-2xl font-semibold tracking-tight text-primary",
+      "h2": "text-xl font-semibold tracking-tight text-primary",
+      "h3": "text-lg font-medium tracking-tight text-primary",
+      "body": "text-sm text-primary",
+      "small": "text-xs text-secondary",
+      "badge": "text-[10px] font-mono uppercase tracking-wider text-secondary"
+    }
+  },
+  "spacing_and_layout": {
+    "grid_protocol": "MODE B: THE 'CONTROL ROOM' GRID",
+    "base_grid": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4",
+    "gap": "gap-4",
+    "density": "High density. Tables should fit 10-20+ rows without scrolling. Use py-1.5 px-3 for table cells instead of default padding.",
+    "surface_strategy": "Grid Borders (The 'Technical' Look). Expose the skeleton. border-collapse style layout for tables and dense lists. Flat backgrounds, 1px subtle borders (border-border), no shadows."
+  },
+  "components": {
+    "tables": "Dense, filterable. Sticky headers. Use Shadcn Table but customize for high density. Implement sorting and multi-select. py-1.5 px-3 cells.",
+    "badges": "Use subtle background/border approach for Severity, KEV, EPSS, RTI chips. Must not be loud blocks of color.",
+    "buttons": "Compact (h-7 or h-8). Solid for primary (e.g., Run Scan), outline/ghost for actions (e.g., Export).",
+    "sidebar": "Grouped nav: Operations, Inventory, Integrations, Admin. Use Phosphor Icons. High contrast active state.",
+    "charts": "Recharts. Use area charts and bar charts. Avoid pie charts if possible, prefer progress bars or stacked bars for risk breakdowns. Must be color-blind friendly.",
+    "dialogs": "Use Shadcn Dialog. Must have a darkened backdrop (bg-black/80 backdrop-blur-sm) to focus attention on the modal."
+  },
+  "motion": {
+    "animations": "Minimalist. Hover states (bg-slate-800/50), focus states. No bounce or slide animations. Transitions must be fast (duration-150).",
+    "accessibility": "Respect prefers-reduced-motion."
+  },
+  "icons_and_assets": {
+    "icon_library": "@phosphor-icons/react",
+    "brand_icons": "react-icons",
+    "installation_commands": "yarn add @phosphor-icons/react react-icons",
+    "usage": "Phosphor Icons for dense UI elements. React-icons (Simple Icons / si) for integration logos (Qualys, Nessus, CrowdStrike, Wiz, Jira, ServiceNow, GitHub, GitLab, Azure DevOps).",
+    "images": "No stock photography required. UI relies entirely on typography, data, and charts."
+  },
+  "accessibility": {
+    "testing": "All interactive and key informational elements MUST include `data-testid` attribute in kebab-case (e.g., `data-testid=\"export-csv-button\"`).",
+    "contrast": "Ensure APCA contrast standards. Hover states must explicitly set text color (e.g., `hover:bg-slate-800 hover:text-white`)."
+  },
+  "instructions_to_main_agent": [
+    "Write all components as .js files (not .tsx) using React 19.",
+    "Install required fonts: IBM Plex Sans and JetBrains Mono via CSS import in index.css (e.g., from Google Fonts).",
+    "Run `yarn add @phosphor-icons/react react-icons` to install required icon sets.",
+    "Configure tailwind.config.js with the provided dark colors mapping to background, surface, and border.",
+    "Strip default Shadcn paddings in Table, Card, and Button components to achieve the required 'Command Center' density (e.g., h-8 buttons, py-1.5 table cells).",
+    "Build the Findings Workbench as a dense table showing Severity, CVSS, KEV chip, asset, owner, SLA countdown.",
+    "Build Executive Dashboards using Recharts for risk trends and SLA compliance.",
+    "Ensure the application enforces a strict Dark Theme. Do not implement a light theme.",
+    "Apply `data-testid` universally across all interactive elements for automated testing."
+  ]
+}
