@@ -193,19 +193,30 @@ async def seed_all(db):
     # Wipe existing demo data (idempotent)
     for col in ["users", "api_keys", "assets", "products", "findings", "observations",
                 "tickets", "exceptions", "engagements", "integrations", "import_jobs",
-                "activity_log", "score_snapshots", "ownership_mappings", "comments"]:
+                "activity_log", "score_snapshots", "ownership_mappings", "comments",
+                "assignment_rules", "user_sessions"]:
         await db[col].delete_many({})
 
     now = datetime.now(timezone.utc)
 
     # Users
     users = [
-        {"id": _id(), "email": "admin@vulnops.io", "name": "Site Admin", "role": "admin", "password_hash": hash_password("admin123"), "created_at": iso(now)},
-        {"id": _id(), "email": "analyst@vulnops.io", "name": "Alex Analyst", "role": "analyst", "password_hash": hash_password("analyst123"), "created_at": iso(now)},
-        {"id": _id(), "email": "manager@vulnops.io", "name": "Morgan Manager", "role": "manager", "password_hash": hash_password("manager123"), "created_at": iso(now)},
-        {"id": _id(), "email": "exec@vulnops.io", "name": "Erin Executive", "role": "executive", "password_hash": hash_password("exec123"), "created_at": iso(now)},
+        {"id": _id(), "email": "admin@vulnops.io", "name": "Site Admin", "role": "admin", "team": None, "department": "Security", "password_hash": hash_password("admin123"), "created_at": iso(now)},
+        {"id": _id(), "email": "analyst@vulnops.io", "name": "Alex Analyst", "role": "analyst", "team": "Platform Eng", "department": "Engineering", "password_hash": hash_password("analyst123"), "created_at": iso(now)},
+        {"id": _id(), "email": "manager@vulnops.io", "name": "Morgan Manager", "role": "manager", "team": "Payments Squad", "department": "Engineering", "password_hash": hash_password("manager123"), "created_at": iso(now)},
+        {"id": _id(), "email": "exec@vulnops.io", "name": "Erin Executive", "role": "executive", "team": None, "department": "Executive", "password_hash": hash_password("exec123"), "created_at": iso(now)},
     ]
     await db.users.insert_many(users)
+
+    # Default assignment rules
+    default_rules = [
+        {"id": _id(), "name": "Internet-facing → NetSec", "priority": 10, "field": "exposure", "operator": "equals", "value": "internet", "assign_team": "NetSec", "active": True, "created_at": iso(now)},
+        {"id": _id(), "name": "Crown jewel → DBA Team", "priority": 20, "field": "criticality", "operator": "equals", "value": "crown_jewel", "assign_team": "DBA Team", "active": True, "created_at": iso(now)},
+        {"id": _id(), "name": "Windows hosts → IT Ops", "priority": 30, "field": "platform", "operator": "equals", "value": "Windows", "assign_team": "IT Ops", "active": True, "created_at": iso(now)},
+        {"id": _id(), "name": "Code repos → Platform Eng", "priority": 40, "field": "platform", "operator": "equals", "value": "Code", "assign_team": "Platform Eng", "active": True, "created_at": iso(now)},
+        {"id": _id(), "name": "Production Linux → Platform Eng", "priority": 50, "field": "environment", "operator": "equals", "value": "production", "assign_team": "Platform Eng", "active": True, "created_at": iso(now)},
+    ]
+    await db.assignment_rules.insert_many(default_rules)
 
     # API Keys
     await db.api_keys.insert_one({

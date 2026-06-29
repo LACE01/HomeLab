@@ -46,6 +46,7 @@ export default function Sidebar() {
       <nav className="flex-1 overflow-y-auto py-3 px-2">
         <Group title="Operations">
           <NavItem to="/" icon={ChartLineUp} label="Dashboard" testid="nav-dashboard" />
+          <NavItem to="/operational" icon={Lightning} label="Operational" testid="nav-operational" />
           <NavItem to="/findings" icon={ListChecks} label="Findings" testid="nav-findings" />
           <NavItem to="/tickets" icon={Ticket} label="Tickets" testid="nav-tickets" />
           <NavItem to="/exceptions" icon={ShieldCheck} label="Exceptions" testid="nav-exceptions" />
@@ -77,6 +78,14 @@ export default function Sidebar() {
             className="text-slate-500 hover:text-slate-200 transition-colors"
             title="Sign out"
           >
+            <SignOut size={18} />
+          </button>
+        </div>
+      </div>
+    </aside>
+  );
+}
+        >
             <SignOut size={18} />
           </button>
         </div>

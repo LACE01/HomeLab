@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 1 of multi-iteration build (team assignment + operational dashboard). Backend smoke testing passed for nearly all new endpoints (auth, admin users w/ team/department, assignment rules list/CRUD/apply, ownership mappings, operational dashboard with team filter, RBAC 403 for non-admin). Frontend testing is BLOCKED by a SyntaxError in /app/frontend/src/components/Sidebar.jsx (duplicated trailing JSX fragment after the component already closed at line 87 — the file ends with an extra `>`, `</button>`, `</div>`, `</div>`, `</aside>`, `);`, `}` on lines 88-96). The webpack dev-server overlay 'Compiled with problems' is rendered instead of the app on every route, so login UI, sidebar nav, /operational, /admin/assignment-rules, /admin/ownership, and /findings could not be exercised.",
+  "tested_scope": ["backend", "frontend", "auth", "integration"],
+  "passed": [
+    "POST /api/auth/login — admin & analyst tokens issued (returns 'token' field)",
+    "GET /api/v1/admin/users — returns {items:[...]} with team='Platform Eng' for analyst and team='Payments Squad' for manager; department populated",
+    "PATCH /api/v1/admin/users/{id} as admin -> 200 {ok:true}; as analyst -> 403 'Insufficient role'",
+    "GET /api/v1/admin/assignment-rules — 5 seeded rules returned in priority order: Internet-facing→NetSec(10), Crown jewel→DBA Team(20), Windows→IT Ops(30), Code→Platform Eng(40), Production Linux→Platform Eng(50)",
+    "POST /api/v1/admin/assignment-rules — creates rule; analyst-attempt returns 403",
+    "PATCH /api/v1/admin/assignment-rules/{id} — succeeds with FULL body (200 {ok:true})",
+    "DELETE /api/v1/admin/assignment-rules/{id} — 200",
+    "POST /api/v1/admin/assignment-rules/apply -> {updated_assets:12, updated_findings:0, rules_evaluated:5}",
+    "GET /api/v1/ownership-mappings — 12 assets returned with hostname, owner_team, ownership_confidence (e.g. 0.95), environment etc.",
+    "GET /api/v1/ownership-mappings?q=web -> count_q=2 (subset filter works)",
+    "GET /api/v1/dashboards/operational — keys present: total_open=77, aging_buckets {0-7:5,8-30:8,31-60:12,61-90:14,90+:38}, mttr_days=11.4, reopen_rate=14.3, scan_coverage_pct=83.3, reopened_open=3, active_exceptions=0, throughput length=30, by_assignee length=5, overdue_by_severity present, team_scope='All teams'",
+    "GET /api/v1/dashboards/operational?team=Platform%20Eng -> team_scope='Platform Eng', total_open=19 (narrowed)"
+  ],
+  "failed": [
+    {
+      "area": "frontend build",
+      "issue": "SyntaxError in src/components/Sidebar.jsx at line 88:8 'Unexpected token'. Component closes correctly at line 87 ('}'), but lines 88-96 contain a duplicated trailing fragment ('        >\\n            <SignOut size={18} />\\n          </button>\\n        </div>\\n      </div>\\n    </aside>\\n  );\\n}'). Webpack dev server shows 'Compiled with problems' overlay on every route; the actual app never mounts so login form is not interactive and none of the new UI (nav-operational, nav-rules, nav-ownership, queue-toggle, op-team-filter, rule-*, owner-search, bulk-assignee, bulk-assign-apply) can be reached.",
+      "evidence": "Screenshot from /login shows webpack overlay 'ERROR in ./src/components/Sidebar.jsx — Module build failed ... Unexpected token (88:8)'. view_file lines 75-96 confirm duplicated tail after the function already closed with '}'.",
+      "priority": "HIGH"
+    },
+    {
+      "area": "backend API contract",
+      "issue": "PATCH /api/v1/admin/assignment-rules/{id} requires FULL body (name, field, value, assign_team all required) — partial patches like {priority:101} return 422. Not a true PATCH semantically. Acceptable for iteration 1 but worth tightening.",
+      "evidence": "PATCH with {priority:101} -> 422 listing 4 'missing' fields; same id with full body -> 200 {ok:true}.",
+      "priority": "LOW"
+    }
+  ],
+  "action_items": [
+    "Fix /app/frontend/src/components/Sidebar.jsx — delete the duplicated dangling JSX fragment after line 87 (the file should end at the first closing '}' of the Sidebar component). Without this fix no frontend feature can be verified.",
+    "(Optional) Make assignment-rule PATCH fields Optional[...] so callers can update a single attribute (e.g., priority/active) without re-sending the whole rule."
+  ],
+  "success_rate": {"backend": "100%", "frontend": "0% (build blocked)"},
+  "retest_needed": true,
+  "full_testing_deferred": true,
+  "test_credentials": "Present at /app/memory/test_credentials.md — admin/analyst/manager logins all succeed against /api/auth/login."
+}

@@ -800,9 +800,112 @@ async def list_users(user: dict = Depends(require_role("admin"))):
     return {"items": items}
 
 
-@api.get("/v1/admin/api-keys")
-async def list_api_keys(user: dict = Depends(require_role("admin"))):
-    items = await db.api_keys.find({}, {"_id": 0}).to_list(100)
+class UserUpdate(BaseModel):
+    team: Optional[str] = None
+    department: Optional[str] = None
+    role: Optional[str] = None
+
+
+@api.patch("/v1/admin/users/{user_id}")
+async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(require_role("admin"))):
+    update = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not update:
+        raise HTTPException(400, "No fields to update")
+    res = await db.users.update_one({"id": user_id}, {"$set": update})
+    if res.matched_count == 0:
+        raise HTTPException(404, "User not found")
+    return {"ok": True}
+
+
+# --------------------------- ASSIGNMENT RULES ---------------------------
+class AssignmentRule(BaseModel):
+    id: Optional[str] = None
+    name: str
+    priority: int = 100
+    field: str  # tags|environment|platform|criticality|exposure|department
+    operator: str = "equals"  # equals|contains
+    value: str
+    assign_team: str
+    active: bool = True
+
+
+@api.get("/v1/admin/assignment-rules")
+async def list_rules(user: dict = Depends(get_current_user)):
+    items = await db.assignment_rules.find({}, {"_id": 0}).sort("priority", 1).to_list(200)
+    return {"items": items}
+
+
+@api.post("/v1/admin/assignment-rules")
+async def create_rule(body: AssignmentRule, user: dict = Depends(require_role("admin"))):
+    rule = body.model_dump()
+    rule["id"] = str(uuid.uuid4())
+    rule["created_at"] = now_iso()
+    await db.assignment_rules.insert_one(rule)
+    return _clean(rule)
+
+
+@api.patch("/v1/admin/assignment-rules/{rule_id}")
+async def update_rule(rule_id: str, body: AssignmentRule, user: dict = Depends(require_role("admin"))):
+    update = {k: v for k, v in body.model_dump().items() if k != "id" and v is not None}
+    res = await db.assignment_rules.update_one({"id": rule_id}, {"$set": update})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Rule not found")
+    return {"ok": True}
+
+
+@api.delete("/v1/admin/assignment-rules/{rule_id}")
+async def delete_rule(rule_id: str, user: dict = Depends(require_role("admin"))):
+    await db.assignment_rules.delete_one({"id": rule_id})
+    return {"ok": True}
+
+
+def _rule_matches(rule: dict, asset: dict) -> bool:
+    f = rule["field"]
+    val = rule["value"].lower()
+    asset_val = asset.get(f) or asset.get("tags") if f == "tags" else asset.get(f)
+    if f == "tags":
+        tags = [str(t).lower() for t in (asset.get("tags") or [])]
+        return val in tags if rule["operator"] == "equals" else any(val in t for t in tags)
+    av = str(asset_val or "").lower()
+    return av == val if rule["operator"] == "equals" else val in av
+
+
+@api.post("/v1/admin/assignment-rules/apply")
+async def apply_rules(user: dict = Depends(require_role("admin"))):
+    rules = await db.assignment_rules.find({"active": True}, {"_id": 0}).sort("priority", 1).to_list(500)
+    assets = await db.assets.find({}, {"_id": 0}).to_list(5000)
+    updated_assets = 0
+    updated_findings = 0
+    for asset in assets:
+        matched_rule = next((r for r in rules if _rule_matches(r, asset)), None)
+        if matched_rule:
+            new_team = matched_rule["assign_team"]
+            rationale = f"Matched rule '{matched_rule['name']}': {matched_rule['field']} {matched_rule['operator']} '{matched_rule['value']}'"
+            confidence = 0.95
+        else:
+            new_team = asset.get("owner_team", "Unassigned")
+            rationale = "No assignment rule matched — preserved existing owner"
+            confidence = 0.3
+        await db.assets.update_one({"id": asset["id"]}, {"$set": {
+            "owner_team": new_team, "ownership_rationale": rationale, "ownership_confidence": confidence,
+        }})
+        updated_assets += 1
+        r = await db.findings.update_many(
+            {"asset_id": asset["id"], "status": {"$nin": ["Fixed validated", "Closed administratively"]}},
+            {"$set": {"owner_team": new_team, "ownership_confidence": confidence, "ownership_rationale": rationale}},
+        )
+        updated_findings += r.modified_count
+    return {"updated_assets": updated_assets, "updated_findings": updated_findings, "rules_evaluated": len(rules)}
+
+
+@api.get("/v1/ownership-mappings")
+async def ownership_mappings(user: dict = Depends(get_current_user), q: Optional[str] = None):
+    flt = {}
+    if q:
+        flt["$or"] = [{"hostname": {"$regex": q, "$options": "i"}}, {"owner_team": {"$regex": q, "$options": "i"}}]
+    items = await db.assets.find(flt, {"_id": 0, "id": 1, "hostname": 1, "owner_team": 1,
+                                       "ownership_confidence": 1, "ownership_rationale": 1, "tags": 1,
+                                       "environment": 1, "platform": 1, "criticality": 1, "exposure": 1}).to_list(1000)
     return {"items": items}
 
 
@@ -810,6 +913,90 @@ async def list_api_keys(user: dict = Depends(require_role("admin"))):
 async def get_sla_policies(user: dict = Depends(get_current_user)):
     from scoring import SLA_DAYS
     return {"policies": SLA_DAYS}
+
+
+@api.get("/v1/admin/api-keys")
+async def list_api_keys(user: dict = Depends(require_role("admin"))):
+    items = await db.api_keys.find({}, {"_id": 0}).to_list(100)
+    return {"items": items}
+
+
+# --------------------------- OPERATIONAL DASHBOARD ---------------------------
+@api.get("/v1/dashboards/operational")
+async def dashboard_operational(user: dict = Depends(get_current_user), team: Optional[str] = None):
+    base_flt: dict = {}
+    if team:
+        base_flt["owner_team"] = team
+    open_states = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+
+    # Aging buckets
+    now_dt = datetime.now(timezone.utc)
+    buckets = {"0-7": 0, "8-30": 0, "31-60": 0, "61-90": 0, "90+": 0}
+    by_assignee: dict = {}
+    overdue_by_sev: dict = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Info": 0}
+    total_open = 0
+    reopened_total = 0
+    async for f in db.findings.find({**base_flt, "status": {"$in": open_states}},
+                                    {"_id": 0, "first_seen_at": 1, "owner_team": 1, "assigned_to": 1,
+                                     "severity": 1, "due_at": 1, "reopened_count": 1}):
+        total_open += 1
+        if f.get("reopened_count", 0):
+            reopened_total += 1
+        try:
+            fs = datetime.fromisoformat((f.get("first_seen_at") or "").replace("Z", "+00:00"))
+            age = (now_dt - fs).days
+            if age <= 7: buckets["0-7"] += 1
+            elif age <= 30: buckets["8-30"] += 1
+            elif age <= 60: buckets["31-60"] += 1
+            elif age <= 90: buckets["61-90"] += 1
+            else: buckets["90+"] += 1
+        except Exception:
+            pass
+        a = f.get("assigned_to") or f.get("owner_team") or "Unassigned"
+        by_assignee[a] = by_assignee.get(a, 0) + 1
+        if f.get("due_at") and f["due_at"] < now_iso():
+            overdue_by_sev[f.get("severity", "Info")] = overdue_by_sev.get(f.get("severity", "Info"), 0) + 1
+
+    # Throughput last 30 days
+    throughput = []
+    for d in range(29, -1, -1):
+        day = now_dt - timedelta(days=d)
+        start = day.replace(hour=0, minute=0, second=0).isoformat()
+        end = (day + timedelta(days=1)).replace(hour=0, minute=0, second=0).isoformat()
+        opened = await db.findings.count_documents({**base_flt, "first_seen_at": {"$gte": start, "$lt": end}})
+        closed = await db.findings.count_documents({**base_flt, "last_changed_at": {"$gte": start, "$lt": end},
+                                                    "status": {"$in": ["Fixed validated", "Mitigated", "Closed administratively"]}})
+        throughput.append({"date": day.strftime("%Y-%m-%d"), "opened": opened, "closed": closed, "net": opened - closed})
+
+    # MTTR & MTTT — sample from closed findings
+    mttr_samples = []
+    async for f in db.findings.find({**base_flt, "status": {"$in": ["Fixed validated", "Mitigated"]}},
+                                    {"first_seen_at": 1, "last_changed_at": 1}).limit(500):
+        try:
+            fs = datetime.fromisoformat(f["first_seen_at"].replace("Z", "+00:00"))
+            lc = datetime.fromisoformat(f["last_changed_at"].replace("Z", "+00:00"))
+            mttr_samples.append((lc - fs).days)
+        except Exception:
+            pass
+    mttr = round(sum(mttr_samples) / len(mttr_samples), 1) if mttr_samples else 0
+    closed_total = await db.findings.count_documents({**base_flt, "status": {"$in": ["Fixed validated", "Mitigated"]}})
+    reopen_rate = round((reopened_total / max(closed_total + reopened_total, 1)) * 100, 1)
+
+    # Scan coverage = assets with at least one observation in last 14d / total assets
+    cutoff = (now_dt - timedelta(days=14)).isoformat()
+    scanned = await db.observations.distinct("asset_id", {"observed_at": {"$gte": cutoff}})
+    total_assets = await db.assets.count_documents({})
+    coverage = round((len(scanned) / max(total_assets, 1)) * 100, 1)
+
+    return {
+        "total_open": total_open, "aging_buckets": buckets,
+        "by_assignee": [{"assignee": k, "count": v} for k, v in sorted(by_assignee.items(), key=lambda x: -x[1])][:15],
+        "overdue_by_severity": overdue_by_sev,
+        "throughput": throughput, "mttr_days": mttr, "reopen_rate": reopen_rate,
+        "scan_coverage_pct": coverage, "reopened_open": reopened_total,
+        "active_exceptions": await db.exceptions.count_documents({"status": "active"}),
+        "team_scope": team or "All teams",
+    }
 
 
 # --------------------------- INCLUDE & STARTUP ---------------------------

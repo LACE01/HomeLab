@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import Layout from "@/components/Layout";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtRel, isOverdue } from "@/lib/utils-fmt";
@@ -19,6 +20,7 @@ const VIEWS = [
 const STATUSES = ["New","Needs triage","Valid","False positive","Duplicate","Mitigated","Accepted risk","Fixed pending validation","Fixed validated","Reopened"];
 
 export default function Findings() {
+  const { user } = useAuth();
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   const [q, setQ] = useState("");
@@ -27,7 +29,9 @@ export default function Findings() {
   const [status, setStatus] = useState("");
   const [selected, setSelected] = useState(new Set());
   const [bulkStatus, setBulkStatus] = useState("Valid");
+  const [bulkAssignee, setBulkAssignee] = useState("");
   const [loading, setLoading] = useState(false);
+  const [myQueue, setMyQueue] = useState(!!user?.team);
 
   const load = async () => {
     setLoading(true);
@@ -36,10 +40,11 @@ export default function Findings() {
     if (view) params.view = view;
     if (severity) params.severity = severity;
     if (status) params.status = status;
+    if (myQueue && user?.team) params.owner_team = user.team;
     const r = await api.get("/v1/findings", { params });
     setItems(r.data.items); setTotal(r.data.total); setLoading(false); setSelected(new Set());
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [view, severity, status]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [view, severity, status, myQueue]);
 
   const exportCsv = async () => {
     const params = {};
@@ -59,15 +64,28 @@ export default function Findings() {
     await api.post("/v1/findings/bulk-status", { ids: [...selected], status: bulkStatus });
     await load();
   };
+  const doBulkAssign = async () => {
+    if (!selected.size || !bulkAssignee) return;
+    await api.post("/v1/findings/bulk-assign", { ids: [...selected], assignee: bulkAssignee });
+    await load();
+  };
 
   const counter = useMemo(() => `${items.length} of ${total}`, [items, total]);
 
   return (
     <Layout title="Findings Workbench" subtitle="Triage, prioritize, assign, and remediate vulnerabilities at scale"
-      actions={<button data-testid="export-csv" onClick={exportCsv}
-        className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] hover:bg-slate-800/40 rounded inline-flex items-center gap-1.5 text-slate-300">
-        <FileArrowDown size={14}/> Export CSV
-      </button>}>
+      actions={<>
+        {user?.team && (
+          <div className="flex items-center border border-[#30363D] rounded overflow-hidden" data-testid="queue-toggle">
+            <button data-testid="queue-mine" onClick={()=>setMyQueue(true)} className={`px-3 h-8 text-[12px] ${myQueue?"bg-blue-500/15 text-blue-300":"text-slate-400 hover:bg-slate-800/40"}`}>My Team ({user.team})</button>
+            <button data-testid="queue-all" onClick={()=>setMyQueue(false)} className={`px-3 h-8 text-[12px] ${!myQueue?"bg-blue-500/15 text-blue-300":"text-slate-400 hover:bg-slate-800/40"}`}>All Teams</button>
+          </div>
+        )}
+        <button data-testid="export-csv" onClick={exportCsv}
+          className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] hover:bg-slate-800/40 rounded inline-flex items-center gap-1.5 text-slate-300">
+          <FileArrowDown size={14}/> Export CSV
+        </button>
+      </>}>
 
       {/* Filters bar */}
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md mb-3">
@@ -103,13 +121,17 @@ export default function Findings() {
 
       {/* Bulk actions */}
       {selected.size > 0 && (
-        <div data-testid="bulk-bar" className="border border-blue-500/40 bg-blue-500/5 rounded-md px-3 py-2 mb-3 flex items-center gap-3">
+        <div data-testid="bulk-bar" className="border border-blue-500/40 bg-blue-500/5 rounded-md px-3 py-2 mb-3 flex flex-wrap items-center gap-3">
           <div className="text-[12px] text-blue-300 font-mono">{selected.size} selected</div>
           <select data-testid="bulk-status" value={bulkStatus} onChange={(e)=>setBulkStatus(e.target.value)} className="h-7 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px]">
             {STATUSES.map(s=> <option key={s}>{s}</option>)}
           </select>
-          <button data-testid="bulk-apply" onClick={doBulk} className="h-7 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded">Apply</button>
-          <button data-testid="bulk-clear" onClick={()=>setSelected(new Set())} className="text-[12px] text-slate-400 hover:text-slate-200">Clear</button>
+          <button data-testid="bulk-apply" onClick={doBulk} className="h-7 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded">Update Status</button>
+          <div className="h-5 w-px bg-blue-500/40"/>
+          <input data-testid="bulk-assignee" placeholder="Reassign to team / user…" value={bulkAssignee} onChange={(e)=>setBulkAssignee(e.target.value)}
+            className="h-7 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] w-56"/>
+          <button data-testid="bulk-assign-apply" onClick={doBulkAssign} className="h-7 px-3 text-[12px] bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 rounded hover:bg-emerald-500/30">Reassign</button>
+          <button data-testid="bulk-clear" onClick={()=>setSelected(new Set())} className="text-[12px] text-slate-400 hover:text-slate-200 ml-auto">Clear</button>
         </div>
       )}
 

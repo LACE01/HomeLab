@@ -12,6 +12,8 @@ import { Assets, AssetDetail } from "@/pages/Assets";
 import { Products, Engagements, Tickets, Exceptions } from "@/pages/Operations";
 import ProductDetail from "@/pages/ProductDetail";
 import { Integrations, ImportJobs, Reports, Admin } from "@/pages/AdminAndIntegrations";
+import Operational from "@/pages/Operational";
+import { AssignmentRules, OwnershipMappings } from "@/pages/Ownership";
 
 const Protected = ({ children }) => {
   const { user, loading } = useAuth();
@@ -42,6 +44,9 @@ const AppRouter = () => {
       <Route path="/imports" element={<Protected><ImportJobs/></Protected>}/>
       <Route path="/reports" element={<Protected><Reports/></Protected>}/>
       <Route path="/admin" element={<Protected><Admin/></Protected>}/>
+      <Route path="/operational" element={<Protected><Operational/></Protected>}/>
+      <Route path="/admin/assignment-rules" element={<Protected><AssignmentRules/></Protected>}/>
+      <Route path="/admin/ownership" element={<Protected><OwnershipMappings/></Protected>}/>
     </Routes>
   );
 };
