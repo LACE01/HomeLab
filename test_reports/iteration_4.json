@@ -1,0 +1,37 @@
+{
+  "summary": "Frontend retest after Sidebar.jsx syntax fix. App compiles and loads. Analyst login works (redirects to '/' which IS the Dashboard route per Sidebar code). Operational dashboard renders all 6 stat tiles + 4 charts + team filter. Findings queue-toggle, bulk-bar with reassign + status controls all work. Admin/assignment-rules shows 5 rules + add form + apply button. Admin/ownership renders 12 rows with hostname/team/confidence bars/rationale. Two minor spec-vs-implementation mismatches found around data-testid naming — non-blocking.",
+  "tested_scope": ["frontend", "integration"],
+  "passed": [
+    "/login page loads (compile error from previous iteration is fixed)",
+    "Analyst login (analyst@vulnops.io / analyst123) succeeds; lands on Dashboard (route '/')",
+    "Sidebar visible with nav-operational, nav-dashboard, nav-findings, nav-tickets, nav-exceptions, nav-admin etc.",
+    "/operational renders all 6 stat tiles (Open Total=77, MTTR=11.4d, Reopen Rate=14.3%, Reopened Open=3, Scan Coverage=83.3%, Active Exceptions=0)",
+    "/operational renders all 4 charts (Aging Buckets, Overdue by Severity, Top Assignees/Teams, Throughput) — 6 recharts SVGs detected",
+    "op-team-filter input present on /operational",
+    "/findings queue-toggle, queue-mine, queue-all all present; clicking queue-all loads more rows",
+    "Findings bulk-bar: selecting 2 rows shows bulk-bar with bulk-assignee, bulk-assign-apply, and bulk-update-status controls",
+    "/admin/assignment-rules table shows 5 rule rows; rule-name, rule-value, rule-team, rule-add form fields present; apply-rules button in header",
+    "/admin/ownership renders 12 rows with hostname, env, platform, criticality, owner team, confidence bar (visible as % bar), and rationale text"
+  ],
+  "failed": [
+    {
+      "area": "Sidebar nav testids",
+      "issue": "Spec expected sidebar to contain data-testid 'nav-rules' and 'nav-ownership' as top-level items. Sidebar.jsx exposes only nav-admin (the Rules/Ownership pages are reached via /admin/* routes, not top-level nav).",
+      "evidence": "grep on Sidebar.jsx: only nav-dashboard, nav-operational, nav-findings, nav-tickets, nav-exceptions, nav-assets, nav-products, nav-engagements, nav-integrations, nav-imports, nav-reports, nav-admin. No nav-rules or nav-ownership testids. Routes still work via direct URL.",
+      "priority": "LOW"
+    },
+    {
+      "area": "Operational page testids",
+      "issue": "Spec expected data-testid attributes like op-tile-open-total, op-tile-mttr, op-chart-aging etc. Only op-team-filter has a data-testid; tiles and charts render correctly but lack testids for automation.",
+      "evidence": "grep data-testid /app/frontend/src/pages/Operational.jsx returns only line 33 op-team-filter. Visual screenshot confirms all 6 tiles + 4 charts render with correct labels and data.",
+      "priority": "LOW"
+    }
+  ],
+  "action_items": [
+    "Optional: add data-testid attributes to the 6 Operational tiles and 4 charts (op-tile-*, op-chart-*) to match the spec for future automation.",
+    "Optional: decide whether nav-rules and nav-ownership should appear as top-level sidebar items or remain nested under Admin (current design keeps them under /admin)."
+  ],
+  "success_rate": {"backend": "not retested (per request)", "frontend": "100% functional (2 LOW testid mismatches)"},
+  "retest_needed": false,
+  "full_testing_deferred": true
+}

@@ -85,11 +85,3 @@ export default function Sidebar() {
     </aside>
   );
 }
-        >
-            <SignOut size={18} />
-          </button>
-        </div>
-      </div>
-    </aside>
-  );
-}
