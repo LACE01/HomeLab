@@ -41,6 +41,30 @@ def decode_token(token: str) -> dict:
 
 async def get_current_user(request: Request) -> dict:
     from db import db
+    # 1) Emergent Google session_token (cookie or Bearer)
+    sess = request.cookies.get("session_token")
+    if not sess:
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            maybe = auth[7:]
+            # Only treat as session token if it doesn't look like a JWT
+            if maybe.count(".") != 2:
+                sess = maybe
+    if sess:
+        s = await db.user_sessions.find_one({"session_token": sess}, {"_id": 0})
+        if s:
+            from datetime import datetime as _dt
+            exp = s.get("expires_at")
+            if isinstance(exp, str):
+                exp = datetime.fromisoformat(exp)
+            if exp and exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            if not exp or exp > datetime.now(timezone.utc):
+                user = await db.users.find_one({"id": s["user_id"]}, {"_id": 0, "password_hash": 0})
+                if user:
+                    return user
+
+    # 2) JWT access token (cookie or Bearer)
     token = request.cookies.get("access_token")
     if not token:
         auth = request.headers.get("Authorization", "")

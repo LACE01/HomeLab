@@ -1,0 +1,21 @@
+{
+  "summary": "Verified Emergent Google OAuth wiring on VulnOps platform alongside JWT auth. All 5 backend checks and all 4 frontend checks passed. No regressions detected.",
+  "tested_scope": ["backend", "frontend", "auth", "integration"],
+  "passed": [
+    "POST /api/auth/google/session with invalid session_id -> 401 {detail:'Invalid session_id'}",
+    "POST /api/auth/google/session without body -> 422 (pydantic missing field)",
+    "POST /api/auth/login admin@vulnops.io/admin123 -> 200 with JWT (token length 243)",
+    "GET /api/auth/me with Bearer JWT -> 200 returning admin user payload",
+    "POST /api/auth/logout -> 200 and clears access_token + session_token cookies (Max-Age=0)",
+    "Frontend /login renders Google button with data-testid='google-signin'",
+    "Clicking Google button navigates to https://auth.emergentagent.com/?redirect=https%3A%2F%2Fremediationhub.preview.emergentagent.com%2F (origin URL-encoded as redirect param)",
+    "JWT email/password login regression: admin login from /login redirects to / successfully",
+    "AppRouter detects #session_id=fake_test_id, renders AuthCallback ('Completing sign-in…'), then redirects to /login?error=oauth on invalid session"
+  ],
+  "failed": [],
+  "action_items": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "retest_needed": false,
+  "full_testing_deferred": true,
+  "notes": "Real Google OAuth round-trip not testable without live Google account; error path validated instead. Logout sets cookies with SameSite=lax; google_session sets session_token with SameSite=none; Secure (cross-site cookie OK for production)."
+}

@@ -8,11 +8,17 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // CRITICAL: Skip /me check if we're returning from OAuth (hash contains session_id).
+    // AuthCallback will exchange the session_id and establish the session first.
+    if (typeof window !== "undefined" && window.location.hash?.includes("session_id=")) {
+      setLoading(false);
+      return;
+    }
     const token = localStorage.getItem("vulnops_token");
-    if (!token) { setLoading(false); return; }
+    // Try /auth/me — works with either JWT token OR session_token cookie
     api.get("/auth/me")
       .then((r) => setUser(r.data))
-      .catch(() => localStorage.removeItem("vulnops_token"))
+      .catch(() => { if (token) localStorage.removeItem("vulnops_token"); })
       .finally(() => setLoading(false));
   }, []);
 

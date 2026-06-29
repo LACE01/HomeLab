@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { useNavigate } from "react-router-dom";
 import { Bug, ShieldStar } from "@phosphor-icons/react";
+import { FcGoogle } from "react-icons/fc";
 
 export default function Login() {
   const { login } = useAuth();
@@ -17,6 +18,12 @@ export default function Login() {
     try { await login(email, pwd); nav("/"); }
     catch (ex) { setErr(ex.response?.data?.detail || "Login failed"); }
     finally { setBusy(false); }
+  };
+
+  // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+  const signInWithGoogle = () => {
+    const redirectUrl = window.location.origin + "/";
+    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
   };
 
   const demoLogins = [
@@ -42,6 +49,22 @@ export default function Login() {
             <ShieldStar size={18} className="text-slate-400" />
             <h2 className="text-[14px] font-medium text-slate-200">Sign in</h2>
           </div>
+
+          <button
+            data-testid="google-signin"
+            type="button"
+            onClick={signInWithGoogle}
+            className="w-full h-9 bg-white hover:bg-slate-100 text-slate-900 text-[13px] font-medium rounded transition-colors flex items-center justify-center gap-2"
+          >
+            <FcGoogle size={18}/> Continue with Google
+          </button>
+
+          <div className="flex items-center gap-3 my-4">
+            <div className="flex-1 h-px bg-[#30363D]"/>
+            <span className="text-[10px] font-mono text-slate-600 uppercase tracking-wider">or email</span>
+            <div className="flex-1 h-px bg-[#30363D]"/>
+          </div>
+
           <form onSubmit={onSubmit} className="space-y-3">
             <div>
               <label className="text-[11px] text-slate-500 uppercase tracking-wider font-mono">Email</label>

@@ -1,9 +1,10 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { Toaster } from "@/components/ui/sonner";
 import "@/index.css";
 
 import Login from "@/pages/Login";
+import AuthCallback from "@/pages/AuthCallback";
 import Dashboard from "@/pages/Dashboard";
 import Findings from "@/pages/Findings";
 import FindingDetail from "@/pages/FindingDetail";
@@ -19,27 +20,37 @@ const Protected = ({ children }) => {
   return children;
 };
 
+const AppRouter = () => {
+  const location = useLocation();
+  // CRITICAL: Detect OAuth callback synchronously during render — before any Protected gating
+  if (location.hash?.includes("session_id=")) return <AuthCallback />;
+  return (
+    <Routes>
+      <Route path="/login" element={<Login/>}/>
+      <Route path="/auth/callback" element={<AuthCallback/>}/>
+      <Route path="/" element={<Protected><Dashboard/></Protected>}/>
+      <Route path="/findings" element={<Protected><Findings/></Protected>}/>
+      <Route path="/findings/:id" element={<Protected><FindingDetail/></Protected>}/>
+      <Route path="/assets" element={<Protected><Assets/></Protected>}/>
+      <Route path="/assets/:id" element={<Protected><AssetDetail/></Protected>}/>
+      <Route path="/products" element={<Protected><Products/></Protected>}/>
+      <Route path="/products/:id" element={<Protected><ProductDetail/></Protected>}/>
+      <Route path="/engagements" element={<Protected><Engagements/></Protected>}/>
+      <Route path="/tickets" element={<Protected><Tickets/></Protected>}/>
+      <Route path="/exceptions" element={<Protected><Exceptions/></Protected>}/>
+      <Route path="/integrations" element={<Protected><Integrations/></Protected>}/>
+      <Route path="/imports" element={<Protected><ImportJobs/></Protected>}/>
+      <Route path="/reports" element={<Protected><Reports/></Protected>}/>
+      <Route path="/admin" element={<Protected><Admin/></Protected>}/>
+    </Routes>
+  );
+};
+
 export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
-        <Routes>
-          <Route path="/login" element={<Login/>}/>
-          <Route path="/" element={<Protected><Dashboard/></Protected>}/>
-          <Route path="/findings" element={<Protected><Findings/></Protected>}/>
-          <Route path="/findings/:id" element={<Protected><FindingDetail/></Protected>}/>
-          <Route path="/assets" element={<Protected><Assets/></Protected>}/>
-          <Route path="/assets/:id" element={<Protected><AssetDetail/></Protected>}/>
-          <Route path="/products" element={<Protected><Products/></Protected>}/>
-          <Route path="/products/:id" element={<Protected><ProductDetail/></Protected>}/>
-          <Route path="/engagements" element={<Protected><Engagements/></Protected>}/>
-          <Route path="/tickets" element={<Protected><Tickets/></Protected>}/>
-          <Route path="/exceptions" element={<Protected><Exceptions/></Protected>}/>
-          <Route path="/integrations" element={<Protected><Integrations/></Protected>}/>
-          <Route path="/imports" element={<Protected><ImportJobs/></Protected>}/>
-          <Route path="/reports" element={<Protected><Reports/></Protected>}/>
-          <Route path="/admin" element={<Protected><Admin/></Protected>}/>
-        </Routes>
+        <AppRouter/>
       </BrowserRouter>
       <Toaster richColors position="top-right" />
     </AuthProvider>

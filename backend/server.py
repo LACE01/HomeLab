@@ -67,14 +67,69 @@ async def login(body: LoginBody, response: Response):
 
 
 @api.post("/auth/logout")
-async def logout(response: Response):
+async def logout(request: Request, response: Response):
+    sess = request.cookies.get("session_token")
+    if sess:
+        await db.user_sessions.delete_many({"session_token": sess})
     response.delete_cookie("access_token", path="/")
+    response.delete_cookie("session_token", path="/")
     return {"ok": True}
 
 
 @api.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
     return user
+
+
+# --- Emergent Google OAuth session exchange ---
+class GoogleSessionBody(BaseModel):
+    session_id: str
+
+
+@api.post("/auth/google/session")
+async def google_session(body: GoogleSessionBody, response: Response):
+    import requests as _requests
+    try:
+        r = _requests.get(
+            "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+            headers={"X-Session-ID": body.session_id},
+            timeout=10,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Auth provider unreachable: {e}")
+    if r.status_code != 200:
+        raise HTTPException(status_code=401, detail="Invalid session_id")
+    data = r.json()
+    email = (data.get("email") or "").lower()
+    name = data.get("name") or email
+    picture = data.get("picture")
+    session_token = data.get("session_token")
+    if not email or not session_token:
+        raise HTTPException(status_code=502, detail="Malformed session-data response")
+
+    user = await db.users.find_one({"email": email})
+    if user is None:
+        user = {
+            "id": str(uuid.uuid4()), "email": email, "name": name,
+            "role": "analyst", "picture": picture, "auth_provider": "google",
+            "created_at": now_iso(), "password_hash": None,
+        }
+        await db.users.insert_one(user)
+    else:
+        await db.users.update_one({"email": email}, {"$set": {"name": name, "picture": picture, "auth_provider": user.get("auth_provider", "google")}})
+
+    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    await db.user_sessions.insert_one({
+        "id": str(uuid.uuid4()), "user_id": user["id"], "session_token": session_token,
+        "expires_at": expires_at, "created_at": datetime.now(timezone.utc),
+    })
+
+    response.set_cookie(
+        key="session_token", value=session_token, httponly=True,
+        secure=True, samesite="none", max_age=7 * 24 * 3600, path="/",
+    )
+    return {"user": {"id": user["id"], "email": user["email"], "name": user["name"],
+                     "role": user["role"], "picture": picture}}
 
 
 # --------------------------- FINDINGS ---------------------------
