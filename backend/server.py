@@ -702,6 +702,45 @@ async def export_executive_pdf(user: dict = Depends(get_current_user)):
                              headers={"Content-Disposition": "attachment; filename=executive-report.pdf"})
 
 
+# --------------------------- REPORT BUILDER ---------------------------
+from reports import REPORT_CATALOG, GROUP_FIELDS, run_prebuilt, run_custom
+
+
+@api.get("/v1/reports/catalog")
+async def reports_catalog(user: dict = Depends(get_current_user)):
+    return {"items": REPORT_CATALOG, "group_fields": GROUP_FIELDS,
+            "filter_fields": ["severity", "status", "kev_flag", "internet_facing", "owner_team", "product_name", "asset_environment"],
+            "metrics": [{"id": "count", "label": "Count of Findings"}, {"id": "risk_sum", "label": "Sum of Risk Score"}],
+            "date_fields": ["first_seen_at", "last_seen_at", "due_at", "last_changed_at"]}
+
+
+@api.get("/v1/reports/run/{report_id}")
+async def run_report(report_id: str, fmt: str = "pdf", user: dict = Depends(get_current_user)):
+    if fmt not in ("pdf", "csv"):
+        raise HTTPException(400, "fmt must be 'pdf' or 'csv'")
+    result = await run_prebuilt(db, report_id, fmt)
+    if result is None:
+        raise HTTPException(404, f"Unknown report_id: {report_id}")
+    return result
+
+
+class CustomReportBody(BaseModel):
+    fmt: str = "pdf"
+    group_by: str = "severity"
+    metric: str = "count"
+    filters: dict = {}
+    date_field: Optional[str] = "first_seen_at"
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+
+
+@api.post("/v1/reports/run-custom")
+async def run_custom_report(body: CustomReportBody, user: dict = Depends(get_current_user)):
+    if body.fmt not in ("pdf", "csv"):
+        raise HTTPException(400, "fmt must be 'pdf' or 'csv'")
+    return await run_custom(db, body.model_dump(), body.fmt)
+
+
 # --------------------------- INGESTION (API) ---------------------------
 class UniversalFindingIn(BaseModel):
     source_tool: str

@@ -1,0 +1,25 @@
+{
+  "summary": "Iteration 2 (Report Builder) tested end-to-end. 33/33 backend pytest tests pass (catalog, 10 prebuilt reports x PDF+CSV = 20, column shape checks, throughput row count, 404/400 errors, custom builder CSV/PDF, bad group_by, kev filter, date filter, plus legacy /reports/csv/findings + /reports/pdf/executive regression). Frontend /reports page renders all 10 cards with PDF+CSV buttons (data-testid=report-<id>, dl-<id>-pdf, dl-<id>-csv) and the Dynamic Report Builder section with every documented testid (b-metric, b-group, b-fmt-pdf/csv, b-sev-Critical..Info, b-status, b-kev, b-internet, b-team, b-product, b-env, b-datefield, b-datefrom, b-dateto, b-run). End-to-end builder flow as admin (metric=risk_sum, group_by=owner_team, sev=Critical) downloaded custom-report.csv and custom-report.pdf with success toast. Legacy Findings page Export CSV button still downloads findings.csv.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_reports_iter2.py",
+    "/app/test_reports/pytest/iter6_reports.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "reports.py run_custom() builds filters[date_field] via setdefault but does not pre-strip non-date filters that may collide with the same key; ok in practice since date_field values are always *_at fields.",
+    "reports.py 'overdue_critical' filename produces overdue-critical-high.{csv,pdf} but Reports.jsx downloads it as overdue_critical.{csv,pdf} (uses report_id, not server-suggested filename). Cosmetic only — file still saves; consider honoring Content-Disposition for cleaner UX.",
+    "Reports.jsx: when user clicks b-sev chip but never picks status, the multi-select <select multiple> is a non-shadcn native widget — works but visually inconsistent with the rest of the dark UI.",
+    "server.py /v1/reports/run-custom: no allow-list for filters keys; raw filter map silently drops unknown keys (safe) but consider rejecting unknown keys to surface client errors.",
+    "Catalog endpoint hard-codes filter_fields/metrics/date_fields in server.py instead of reading from reports.py — minor DRY violation if list ever drifts."
+  ],
+  "updated_files": ["/app/backend/tests/test_reports_iter2.py"],
+  "success_rate": {"backend": "100% (33/33)", "frontend": "100% (all testids + downloads + toast)"},
+  "test_credentials": "admin@vulnops.io / admin123 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None — used existing seeded findings/exceptions/snapshots.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 2 of 3 complete. All report endpoints + UI verified. Iteration 3 will add more features; rerun /app/backend/tests/test_reports_iter2.py to confirm no regressions to the Report Builder.",
+  "rca of the issue": "No bugs found."
+}

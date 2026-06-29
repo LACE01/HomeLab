@@ -11,7 +11,8 @@ import FindingDetail from "@/pages/FindingDetail";
 import { Assets, AssetDetail } from "@/pages/Assets";
 import { Products, Engagements, Tickets, Exceptions } from "@/pages/Operations";
 import ProductDetail from "@/pages/ProductDetail";
-import { Integrations, ImportJobs, Reports, Admin } from "@/pages/AdminAndIntegrations";
+import { Integrations, ImportJobs, Admin } from "@/pages/AdminAndIntegrations";
+import Reports from "@/pages/Reports";
 import Operational from "@/pages/Operational";
 import { AssignmentRules, OwnershipMappings } from "@/pages/Ownership";
 

@@ -182,37 +182,6 @@ export function ImportJobs() {
   );
 }
 
-export function Reports() {
-  const dl = async (path, filename) => {
-    const r = await api.get(path, { responseType: "blob" });
-    const url = URL.createObjectURL(r.data);
-    const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
-    URL.revokeObjectURL(url);
-  };
-  const Card = ({ title, desc, action, testid }) => (
-    <div data-testid={testid} className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
-      <div className="text-[14px] font-medium text-slate-100">{title}</div>
-      <div className="text-[12px] text-slate-500 mt-1 mb-3">{desc}</div>
-      {action}
-    </div>
-  );
-  return (
-    <Layout title="Reports" subtitle="Branded executive PDFs, technical CSV exports, and host reports">
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-        <Card title="Executive PDF" desc="Score, narrative, product breakdown, drivers. Suitable for board reporting."
-          testid="rpt-exec-pdf"
-          action={<button data-testid="dl-exec-pdf" onClick={()=>dl("/v1/reports/pdf/executive", "executive-report.pdf")} className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded">Download PDF</button>}/>
-        <Card title="All Findings CSV" desc="Full export of every finding with risk, asset, owner, and SLA fields."
-          testid="rpt-findings-csv"
-          action={<button data-testid="dl-findings-csv" onClick={()=>dl("/v1/reports/csv/findings", "findings.csv")} className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded">Download CSV</button>}/>
-        <Card title="Critical Findings CSV" desc="Filtered export of Critical-severity findings only."
-          testid="rpt-critical-csv"
-          action={<button data-testid="dl-critical-csv" onClick={()=>dl("/v1/reports/csv/findings?severity=Critical", "critical-findings.csv")} className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded">Download CSV</button>}/>
-      </div>
-    </Layout>
-  );
-}
-
 export function Admin() {
   const [users, setUsers] = useState([]);
   const [keys, setKeys] = useState([]);
