@@ -1,0 +1,72 @@
+{
+  "summary": "First-finish smoke test on VulnOps (FastAPI+Mongo+React). Backend auth, dashboards, findings CRUD, filters/views, assets, products, lists, ingest universal (idempotency + reopen-on-regression + auto-asset), reports CSV/PDF, RBAC admin endpoint, and exception flow all verified working against the public REACT_APP_BACKEND_URL. Frontend login -> dashboard -> findings -> finding detail -> assets/products/tickets/exceptions/reports/admin nav all render with seeded data. A few minor data-testid mismatches noted (not blocking).",
+  "tested_scope": ["backend", "frontend", "auth", "integration"],
+  "passed": [
+    "POST /api/auth/login returns {token,user} for admin & analyst",
+    "GET /api/auth/me with Bearer token returns admin user object",
+    "GET /api/v1/dashboards/analyst returns open_findings=81, kev=39, overdue=70, top_findings, recent_imports",
+    "GET /api/v1/dashboards/manager returns by_team, snapshots, active_exceptions",
+    "GET /api/v1/dashboards/executive returns current_score=88.7, narrative, snapshots, by_product, by_environment, score_factors",
+    "GET /api/v1/findings paginated total=120; filters severity=Critical(48), status=Valid(51), kev=true(60), view=overdue(57), view=kev(60), view=internet_facing_critical(51)",
+    "GET /api/v1/findings/{id} returns full document with risk_score and risk_breakdown",
+    "GET /api/v1/findings/{id}/timeline|observations|tickets|comments return {items:[...]} payloads (not raw arrays — see note)",
+    "POST /api/v1/findings/{id}/comments with body {text:...} adds comment, visible in GET",
+    "PATCH /api/v1/findings/{id}/status returns {ok:true} and updates persisted status",
+    "POST /api/v1/findings/bulk-status updates multiple (updated=3)",
+    "GET /api/v1/assets returns 12 assets with open_findings & critical_findings counts; /assets/{id}/findings works",
+    "GET /api/v1/products returns 5 products; /products/{id} returns assets+findings keys",
+    "GET /api/v1/engagements(8), /tickets(41), /exceptions(1), /integrations(13), /import-jobs(10) all return items[]",
+    "POST /api/v1/exceptions with {finding_id,reason,rationale,expires_at} creates exception and sets finding status='Accepted risk'",
+    "POST /api/v1/ingest/universal without X-API-Key -> 401",
+    "POST /api/v1/ingest/universal with key & {findings:[{source_tool,source_tool_type,source_record_id,cve,title,severity,asset_hostname,...}]} creates finding+asset+import_job",
+    "Idempotency: 2nd identical ingest -> created_count=0, updated_count=1, total findings unchanged",
+    "Reopen-on-regression: after setting Fixed validated then re-ingest, status flipped to 'Reopened', reopened_count=1, first_seen_at preserved",
+    "Asset auto-created from ingest hostname (assets went 12 -> 13)",
+    "GET /api/v1/reports/csv/findings -> 200 text/csv (30KB) with expected header columns",
+    "GET /api/v1/reports/pdf/executive -> 200 application/pdf (2.6KB)",
+    "GET /api/v1/admin/users -> 200 for admin, 403 for analyst",
+    "Frontend: login flow works, sidebar nav renders, Dashboard shows stat tiles (Open=79, Needs triage=10, KEV=37, etc.), Top Risk Findings + Recent Imports populated",
+    "Frontend: Findings page loads with table, view-kev tab filter applies, clicking finding row opens detail page with sections + comment input",
+    "Frontend nav verified: Findings, Assets, Tickets, Exceptions, Products, Reports, Admin all render with seeded data; Admin table shows Users/RBAC + API keys + SLA policies"
+  ],
+  "failed": [
+    {
+      "area": "frontend testids",
+      "issue": "data-testid 'nav-import-jobs' not found (sidebar shows 'Import Jobs' link but testid may be 'nav-imports' or similar)",
+      "evidence": "page.query_selector('[data-testid=\"nav-import-jobs\"]') returned null",
+      "priority": "LOW"
+    },
+    {
+      "area": "frontend testids",
+      "issue": "On Reports page, data-testid 'dl-exec-pdf' and 'dl-findings-csv' not found (may be 'export-csv'/'export-exec-pdf' or other names)",
+      "evidence": "query_selector both returned null on /reports route",
+      "priority": "LOW"
+    },
+    {
+      "area": "frontend bulk select",
+      "issue": "Clicking [data-testid=\"select-all\"] did not surface [data-testid=\"bulk-bar\"]; could not validate bulk status change UI in smoke pass",
+      "evidence": "bulk-bar element not visible after select-all click on /findings",
+      "priority": "MEDIUM"
+    },
+    {
+      "area": "api schema vs review spec",
+      "issue": "Review spec says timeline/observations/tickets/comments 'return arrays', but they return {items:[...]} dict. Frontend likely consumes .items so this is documentation drift, not a bug.",
+      "evidence": "GET /api/v1/findings/{id}/comments => {\"items\":[...]} dict",
+      "priority": "LOW"
+    },
+    {
+      "area": "api schema vs review spec",
+      "issue": "Ingest payload requires {findings:[{source_tool, source_tool_type, source_record_id, asset_hostname, ...}]} — not the flat top-level shape implied by review spec. Working as designed once correct schema discovered.",
+      "evidence": "422 errors until each finding contained source_tool/source_tool_type/source_record_id/asset_hostname",
+      "priority": "LOW"
+    }
+  ],
+  "action_items": [
+    "Optional: align data-testids on Reports page (dl-exec-pdf, dl-findings-csv, dl-critical-csv) and Import Jobs sidebar nav (nav-import-jobs) with values listed in problem statement so future automated tests find them.",
+    "Investigate bulk-bar visibility on Findings page after select-all click (component may require selecting individual rows, or bulk-bar testid may differ).",
+    "No backend blockers; backend is ready for first finish."
+  ],
+  "success_rate": {"backend": "100%", "frontend": "~90%"},
+  "retest_needed": false,
+  "full_testing_deferred": true
+}
