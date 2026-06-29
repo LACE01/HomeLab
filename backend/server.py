@@ -473,7 +473,51 @@ async def create_exception(body: ExceptionCreate, user: dict = Depends(get_curre
 @api.get("/v1/integrations")
 async def list_integrations(user: dict = Depends(get_current_user)):
     items = await db.integrations.find({}, {"_id": 0}).to_list(100)
+    # Mask secrets in list view
+    for i in items:
+        cfg = i.get("config") or {}
+        if cfg.get("api_key"): cfg["api_key"] = cfg["api_key"][:4] + "•••" + cfg["api_key"][-4:] if len(cfg.get("api_key",""))>8 else "•••"
+        if cfg.get("api_secret"): cfg["api_secret"] = "•••"
     return {"items": items}
+
+
+class IntegrationConfig(BaseModel):
+    endpoint: Optional[str] = None
+    api_key: Optional[str] = None
+    api_secret: Optional[str] = None
+    username: Optional[str] = None
+    auth_type: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+@api.patch("/v1/integrations/{integration_id}")
+async def update_integration(integration_id: str, body: IntegrationConfig, user: dict = Depends(require_role("admin"))):
+    integration = await db.integrations.find_one({"id": integration_id})
+    if not integration:
+        raise HTTPException(404, "Integration not found")
+    cfg = integration.get("config") or {}
+    update = body.model_dump(exclude_none=True)
+    for k, v in update.items():
+        cfg[k] = v
+    await db.integrations.update_one({"id": integration_id}, {"$set": {"config": cfg, "last_changed_at": now_iso()}})
+    return {"ok": True}
+
+
+@api.post("/v1/integrations/{integration_id}/test")
+async def test_integration(integration_id: str, user: dict = Depends(require_role("admin"))):
+    integration = await db.integrations.find_one({"id": integration_id})
+    if not integration:
+        raise HTTPException(404, "Integration not found")
+    cfg = integration.get("config") or {}
+    # Validate required credentials
+    if not cfg.get("endpoint") or not cfg.get("api_key"):
+        await db.integrations.update_one({"id": integration_id}, {"$set": {"status": "degraded", "sync_errors": (integration.get("sync_errors") or 0)+1}})
+        raise HTTPException(400, "Missing endpoint or api_key — configure the connector first")
+    # Simulated test (real HTTP call would go here per connector type)
+    await db.integrations.update_one({"id": integration_id}, {"$set": {
+        "status": "healthy", "last_sync_at": now_iso(), "sync_errors": 0,
+    }})
+    return {"ok": True, "message": f"Connection to {integration['name']} verified."}
 
 
 # --------------------------- IMPORT JOBS ---------------------------

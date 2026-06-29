@@ -3,14 +3,54 @@ import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import { fmtDate, fmtRel } from "@/lib/utils-fmt";
-import { CheckCircle, WarningCircle, XCircle } from "@phosphor-icons/react";
+import { CheckCircle, WarningCircle, XCircle, GearSix, Lightning } from "@phosphor-icons/react";
+import { toast } from "sonner";
 
 export function Integrations() {
   const [items, setItems] = useState([]);
-  useEffect(() => { api.get("/v1/integrations").then(r => setItems(r.data.items)); }, []);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({});
+  const [testing, setTesting] = useState(null);
+  const load = () => api.get("/v1/integrations").then(r => setItems(r.data.items));
+  useEffect(() => { load(); }, []);
+
   const Icon = ({ s }) => s === "healthy" ? <CheckCircle size={16} className="text-emerald-400"/> : s === "degraded" ? <WarningCircle size={16} className="text-amber-400"/> : <XCircle size={16} className="text-red-400"/>;
+
+  const openEdit = (i) => {
+    setEditing(i);
+    setForm({
+      endpoint: i.config?.endpoint || "",
+      api_key: "",  // never prefill — masked
+      api_secret: "",
+      username: i.config?.username || "",
+      auth_type: i.config?.auth_type || "api_key",
+      enabled: i.config?.enabled !== false,
+    });
+  };
+
+  const save = async () => {
+    const payload = Object.fromEntries(Object.entries(form).filter(([_,v]) => v !== "" && v !== null && v !== undefined));
+    try {
+      await api.patch(`/v1/integrations/${editing.id}`, payload);
+      toast.success(`${editing.name} configuration saved`);
+      setEditing(null); await load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Save failed"); }
+  };
+
+  const test = async (i) => {
+    setTesting(i.id);
+    try {
+      const r = await api.post(`/v1/integrations/${i.id}/test`);
+      toast.success(r.data.message);
+      await load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Connection test failed");
+      await load();
+    } finally { setTesting(null); }
+  };
+
   return (
-    <Layout title="Integrations" subtitle="Connector health and synchronization status">
+    <Layout title="Integrations" subtitle="Configure scanner connectors and ticketing systems with your API keys">
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         {items.map(i => (
           <div key={i.id} data-testid={`integration-${i.id}`} className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
@@ -21,15 +61,93 @@ export function Integrations() {
               </div>
               <Icon s={i.status}/>
             </div>
-            <div className="mt-3 text-[11px] text-slate-500 font-mono">{i.config?.endpoint}</div>
+
+            <div className="mt-3 space-y-1">
+              <div className="flex gap-2 items-center"><span className="text-[10px] font-mono text-slate-500 w-16 uppercase">Endpoint</span><span className="text-[11px] font-mono text-slate-300 truncate flex-1">{i.config?.endpoint || <span className="text-slate-600">not set</span>}</span></div>
+              <div className="flex gap-2 items-center"><span className="text-[10px] font-mono text-slate-500 w-16 uppercase">API Key</span><span className="text-[11px] font-mono text-slate-300 truncate flex-1">{i.config?.api_key || <span className="text-slate-600">not set</span>}</span></div>
+              <div className="flex gap-2 items-center"><span className="text-[10px] font-mono text-slate-500 w-16 uppercase">Auth</span><span className="text-[11px] font-mono text-slate-300">{i.config?.auth_type || "api_key"}</span></div>
+            </div>
+
             <div className="mt-3 pt-3 border-t border-[#30363D] grid grid-cols-2 gap-2">
               <div><div className="text-[10px] uppercase font-mono text-slate-500">Last Sync</div><div className="text-[11.5px]">{fmtRel(i.last_sync_at)}</div></div>
               <div><div className="text-[10px] uppercase font-mono text-slate-500">Errors</div><div className={`text-[11.5px] font-mono ${i.sync_errors>0?"text-red-300":"text-slate-300"}`}>{i.sync_errors}</div></div>
             </div>
-            <div className="mt-2"><Chip color={i.status === "healthy" ? "green" : i.status === "degraded" ? "amber" : "red"}>{i.status}</Chip></div>
+
+            <div className="mt-3 flex items-center justify-between gap-2">
+              <Chip color={i.status === "healthy" ? "green" : i.status === "degraded" ? "amber" : "red"}>{i.status}</Chip>
+              <div className="flex gap-1.5">
+                <button data-testid={`test-${i.id}`} disabled={testing===i.id} onClick={()=>test(i)}
+                  className="h-7 px-2.5 text-[11px] border border-[#30363D] hover:border-emerald-500/50 hover:text-emerald-300 rounded inline-flex items-center gap-1 disabled:opacity-50">
+                  <Lightning size={12}/> {testing===i.id ? "Testing…" : "Test"}
+                </button>
+                <button data-testid={`configure-${i.id}`} onClick={()=>openEdit(i)}
+                  className="h-7 px-2.5 text-[11px] bg-blue-500/15 border border-blue-500/40 text-blue-300 hover:bg-blue-500/25 rounded inline-flex items-center gap-1">
+                  <GearSix size={12}/> Configure
+                </button>
+              </div>
+            </div>
           </div>
         ))}
       </div>
+
+      {editing && (
+        <div data-testid="config-modal" className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50" onClick={()=>setEditing(null)}>
+          <div className="w-full max-w-[520px] border border-[#30363D] bg-[#0D1117] rounded-md" onClick={(e)=>e.stopPropagation()}>
+            <div className="px-4 py-3 border-b border-[#30363D] flex items-center justify-between">
+              <h3 className="text-[14px] font-medium text-slate-100">Configure {editing.name}</h3>
+              <button onClick={()=>setEditing(null)} className="text-slate-500 hover:text-slate-200">✕</button>
+            </div>
+            <div className="p-4 space-y-3">
+              <div>
+                <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Endpoint URL</label>
+                <input data-testid="cfg-endpoint" value={form.endpoint} onChange={(e)=>setForm({...form, endpoint:e.target.value})}
+                  placeholder="https://qualysapi.qualys.com" className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200"/>
+              </div>
+              <div>
+                <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Auth Type</label>
+                <select value={form.auth_type} onChange={(e)=>setForm({...form, auth_type:e.target.value})}
+                  className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200">
+                  <option value="api_key">API Key</option>
+                  <option value="basic">Basic Auth (user + password)</option>
+                  <option value="bearer">Bearer Token</option>
+                  <option value="oauth">OAuth</option>
+                </select>
+              </div>
+              {form.auth_type === "basic" && (
+                <div>
+                  <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Username</label>
+                  <input data-testid="cfg-username" value={form.username} onChange={(e)=>setForm({...form, username:e.target.value})}
+                    className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200"/>
+                </div>
+              )}
+              <div>
+                <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">{form.auth_type === "basic" ? "Password" : "API Key / Token"}</label>
+                <input data-testid="cfg-api-key" type="password" value={form.api_key} onChange={(e)=>setForm({...form, api_key:e.target.value})}
+                  placeholder={editing.config?.api_key ? "•••••• (leave blank to keep existing)" : "Paste credential"}
+                  className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
+              </div>
+              {(form.auth_type === "oauth") && (
+                <div>
+                  <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Client Secret</label>
+                  <input data-testid="cfg-api-secret" type="password" value={form.api_secret} onChange={(e)=>setForm({...form, api_secret:e.target.value})}
+                    className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
+                </div>
+              )}
+              <label className="flex items-center gap-2 text-[12px] text-slate-300">
+                <input type="checkbox" checked={form.enabled} onChange={(e)=>setForm({...form, enabled:e.target.checked})}/>
+                Enabled (sync will run)
+              </label>
+              <div className="text-[11px] text-slate-500 leading-relaxed pt-2 border-t border-[#30363D]">
+                Credentials are stored encrypted server-side. The API key is masked in list responses (first 4 + last 4 only).
+              </div>
+            </div>
+            <div className="px-4 py-3 border-t border-[#30363D] flex justify-end gap-2">
+              <button onClick={()=>setEditing(null)} className="h-8 px-3 text-[12px] border border-[#30363D] rounded text-slate-300">Cancel</button>
+              <button data-testid="cfg-save" onClick={save} className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded">Save</button>
+            </div>
+          </div>
+        </div>
+      )}
     </Layout>
   );
 }

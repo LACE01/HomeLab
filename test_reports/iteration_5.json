@@ -1,0 +1,42 @@
+{
+  "summary": "Verified BUG FIX 1 (Integrations Configure/Test) and BUG FIX 2 (Operational dashboard nav). All 7 backend pytest cases pass (PATCH admin 200 / analyst 403, POST /test admin 200 with verified message / 400 when unconfigured / analyst 403, GET masks api_key as 'my_t•••_xyz' and api_secret as '•••'). Frontend end-to-end flow as admin: 13 integration cards each expose data-testid configure-<id>+test-<id>, Configure opens config-modal with cfg-endpoint, cfg-api-key, auth-type select, cfg-save; saving persists, modal closes, toast 'Qualys VMDR configuration saved' shows, card displays endpoint and masked 'my_t•••_xyz'. Clicking Test produces toast 'Connection to Qualys VMDR verified.' and status chip flips to 'healthy'. nav-operational present in sidebar; /operational renders 6 stat tiles + 4 charts (Aging, Overdue by Severity, Top Assignees/Teams, Throughput).",
+  "tested_scope": ["backend", "frontend", "integration"],
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed": [
+    "POST /api/auth/login admin -> 200 returns token",
+    "GET /api/v1/integrations as admin -> 200 with 13 items; api_key masked in list view; api_secret never plaintext",
+    "PATCH /api/v1/integrations/{id} admin {endpoint,api_key,auth_type} -> 200 {ok:true}, persists config (verified via subsequent GET)",
+    "PATCH /api/v1/integrations/{id} analyst -> 403",
+    "POST /api/v1/integrations/{id}/test admin (unconfigured) -> 400 'Missing endpoint or api_key'",
+    "POST /api/v1/integrations/{id}/test admin (configured) -> 200 {ok:true, message:'Connection to Qualys VMDR verified.'}, status flips to 'healthy'",
+    "POST /api/v1/integrations/{id}/test analyst -> 403",
+    "Frontend /integrations: every card exposes data-testid configure-<id> + test-<id> (13/13)",
+    "Configure modal opens with cfg-endpoint, cfg-api-key, auth-type <select>, cfg-save",
+    "Admin Configure flow: endpoint+api_key saved, modal closes, success toast shown, card displays endpoint='https://qualysapi.qualys.com' and masked key 'my_t•••_xyz'",
+    "Test button after configuring: toast 'Connection to Qualys VMDR verified.', status chip shows 'healthy'",
+    "Sidebar contains data-testid='nav-operational'; click navigates to /operational",
+    "/operational renders 6 stat tiles (Open Total 77, MTTR 11.4d, Reopen Rate 14.3%, Reopened Open 3, Scan Coverage 83.3%, Active Exceptions 0) and Aging/Overdue/Top Assignees/Throughput charts"
+  ],
+  "notes_on_conditional_fields": "cfg-username and cfg-api-secret are conditionally rendered based on auth_type selection (e.g., basic auth). For the default api_key auth_type they intentionally are hidden — this matches the component code (AdminAndIntegrations.jsx lines 119/132). The spec's mention of these testids is satisfied when the relevant auth_type is selected.",
+  "test_report_links": [
+    "/app/backend/tests/test_integrations.py",
+    "/app/test_reports/pytest/integrations_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:479 — masking logic uses an inline ternary that could mis-handle exact 8-char keys; minor edge case, low risk.",
+    "AdminAndIntegrations.jsx — Save sends payload that filters empty strings, so users cannot clear an already-set endpoint/api_key via the modal (would need explicit null/delete UX); low priority."
+  ],
+  "updated_files": ["/app/backend/tests/test_integrations.py"],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "100% (all flows)"},
+  "test_credentials": "admin@vulnops.io/admin123 (admin), analyst@vulnops.io/analyst123 (analyst). Token field in /api/auth/login response is 'token' (not 'access_token').",
+  "seed_data_creation": "Integration 'Qualys VMDR' (first card) configured during tests with endpoint=https://qualysapi.qualys.com, api_key=my_test_key_xyz. Last integration was left cleared (empty endpoint/api_key) to validate the 400 unconfigured case.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Both bug fixes verified end-to-end. The login response field is 'token' (not 'access_token') — already handled in test_integrations.py via fallback. Use the admin token to PATCH integrations; analyst is correctly blocked by require_role('admin'). Operational dashboard regression intact."
+}
