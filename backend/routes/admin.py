@@ -546,3 +546,114 @@ async def wipe_demo(user: dict = Depends(require_role("admin"))):
     Keeps users, integrations config, notification channels, assignment rules, API keys."""
     from seed import wipe_demo_data
     return {"deleted": await wipe_demo_data(db)}
+
+
+
+# --------------------------- TEAMS ---------------------------
+class TeamIn(BaseModel):
+    name: str
+    color: Optional[str] = "#3b82f6"
+    description: Optional[str] = None
+    members: Optional[list[str]] = None  # user ids
+
+
+@router.get("/v1/admin/teams")
+async def list_teams(user: dict = Depends(get_current_user)):
+    """List teams. Includes user count + member emails for convenience."""
+    teams = await db.teams.find({}, {"_id": 0}).sort("name", 1).to_list(500)
+    # Hydrate members → user summaries
+    all_user_ids = list({m for t in teams for m in (t.get("members") or [])})
+    users = {u["id"]: u for u in await db.users.find(
+        {"id": {"$in": all_user_ids}}, {"_id": 0, "id": 1, "email": 1, "name": 1, "role": 1}
+    ).to_list(len(all_user_ids))} if all_user_ids else {}
+    for t in teams:
+        t["member_count"] = len(t.get("members") or [])
+        t["member_users"] = [users[uid] for uid in (t.get("members") or []) if uid in users]
+    # Also include implicit teams that exist on users/assets/findings but not in
+    # the formal teams collection yet — gives admins a way to see/adopt them.
+    implicit = set()
+    for src in (await db.users.distinct("team"),
+                await db.assets.distinct("owner_team"),
+                await db.findings.distinct("owner_team")):
+        implicit.update([s for s in src if s])
+    known = {t["name"] for t in teams}
+    for name in sorted(implicit):
+        if name and name != "Unassigned" and name not in known:
+            teams.append({"id": None, "name": name, "color": "#64748b",
+                          "implicit": True, "member_count": 0, "member_users": []})
+    return {"items": teams}
+
+
+@router.post("/v1/admin/teams")
+async def create_team(body: TeamIn, user: dict = Depends(require_role("admin", "manager"))):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Name required")
+    if await db.teams.find_one({"name": name}):
+        raise HTTPException(409, "Team already exists")
+    doc = {
+        "id": str(uuid.uuid4()), "name": name,
+        "color": body.color or "#3b82f6",
+        "description": body.description, "members": body.members or [],
+        "created_at": now_iso(), "created_by": user.get("email"),
+    }
+    await db.teams.insert_one(doc)
+    # Sync user.team field for assigned members
+    if body.members:
+        await db.users.update_many({"id": {"$in": body.members}}, {"$set": {"team": name}})
+    return _clean(doc)
+
+
+@router.patch("/v1/admin/teams/{team_id}")
+async def update_team(team_id: str, body: TeamIn, user: dict = Depends(require_role("admin", "manager"))):
+    cur = await db.teams.find_one({"id": team_id}, {"_id": 0})
+    if not cur:
+        raise HTTPException(404, "Team not found")
+    update = {k: v for k, v in body.model_dump(exclude_none=True).items()}
+    if "name" in update and update["name"] != cur["name"]:
+        # Rename → propagate to users + assets + findings
+        old, new = cur["name"], update["name"]
+        await db.users.update_many({"team": old}, {"$set": {"team": new}})
+        await db.assets.update_many({"owner_team": old}, {"$set": {"owner_team": new}})
+        await db.findings.update_many({"owner_team": old}, {"$set": {"owner_team": new}})
+    if "members" in update:
+        old_members = set(cur.get("members") or [])
+        new_members = set(update["members"])
+        # Clear team on removed users (only if their team still matches this team's old name)
+        removed = old_members - new_members
+        if removed:
+            await db.users.update_many({"id": {"$in": list(removed)}, "team": cur["name"]}, {"$set": {"team": None}})
+        added = new_members - old_members
+        if added:
+            await db.users.update_many({"id": {"$in": list(added)}}, {"$set": {"team": update.get("name", cur["name"])}})
+    await db.teams.update_one({"id": team_id}, {"$set": update})
+    return {"ok": True}
+
+
+@router.delete("/v1/admin/teams/{team_id}")
+async def delete_team(team_id: str, user: dict = Depends(require_role("admin"))):
+    t = await db.teams.find_one({"id": team_id}, {"_id": 0})
+    if not t:
+        raise HTTPException(404, "Team not found")
+    # Detach users — keep findings/assets but mark owner_team as 'Unassigned'
+    await db.users.update_many({"team": t["name"]}, {"$set": {"team": None}})
+    await db.teams.delete_one({"id": team_id})
+    return {"ok": True}
+
+
+# --------------------------- INTEGRATION CONFIG PATCH ---------------------------
+class IntegrationConfigPatch(BaseModel):
+    config: dict
+
+
+@router.patch("/v1/admin/integrations/{integration_id}/config")
+async def patch_integration_config(integration_id: str, body: IntegrationConfigPatch,
+                                   user: dict = Depends(require_role("admin"))):
+    """Shallow-merge config into the integration. Used by the Integrations UI to
+    safely store secrets without overwriting other config keys."""
+    cur = await db.integrations.find_one({"id": integration_id}, {"_id": 0})
+    if not cur:
+        raise HTTPException(404, "Integration not found")
+    merged = {**(cur.get("config") or {}), **(body.config or {})}
+    await db.integrations.update_one({"id": integration_id}, {"$set": {"config": merged}})
+    return {"ok": True}

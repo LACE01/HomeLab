@@ -36,6 +36,9 @@ class IntegrationConfig(BaseModel):
     username: Optional[str] = None
     auth_type: Optional[str] = None
     enabled: Optional[bool] = None
+    # Cloudflare Access service-token (only used by integrations behind CF Access, e.g. OpenCTI)
+    cf_access_client_id: Optional[str] = None
+    cf_access_client_secret: Optional[str] = None
 
 
 @router.patch("/v1/integrations/{integration_id}")

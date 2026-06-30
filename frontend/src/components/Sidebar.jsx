@@ -67,6 +67,7 @@ export default function Sidebar() {
           <NavItem to="/reports" icon={FileArrowDown} label="Reports" testid="nav-reports" />
           <NavItem to="/admin" icon={GearSix} label="Admin" testid="nav-admin" />
           <NavItem to="/admin/users" icon={UsersThree} label="Users" testid="nav-users" />
+          <NavItem to="/admin/teams" icon={UsersThree} label="Teams" testid="nav-teams" />
           <NavItem to="/admin/notifications" icon={Bell} label="Notifications" testid="nav-notifications" />
           <NavItem to="/admin/assignment-rules" icon={GearSix} label="Assignment Rules" testid="nav-rules" />
           <NavItem to="/admin/ownership" icon={GearSix} label="Ownership Map" testid="nav-ownership" />

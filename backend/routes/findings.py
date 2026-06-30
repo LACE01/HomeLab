@@ -36,6 +36,10 @@ async def list_findings(
     offset: int = 0,
 ):
     flt: dict = {}
+    # Team scoping: analyst/executive users only see their team's findings.
+    # admin + manager see everything.
+    if user.get("role") in ("analyst", "executive") and user.get("team"):
+        flt["owner_team"] = user["team"]
     if severity:
         flt["severity"] = severity
     if status:
@@ -112,6 +116,8 @@ async def findings_group(
     limit: int = 100,
 ):
     flt: dict = {"status": {"$in": ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]}}
+    if user.get("role") in ("analyst", "executive") and user.get("team"):
+        flt["owner_team"] = user["team"]
     if severity:
         flt["severity"] = severity
     if status:
@@ -218,14 +224,27 @@ async def threat_intel_for_cve(cve: str, user: dict = Depends(get_current_user))
     try:
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         # Optional Cloudflare Access service-token headers — needed when the
-        # OpenCTI tenant sits behind Cloudflare Zero Trust Access.
+        # OpenCTI tenant sits behind Cloudflare Zero Trust Access. These must be
+        # sent as-is and NOT lost across redirects, so we disable redirect-follow
+        # for the initial POST.
         if cfg.get("cf_access_client_id"):
             headers["CF-Access-Client-Id"] = cfg["cf_access_client_id"]
         if cfg.get("cf_access_client_secret"):
             headers["CF-Access-Client-Secret"] = cfg["cf_access_client_secret"]
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=False) as c:
             r = await c.post(endpoint.rstrip("/") + "/graphql",
                              headers=headers, json={"query": query})
+        if r.status_code in (301, 302, 303, 307, 308):
+            loc = r.headers.get("location", "")
+            cf_login = "cloudflareaccess.com" in loc or "/cdn-cgi/access/login" in loc
+            msg = ("OpenCTI is redirecting to Cloudflare Access login — the service "
+                   "token is configured but NOT yet added as an Include rule on the "
+                   "Cloudflare Access policy. In CF Zero Trust → Access → Applications "
+                   "→ open.smrtlab.net → Policies → add 'Service Auth' include rule "
+                   "with this service token.") if cf_login else f"Unexpected redirect to {loc[:120]}"
+            return {"configured": True, "cve": cve, "error": msg,
+                    "threat_actors": [], "intrusion_sets": [], "malware": [], "campaigns": [],
+                    "indicators": [], "external_references": []}
         if r.status_code != 200:
             return {"configured": True, "cve": cve, "error": f"OpenCTI HTTP {r.status_code}", "raw": r.text[:300]}
         ctype = (r.headers.get("content-type") or "").lower()

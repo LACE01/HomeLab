@@ -20,6 +20,7 @@ import Notifications from "@/pages/Notifications";
 import AttackPaths from "@/pages/AttackPaths";
 import SlaPolicies from "@/pages/SlaPolicies";
 import WebScansUpload from "@/pages/WebScansUpload";
+import Teams from "@/pages/Teams";
 
 const Protected = ({ children }) => {
   const { user, loading } = useAuth();
@@ -57,6 +58,7 @@ const AppRouter = () => {
       <Route path="/admin/sla-policies" element={<Protected><SlaPolicies/></Protected>}/>
       <Route path="/admin/web-scans" element={<Protected><WebScansUpload/></Protected>}/>
       <Route path="/admin/users" element={<Protected><Users/></Protected>}/>
+      <Route path="/admin/teams" element={<Protected><Teams/></Protected>}/>
       <Route path="/admin/notifications" element={<Protected><Notifications/></Protected>}/>
     </Routes>
   );

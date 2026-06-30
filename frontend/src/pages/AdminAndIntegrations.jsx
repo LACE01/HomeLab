@@ -63,6 +63,8 @@ export function Integrations() {
       username: i.config?.username || "",
       auth_type: i.config?.auth_type || "api_key",
       enabled: i.config?.enabled !== false,
+      cf_access_client_id: i.config?.cf_access_client_id || "",
+      cf_access_client_secret: "",
     });
   };
 
@@ -221,6 +223,29 @@ export function Integrations() {
                   <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Client Secret</label>
                   <input data-testid="cfg-api-secret" type="password" value={form.api_secret} onChange={(e)=>setForm({...form, api_secret:e.target.value})}
                     className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
+                </div>
+              )}
+              {editing.name === "OpenCTI" && (
+                <div className="border-t border-[#30363D] pt-3 mt-1 space-y-3" data-testid="cfg-cf-section">
+                  <div className="text-[11px] uppercase font-mono text-slate-400 tracking-wider inline-flex items-center gap-2">
+                    Cloudflare Access Service Token
+                    <span className="text-[10px] normal-case text-slate-500 font-sans">(only needed if /graphql is behind CF Access)</span>
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">CF-Access-Client-Id</label>
+                    <input data-testid="cfg-cf-id" value={form.cf_access_client_id} onChange={(e)=>setForm({...form, cf_access_client_id:e.target.value})}
+                      placeholder="e.g. 0f94f6dc….access"
+                      className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">CF-Access-Client-Secret</label>
+                    <input data-testid="cfg-cf-secret" type="password" value={form.cf_access_client_secret} onChange={(e)=>setForm({...form, cf_access_client_secret:e.target.value})}
+                      placeholder={editing.config?.cf_access_client_secret ? "•••••• (leave blank to keep existing)" : "Paste service-token secret"}
+                      className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
+                  </div>
+                  <div className="text-[10.5px] text-slate-500 leading-relaxed">
+                    ⚠ After saving, you MUST add the same service token as an "Include" rule on the CF Access application policy for <span className="font-mono text-slate-300">open.smrtlab.net</span>. Otherwise CF still redirects API calls to the login page.
+                  </div>
                 </div>
               )}
               <label className="flex items-center gap-2 text-[12px] text-slate-300">

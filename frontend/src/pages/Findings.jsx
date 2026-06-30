@@ -8,6 +8,7 @@ import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtRel, isOverdue } from "@/lib/utils-fmt";
 import { Link } from "react-router-dom";
 import { MagnifyingGlass, FileArrowDown, FunnelSimple, CaretDown, CaretRight, StackSimple, ListBullets, GridFour } from "@phosphor-icons/react";
+import TeamCombobox from "@/components/TeamCombobox";
 
 const VIEWS = [
   { id: "", label: "All Open" },
@@ -197,15 +198,23 @@ export default function Findings() {
           <div className="flex items-center border border-[#30363D] rounded overflow-hidden ml-2" data-testid="view-mode-toggle">
             <button
               data-testid="view-mode-by-asset"
-              onClick={()=>setViewMode("by_asset")}
-              className={`px-2.5 h-7 text-[11.5px] inline-flex items-center gap-1 ${viewMode==="by_asset"?"bg-blue-500/15 text-blue-300":"text-slate-400 hover:bg-slate-800/40"}`}
+              onClick={() => {
+                setViewMode("by_asset");
+                // Selecting "by Asset" implicitly groups by asset hostname.
+                if (groupBy === "none") setGroupBy("asset");
+              }}
+              className={`px-2.5 h-7 text-[11.5px] inline-flex items-center gap-1 ${viewMode==="by_asset" && groupBy!=="none" ?"bg-blue-500/15 text-blue-300":"text-slate-400 hover:bg-slate-800/40"}`}
             >
               <ListBullets size={11}/> by Asset
             </button>
             <button
               data-testid="view-mode-by-vulnerability"
-              onClick={()=>setViewMode("by_vulnerability")}
-              className={`px-2.5 h-7 text-[11.5px] inline-flex items-center gap-1 ${viewMode==="by_vulnerability"?"bg-blue-500/15 text-blue-300":"text-slate-400 hover:bg-slate-800/40"}`}
+              onClick={() => {
+                setViewMode("by_vulnerability");
+                // Selecting "by Vulnerability" implicitly groups by CVE.
+                if (groupBy === "none" || groupBy === "asset") setGroupBy("cve");
+              }}
+              className={`px-2.5 h-7 text-[11.5px] inline-flex items-center gap-1 ${viewMode==="by_vulnerability" && groupBy!=="none" ?"bg-blue-500/15 text-blue-300":"text-slate-400 hover:bg-slate-800/40"}`}
             >
               <GridFour size={11}/> by Vulnerability
             </button>
@@ -227,12 +236,11 @@ export default function Findings() {
           </select>
           <button data-testid="bulk-apply" onClick={doBulk} className="h-7 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded">Update Status</button>
           <div className="h-5 w-px bg-blue-500/40"/>
-          <input data-testid="bulk-assignee" placeholder="Reassign to team / user…" value={bulkAssignee} onChange={(e)=>setBulkAssignee(e.target.value)}
+          <input data-testid="bulk-assignee" placeholder="Reassign to user (email)…" value={bulkAssignee} onChange={(e)=>setBulkAssignee(e.target.value)}
             className="h-7 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] w-56"/>
           <button data-testid="bulk-assign-apply" onClick={doBulkAssign} className="h-7 px-3 text-[12px] bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 rounded hover:bg-emerald-500/30">Reassign</button>
           <div className="h-5 w-px bg-blue-500/40"/>
-          <input data-testid="bulk-owner-input" placeholder="Set owner team (e.g. NetSec)" value={bulkOwnerTeam} onChange={(e)=>setBulkOwnerTeam(e.target.value)}
-            className="h-7 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] w-48"/>
+          <TeamCombobox value={bulkOwnerTeam} onChange={setBulkOwnerTeam} testid="bulk-owner" placeholder="Owner team…" />
           <button data-testid="bulk-owner-apply" onClick={bulkAssignOwner} disabled={!bulkOwnerTeam} className="h-7 px-3 text-[12px] bg-amber-500/20 border border-amber-500/40 text-amber-300 rounded hover:bg-amber-500/30 disabled:opacity-40">Set Owner</button>
           <button data-testid="bulk-clear" onClick={()=>setSelected(new Set())} className="text-[12px] text-slate-400 hover:text-slate-200 ml-auto">Clear</button>
         </div>
@@ -274,11 +282,33 @@ export default function Findings() {
                   </button>
                   {isOpen && (
                     <div className="bg-[#0a0d12] border-t border-[#30363D]">
+                      <div className="px-3 py-1.5 text-[11px] text-slate-500 flex items-center gap-2 border-b border-[#30363D]">
+                        <input
+                          type="checkbox"
+                          data-testid={`group-selectall-${g.key}`}
+                          checked={children.length > 0 && children.every(c => selected.has(c.id))}
+                          onChange={(e) => {
+                            const n = new Set(selected);
+                            if (e.target.checked) children.forEach(c => n.add(c.id));
+                            else children.forEach(c => n.delete(c.id));
+                            setSelected(n);
+                          }}
+                        />
+                        <span>Select all in group</span>
+                      </div>
                       <table className="dense w-full">
                         <tbody>
                           {children.map(f => (
                             <tr key={f.id} className="border-t border-[#30363D] hover:bg-slate-800/30">
-                              <td className="pl-8 w-[60px]"><RiskBar score={f.risk_score}/></td>
+                              <td className="pl-3 w-7">
+                                <input
+                                  type="checkbox"
+                                  data-testid={`group-row-cb-${f.id}`}
+                                  checked={selected.has(f.id)}
+                                  onChange={() => toggleOne(f.id)}
+                                />
+                              </td>
+                              <td className="w-[60px]"><RiskBar score={f.risk_score}/></td>
                               <td className="w-[80px]"><SevBadge severity={f.severity}/></td>
                               <td>
                                 <Link to={`/findings/${f.id}`} data-testid={`grouped-finding-${f.id}`} className="text-blue-300 hover:underline text-[12px]">{f.title}</Link>
@@ -295,7 +325,7 @@ export default function Findings() {
                             </tr>
                           ))}
                           {children.length === 0 && (
-                            <tr><td colSpan={7} className="px-8 py-2 text-[11px] text-slate-500">Loading findings…</td></tr>
+                            <tr><td colSpan={8} className="px-8 py-2 text-[11px] text-slate-500">Loading findings…</td></tr>
                           )}
                         </tbody>
                       </table>
