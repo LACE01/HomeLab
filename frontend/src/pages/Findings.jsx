@@ -74,13 +74,11 @@ export default function Findings() {
     if (view) params.view = view;
     if (severity) params.severity = severity;
     if (status) params.status = status;
-    if (cweParam) params.q = cweParam;  // backend searches title/cve fields; CWE filter goes through q
+    if (cweParam) params.cwe = cweParam;
     if (cveParam) params.cve = cveParam;
     if (myQueue && user?.team) params.owner_team = user.team;
     const r = await api.get("/v1/findings", { params });
-    // If CWE param, refine client-side by exact cwe match
-    const filtered = cweParam ? (r.data.items || []).filter(f => f.cwe === cweParam) : (r.data.items || []);
-    setItems(filtered); setTotal(cweParam ? filtered.length : r.data.total);
+    setItems(r.data.items || []); setTotal(r.data.total);
     setLoading(false); setSelected(new Set());
   };
   useEffect(() => { if (prefs) load(); /* eslint-disable-next-line */ }, [prefs, view, severity, status, myQueue, groupBy, viewMode, cweParam, cveParam]);
@@ -233,7 +231,7 @@ export default function Findings() {
             className="h-7 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] w-56"/>
           <button data-testid="bulk-assign-apply" onClick={doBulkAssign} className="h-7 px-3 text-[12px] bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 rounded hover:bg-emerald-500/30">Reassign</button>
           <div className="h-5 w-px bg-blue-500/40"/>
-          <input data-testid="bulk-owner-team" placeholder="Set owner team (e.g. NetSec)" value={bulkOwnerTeam} onChange={(e)=>setBulkOwnerTeam(e.target.value)}
+          <input data-testid="bulk-owner-input" placeholder="Set owner team (e.g. NetSec)" value={bulkOwnerTeam} onChange={(e)=>setBulkOwnerTeam(e.target.value)}
             className="h-7 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] w-48"/>
           <button data-testid="bulk-owner-apply" onClick={bulkAssignOwner} disabled={!bulkOwnerTeam} className="h-7 px-3 text-[12px] bg-amber-500/20 border border-amber-500/40 text-amber-300 rounded hover:bg-amber-500/30 disabled:opacity-40">Set Owner</button>
           <button data-testid="bulk-clear" onClick={()=>setSelected(new Set())} className="text-[12px] text-slate-400 hover:text-slate-200 ml-auto">Clear</button>

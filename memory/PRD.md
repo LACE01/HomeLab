@@ -128,6 +128,20 @@ Verified by:
 ## Iteration 3c (Feb 2026) — COMPLETE
 **P0 fix**: nightly-rescore + CWE prevalence routes were defined AFTER `app.include_router(api)` → moved above. All endpoints return 200.
 
+## Iteration 8 (Feb 2026) — COMPLETE
+**P0 fixes after Qualys live ingestion + CISA upload + drill-down links:**
+1. **Overdue by Severity (was returning all zeros)** — `due_at` on Qualys findings was being computed from `now() + sla_days` instead of `first_seen_at + sla_days`. Fixed in `qualys_sync.py` (line ~370) AND `cisa_scans.py` (line ~150). One-time backfill recomputed `due_at` for all 6,418 existing Qualys findings → analyst dashboard now shows **5,464 overdue**; operational `overdue_by_severity` returns `{Critical: 737, High: 2267, Medium: 1228, Low: 1227, Info: 5}`.
+2. **Dashboard Top Risk Findings title overlap** — Title now uses `line-clamp-2` for 2-line wrap; CVE chip below is a `Link` to `/findings?cve=...`.
+3. **CWE drill-down end-to-end fix** — Added `cwe: Optional[str]` query param to `GET /v1/findings`; removed the (broken) client-side regex filter on the Findings page. Validated: `?cwe=CWE-1022` returns 181/6855 findings (all Reverse Tabnabbing from CISA WAS).
+4. **CISA Web Scans XLSX upload** — New endpoint `POST /v1/admin/web-scans/upload` + `WebScansUpload.jsx` page. Validated: 436 findings created on first upload across 9 web apps, re-upload of same file = 436 updated / 0 created (idempotent in-place dedup by canonical key `WAS::{vuln_id}::{web_app}::{url}`).
+5. **Ownership Maps Preview** — `POST /v1/admin/assignment-rules/preview` returns a dry-run grouping showing what `apply` would do, without mutating data. Surfaced on the AssignmentRules page.
+6. **Attack Path CVE drill-down** — `drill-cve` button on AttackPaths page navigates to `/findings?cve=<selected>`.
+7. **Bulk Set Owner Team** — New endpoint `POST /v1/findings/bulk-owner`; sets `owner_team` + `ownership_confidence=1.0` + activity_log. Surfaced in Findings bulk action bar with `bulk-owner-input` + `bulk-owner-apply` controls.
+
+**Iteration 8 test report**: `/app/test_reports/iteration_8.json` (backend 12/13, frontend 6/7 → 7/7 after CWE filter fix).
+
+## Iteration 3c (Feb 2026) — earlier
+
 **Configurable dashboards**:
 - All three dashboard endpoints (`/v1/dashboards/analyst|manager|executive`) accept `range` query param (7d / 30d / 90d / 4mo / 6mo / 12mo / custom with start+end).
 - New helper `parse_time_range()` in server.py.

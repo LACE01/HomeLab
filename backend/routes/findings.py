@@ -28,6 +28,7 @@ async def list_findings(
     product_id: Optional[str] = None,
     asset_id: Optional[str] = None,
     cve: Optional[str] = None,
+    cwe: Optional[str] = None,
     view: Optional[str] = None,
     sort: str = "risk_score",
     order: str = "desc",
@@ -51,6 +52,8 @@ async def list_findings(
         flt["asset_id"] = asset_id
     if cve:
         flt["cve"] = cve
+    if cwe:
+        flt["cwe"] = cwe
     if q:
         flt["$or"] = [
             {"title": {"$regex": q, "$options": "i"}},
