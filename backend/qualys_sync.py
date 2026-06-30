@@ -244,7 +244,12 @@ async def _sync_qualys_asset_tags(endpoint: str, username: str, password: str, d
         host_id = host.findtext("ID")
         if not host_id:
             continue
-        tags = [t.text.strip() for t in host.iter("TAG") if t.text]
+        # Qualys tags are nested: <TAGS><TAG><TAG_ID/><NAME>RoleName</NAME></TAG></TAGS>
+        tags: list[str] = []
+        for tag_node in host.iter("TAG"):
+            name = (tag_node.findtext("NAME") or "").strip()
+            if name:
+                tags.append(name)
         if not tags:
             continue
         # Match by either qualys_host_id (preferred) or hostname
@@ -256,7 +261,7 @@ async def _sync_qualys_asset_tags(endpoint: str, username: str, password: str, d
         asset = await db.assets.find_one(match_filter, {"_id": 0, "tags": 1, "id": 1})
         if not asset:
             continue
-        merged = list({*(asset.get("tags") or []), *tags})
+        merged = sorted({*(asset.get("tags") or []), *tags})
         await db.assets.update_one({"id": asset["id"]}, {"$set": {"tags": merged, "qualys_host_id": host_id}})
         # Propagate to open findings on this asset so dashboard filters can use tags
         await db.findings.update_many(

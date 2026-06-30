@@ -453,6 +453,21 @@ async def list_qualys_runs(user: dict = Depends(require_role("admin"))):
     return {"items": items}
 
 
+@router.post("/v1/admin/qualys/sync/tags")
+async def qualys_sync_tags(user: dict = Depends(require_role("admin"))):
+    """Lightweight: re-pull only the Qualys asset-tag memberships and stamp `tags`
+    on each asset + propagate to open findings. Use this when the full sync was
+    fine but tag changes need to be reflected without re-importing detections."""
+    from qualys_sync import _sync_qualys_asset_tags
+    integration = await db.integrations.find_one({"name": "Qualys VMDR"}, {"_id": 0})
+    if not integration:
+        raise HTTPException(404, "Qualys VMDR integration not found")
+    cfg = integration.get("config") or {}
+    if not (cfg.get("endpoint") and cfg.get("username") and cfg.get("api_key")):
+        raise HTTPException(400, "Qualys integration missing endpoint/username/api_key")
+    return await _sync_qualys_asset_tags(cfg["endpoint"], cfg["username"], cfg["api_key"], db)
+
+
 # --------------------------- ENRICHERS (KEV, EPSS) ---------------------------
 @router.post("/v1/admin/enrich/kev")
 async def trigger_kev(user: dict = Depends(require_role("admin"))):
