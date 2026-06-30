@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { usePreferences } from "@/lib/usePreferences";
@@ -32,6 +33,9 @@ const GROUP_OPTIONS = [
 export default function Findings() {
   const { user } = useAuth();
   const { prefs, setSection } = usePreferences();
+  const [searchParams] = useSearchParams();
+  const cweParam = searchParams.get("cwe");
+  const cveParam = searchParams.get("cve");
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   const [q, setQ] = useState("");
@@ -41,6 +45,7 @@ export default function Findings() {
   const [selected, setSelected] = useState(new Set());
   const [bulkStatus, setBulkStatus] = useState("Valid");
   const [bulkAssignee, setBulkAssignee] = useState("");
+  const [bulkOwnerTeam, setBulkOwnerTeam] = useState("");
   const [loading, setLoading] = useState(false);
   const [myQueue, setMyQueue] = useState(!!user?.team);
   const [groups, setGroups] = useState([]);
@@ -52,7 +57,7 @@ export default function Findings() {
 
   const load = async () => {
     setLoading(true);
-    if (groupBy !== "none") {
+    if (groupBy !== "none" && !cweParam && !cveParam) {
       const params = { group_by: groupBy, view_mode: viewMode, limit: 100 };
       if (severity) params.severity = severity;
       if (status) params.status = status;
@@ -69,14 +74,27 @@ export default function Findings() {
     if (view) params.view = view;
     if (severity) params.severity = severity;
     if (status) params.status = status;
+    if (cweParam) params.q = cweParam;  // backend searches title/cve fields; CWE filter goes through q
+    if (cveParam) params.cve = cveParam;
     if (myQueue && user?.team) params.owner_team = user.team;
     const r = await api.get("/v1/findings", { params });
-    setItems(r.data.items); setTotal(r.data.total); setLoading(false); setSelected(new Set());
+    // If CWE param, refine client-side by exact cwe match
+    const filtered = cweParam ? (r.data.items || []).filter(f => f.cwe === cweParam) : (r.data.items || []);
+    setItems(filtered); setTotal(cweParam ? filtered.length : r.data.total);
+    setLoading(false); setSelected(new Set());
   };
-  useEffect(() => { if (prefs) load(); /* eslint-disable-next-line */ }, [prefs, view, severity, status, myQueue, groupBy, viewMode]);
+  useEffect(() => { if (prefs) load(); /* eslint-disable-next-line */ }, [prefs, view, severity, status, myQueue, groupBy, viewMode, cweParam, cveParam]);
 
   const setGroupBy = (id) => setSection("findings", { group_by: id });
   const setViewMode = (id) => setSection("findings", { view_mode: id });
+
+  const bulkAssignOwner = async () => {
+    if (!bulkOwnerTeam || selected.size === 0) return;
+    const r = await api.post("/v1/findings/bulk-owner", { ids: Array.from(selected), owner_team: bulkOwnerTeam });
+    if (r.data?.updated) { /* sonner already shows toast elsewhere; minimal feedback */ }
+    setBulkOwnerTeam("");
+    await load();
+  };
 
   const expandGroup = async (key) => {
     const next = new Set(expanded);
@@ -214,6 +232,10 @@ export default function Findings() {
           <input data-testid="bulk-assignee" placeholder="Reassign to team / user…" value={bulkAssignee} onChange={(e)=>setBulkAssignee(e.target.value)}
             className="h-7 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] w-56"/>
           <button data-testid="bulk-assign-apply" onClick={doBulkAssign} className="h-7 px-3 text-[12px] bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 rounded hover:bg-emerald-500/30">Reassign</button>
+          <div className="h-5 w-px bg-blue-500/40"/>
+          <input data-testid="bulk-owner-team" placeholder="Set owner team (e.g. NetSec)" value={bulkOwnerTeam} onChange={(e)=>setBulkOwnerTeam(e.target.value)}
+            className="h-7 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] w-48"/>
+          <button data-testid="bulk-owner-apply" onClick={bulkAssignOwner} disabled={!bulkOwnerTeam} className="h-7 px-3 text-[12px] bg-amber-500/20 border border-amber-500/40 text-amber-300 rounded hover:bg-amber-500/30 disabled:opacity-40">Set Owner</button>
           <button data-testid="bulk-clear" onClick={()=>setSelected(new Set())} className="text-[12px] text-slate-400 hover:text-slate-200 ml-auto">Clear</button>
         </div>
       )}

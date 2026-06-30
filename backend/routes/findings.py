@@ -434,6 +434,32 @@ async def bulk_assign(body: AssignBody, user: dict = Depends(get_current_user)):
     return {"updated": len(body.ids)}
 
 
+class OwnerTeamBody(BaseModel):
+    ids: List[str]
+    owner_team: str
+
+
+@router.post("/v1/findings/bulk-owner")
+async def bulk_owner(body: OwnerTeamBody, user: dict = Depends(get_current_user)):
+    """Bulk-update owner_team for selected findings. Sets ownership_confidence to 1.0
+    because a human explicitly assigned them."""
+    await db.findings.update_many(
+        {"id": {"$in": body.ids}},
+        {"$set": {
+            "owner_team": body.owner_team,
+            "ownership_confidence": 1.0,
+            "ownership_rationale": f"Manually assigned to {body.owner_team} by {user['email']}",
+            "last_changed_at": now_iso(),
+        }},
+    )
+    docs = [{"id": str(uuid.uuid4()), "entity_type": "finding", "entity_id": fid,
+             "action": "bulk_owner", "actor": user["email"], "timestamp": now_iso(),
+             "details": f"Owner team set to {body.owner_team}"} for fid in body.ids]
+    if docs:
+        await db.activity_log.insert_many(docs)
+    return {"updated": len(body.ids), "owner_team": body.owner_team}
+
+
 @router.get("/v1/prioritization/preview")
 async def prioritization_preview(finding_id: str, user: dict = Depends(get_current_user)):
     f = await db.findings.find_one({"id": finding_id}, {"_id": 0})

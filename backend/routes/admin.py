@@ -226,23 +226,41 @@ async def delete_rule(rule_id: str, user: dict = Depends(require_role("admin")))
 
 def _rule_matches(rule: dict, asset: dict) -> bool:
     f = rule["field"]
-    val = rule["value"].lower()
-    asset_val = asset.get(f) or asset.get("tags") if f == "tags" else asset.get(f)
+    val = (rule["value"] or "").lower()
     if f == "tags":
         tags = [str(t).lower() for t in (asset.get("tags") or [])]
         return val in tags if rule["operator"] == "equals" else any(val in t for t in tags)
-    av = str(asset_val or "").lower()
+    if f == "cve":
+        return False  # CVE rules don't match by asset — handled in apply_rules per-finding
+    av = str(asset.get(f) or "").lower()
     return av == val if rule["operator"] == "equals" else val in av
+
+
+def _rule_matches_finding(rule: dict, finding: dict) -> bool:
+    """Match assignment rule against a finding's CVE/title fields."""
+    f = rule["field"]
+    val = (rule["value"] or "").lower()
+    if f == "cve":
+        fv = str(finding.get("cve") or "").lower()
+    elif f == "title":
+        fv = str(finding.get("title") or "").lower()
+    elif f == "cwe":
+        fv = str(finding.get("cwe") or "").lower()
+    else:
+        return False
+    return fv == val if rule["operator"] == "equals" else val in fv
 
 
 @router.post("/v1/admin/assignment-rules/apply")
 async def apply_rules(user: dict = Depends(require_role("admin"))):
     rules = await db.assignment_rules.find({"active": True}, {"_id": 0}).sort("priority", 1).to_list(500)
-    assets = await db.assets.find({}, {"_id": 0}).to_list(5000)
+    asset_rules = [r for r in rules if r["field"] not in ("cve", "title", "cwe")]
+    finding_rules = [r for r in rules if r["field"] in ("cve", "title", "cwe")]
+    assets = await db.assets.find({}, {"_id": 0}).to_list(50000)
     updated_assets = 0
     updated_findings = 0
     for asset in assets:
-        matched_rule = next((r for r in rules if _rule_matches(r, asset)), None)
+        matched_rule = next((r for r in asset_rules if _rule_matches(r, asset)), None)
         if matched_rule:
             new_team = matched_rule["assign_team"]
             rationale = f"Matched rule '{matched_rule['name']}': {matched_rule['field']} {matched_rule['operator']} '{matched_rule['value']}'"
@@ -260,6 +278,18 @@ async def apply_rules(user: dict = Depends(require_role("admin"))):
             {"$set": {"owner_team": new_team, "ownership_confidence": confidence, "ownership_rationale": rationale}},
         )
         updated_findings += r.modified_count
+    # CVE / title / CWE rules — re-route the matched findings
+    if finding_rules:
+        async for fdoc in db.findings.find({"status": {"$nin": ["Fixed validated", "Closed administratively"]}},
+                                            {"_id": 0, "id": 1, "cve": 1, "title": 1, "cwe": 1}):
+            matched = next((r for r in finding_rules if _rule_matches_finding(r, fdoc)), None)
+            if matched:
+                await db.findings.update_one({"id": fdoc["id"]}, {"$set": {
+                    "owner_team": matched["assign_team"],
+                    "ownership_confidence": 0.95,
+                    "ownership_rationale": f"Matched CVE/title rule '{matched['name']}'",
+                }})
+                updated_findings += 1
     return {"updated_assets": updated_assets, "updated_findings": updated_findings, "rules_evaluated": len(rules)}
 
 
@@ -423,7 +453,78 @@ async def list_qualys_runs(user: dict = Depends(require_role("admin"))):
     return {"items": items}
 
 
-# --------------------------- DATA WIPE (one-shot demo cleanup) ---------------------------
+# --------------------------- ENRICHERS (KEV, EPSS) ---------------------------
+@router.post("/v1/admin/enrich/kev")
+async def trigger_kev(user: dict = Depends(require_role("admin"))):
+    from enrichers import sync_kev
+    return await sync_kev(db)
+
+
+@router.post("/v1/admin/enrich/epss")
+async def trigger_epss(user: dict = Depends(require_role("admin"))):
+    from enrichers import sync_epss
+    return await sync_epss(db)
+
+
+# --------------------------- CISA WEB SCAN UPLOAD ---------------------------
+from fastapi import UploadFile, File, Form
+
+
+@router.post("/v1/admin/web-scans/upload")
+async def upload_web_scans(
+    file: UploadFile = File(...),
+    label: str = Form("CISA Web Scan"),
+    user: dict = Depends(require_role("admin")),
+):
+    """Upload a CISA Web Scan XLSX. Returns counts (created/updated/web_apps)."""
+    from cisa_scans import import_cisa_scans_xlsx
+    if not file.filename or not file.filename.lower().endswith(".xlsx"):
+        raise HTTPException(400, "File must be .xlsx")
+    content = await file.read()
+    try:
+        return await import_cisa_scans_xlsx(db, content, source_label=label)
+    except Exception as e:
+        raise HTTPException(400, f"Failed to parse XLSX: {e}")
+
+
+# --------------------------- OWNERSHIP RULES PREVIEW ---------------------------
+@router.post("/v1/admin/assignment-rules/preview")
+async def preview_rules(user: dict = Depends(get_current_user)):
+    """Show what apply_rules would do WITHOUT modifying anything."""
+    rules = await db.assignment_rules.find({"active": True}, {"_id": 0}).sort("priority", 1).to_list(500)
+    assets = await db.assets.find({}, {"_id": 0}).to_list(5000)
+    preview: dict = {}  # rule_name → {team, count, sample_hosts}
+    no_match_count = 0
+    for asset in assets:
+        matched = next((r for r in rules if _rule_matches(r, asset)), None)
+        if matched:
+            key = f"{matched['name']} → {matched['assign_team']}"
+            entry = preview.setdefault(key, {"rule_name": matched["name"], "team": matched["assign_team"],
+                                              "field": matched["field"], "value": matched["value"],
+                                              "count": 0, "sample_hosts": []})
+            entry["count"] += 1
+            if len(entry["sample_hosts"]) < 5:
+                entry["sample_hosts"].append(asset.get("hostname"))
+        else:
+            no_match_count += 1
+    return {"groups": list(preview.values()), "no_match_assets": no_match_count, "total_assets": len(assets)}
+
+
+# --------------------------- BULK ASSIGN OWNER TEAM (FINDINGS) ---------------------------
+class BulkOwnerBody(BaseModel):
+    ids: list[str]
+    owner_team: str
+
+
+@router.post("/v1/findings/bulk-owner")
+async def bulk_owner(body: BulkOwnerBody, user: dict = Depends(get_current_user)):
+    res = await db.findings.update_many(
+        {"id": {"$in": body.ids}},
+        {"$set": {"owner_team": body.owner_team, "ownership_confidence": 0.95,
+                  "ownership_rationale": f"Manually set by {user['email']}",
+                  "last_changed_at": now_iso()}},
+    )
+    return {"updated": res.modified_count}
 @router.post("/v1/admin/wipe-demo-data")
 async def wipe_demo(user: dict = Depends(require_role("admin"))):
     """Delete every operational data collection (findings, assets, products, tickets, etc.).

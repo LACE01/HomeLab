@@ -225,9 +225,62 @@ async def _fetch_knowledgebase(endpoint: str, username: str, password: str, qids
     return kb
 
 
-async def _upsert_asset(db, hostname: str, ip: str | None, os_name: str | None) -> dict:
+async def _sync_qualys_asset_tags(endpoint: str, username: str, password: str, db) -> dict:
+    """Pull Qualys Asset Group tag memberships and stamp `tags` on each asset.
+    Uses the asset host listing with `show_tags=1` which returns inline tag arrays."""
+    url = endpoint.rstrip("/") + "/api/2.0/fo/asset/host/"
+    headers = {"X-Requested-With": "VulnOps"}
+    async with httpx.AsyncClient(timeout=120, auth=(username, password)) as c:
+        r = await c.post(url, params={"action": "list", "show_tags": 1, "truncation_limit": 5000},
+                         headers=headers)
+        r.raise_for_status()
+        try:
+            root = ET.fromstring(r.content)
+        except ET.ParseError:
+            return {"assets_tagged": 0}
+
+    tagged = 0
+    for host in root.iter("HOST"):
+        host_id = host.findtext("ID")
+        if not host_id:
+            continue
+        tags = [t.text.strip() for t in host.iter("TAG") if t.text]
+        if not tags:
+            continue
+        # Match by either qualys_host_id (preferred) or hostname
+        hostname = host.findtext("DNS") or host.findtext("NETBIOS") or host.findtext("IP")
+        match_filter = {"$or": [{"qualys_host_id": host_id}]}
+        if hostname:
+            match_filter["$or"].append({"hostname": hostname})
+        # Fetch existing tags to merge instead of overwrite
+        asset = await db.assets.find_one(match_filter, {"_id": 0, "tags": 1, "id": 1})
+        if not asset:
+            continue
+        merged = list({*(asset.get("tags") or []), *tags})
+        await db.assets.update_one({"id": asset["id"]}, {"$set": {"tags": merged, "qualys_host_id": host_id}})
+        # Propagate to open findings on this asset so dashboard filters can use tags
+        await db.findings.update_many(
+            {"asset_id": asset["id"], "status": {"$nin": ["Fixed validated", "Closed administratively"]}},
+            {"$set": {"tags": merged}},
+        )
+        tagged += 1
+    return {"assets_tagged": tagged}
+
+
+async def _upsert_asset(db, hostname: str, ip: str | None, os_name: str | None, qualys_host_id: str | None = None, tags: list | None = None) -> dict:
     asset = await db.assets.find_one({"hostname": hostname}, {"_id": 0})
     if asset:
+        # Refresh tags / qualys_host_id if newly provided
+        if tags or qualys_host_id:
+            patch: dict = {}
+            if tags:
+                merged_tags = list({*asset.get("tags", []), *tags})
+                patch["tags"] = merged_tags
+            if qualys_host_id and not asset.get("qualys_host_id"):
+                patch["qualys_host_id"] = qualys_host_id
+            if patch:
+                await db.assets.update_one({"id": asset["id"]}, {"$set": patch})
+                asset.update(patch)
         return asset
     asset = {
         "id": str(uuid.uuid4()), "hostname": hostname, "ip": ip, "fqdn": None,
@@ -235,8 +288,9 @@ async def _upsert_asset(db, hostname: str, ip: str | None, os_name: str | None) 
         "exposure": "internal", "platform": "Linux" if "linux" in (os_name or "").lower() else ("Windows" if "windows" in (os_name or "").lower() else "unknown"),
         "operating_system": os_name or "unknown",
         "asset_type": "server",
+        "qualys_host_id": qualys_host_id,
         "owner_team": "Unassigned", "product_id": None, "product_name": None,
-        "tags": ["qualys"],
+        "tags": list({"qualys", *(tags or [])}),
         "status": "active", "created_at": _now_iso(),
         "ownership_confidence": 0.3,
         "ownership_rationale": "Auto-created from Qualys VMDR live sync (no tag rule match)",
@@ -248,7 +302,8 @@ async def _upsert_asset(db, hostname: str, ip: str | None, os_name: str | None) 
 async def _upsert_finding(db, det: dict, kb: dict, nvd_cache: dict | None = None) -> str:
     qid = det["qid"]
     kb_entry = kb.get(qid, {})
-    asset = await _upsert_asset(db, det["hostname"], det.get("ip"), det.get("os"))
+    asset = await _upsert_asset(db, det["hostname"], det.get("ip"), det.get("os"),
+                                 qualys_host_id=det.get("qualys_host_id"))
     severity = _norm_severity(det.get("severity"))
     cve = kb_entry.get("cve")
     nvd = (nvd_cache or {}).get(cve) if cve else None
@@ -312,13 +367,19 @@ async def _upsert_finding(db, det: dict, kb: dict, nvd_cache: dict | None = None
         await db.findings.update_one({"id": existing["id"]}, {"$set": base})
         return "updated"
 
+    sla_days_val = compute_sla_days(severity, asset["criticality"])
+    first_seen_val = det.get("first_found") or _now_iso()
+    try:
+        _fs_dt = datetime.fromisoformat(first_seen_val.replace("Z", "+00:00"))
+    except Exception:
+        _fs_dt = datetime.now(timezone.utc)
     new_finding = {
         "id": str(uuid.uuid4()), "canonical_key": canonical,
-        "first_seen_at": det.get("first_found") or _now_iso(),
+        "first_seen_at": first_seen_val,
         "reopened_count": 0,
         "status": "New", "validation_status": "pending",
-        "sla_days": compute_sla_days(severity, asset["criticality"]),
-        "due_at": (datetime.now(timezone.utc) + timedelta(days=compute_sla_days(severity, asset["criticality"]))).isoformat(),
+        "sla_days": sla_days_val,
+        "due_at": (_fs_dt + timedelta(days=sla_days_val)).isoformat(),
         "tags": asset.get("tags", []),
         "compliance_scope": [], "advisory_links": [], "exploit_references": [],
         **base,
@@ -451,6 +512,23 @@ async def run_qualys_sync(db) -> dict:
         "deduped": updated,
         "failed": len(errors),
     }
+
+    # Stage 3 — Pull Qualys asset tags and stamp on assets (so assignment rules can match by tag)
+    try:
+        tag_summary = await _sync_qualys_asset_tags(endpoint, username, password, db)
+        summary["asset_tags_synced"] = tag_summary
+    except Exception as e:
+        errors.append({"stage": "tag_sync", "error": str(e)})
+
+    # Stage 4 — KEV + EPSS enrichment from CISA / FIRST.org (free APIs)
+    try:
+        from enrichers import sync_kev, sync_epss
+        kev_res = await sync_kev(db)
+        summary["kev"] = {"matched": kev_res.get("matched"), "catalog_size": kev_res.get("catalog_size")}
+        epss_res = await sync_epss(db)
+        summary["epss"] = {"matched": epss_res.get("matched"), "cves_with_score": epss_res.get("cves_with_score")}
+    except Exception as e:
+        errors.append({"stage": "enrichment", "error": str(e)})
     status = "success" if created or updated else ("failed" if errors else "success")
     await db.integrations.update_one(
         {"id": integration["id"]},

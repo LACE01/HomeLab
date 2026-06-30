@@ -214,10 +214,14 @@ export default function Dashboard() {
                             <td><RiskBar score={f.risk_score} /></td>
                             <td><SevBadge severity={f.severity} /></td>
                             <td className="min-w-0">
-                              <Link className="text-blue-300 hover:underline block truncate" to={`/findings/${f.id}`} data-testid={`top-finding-${f.id}`} title={f.title}>{f.title}</Link>
-                              <div className="flex gap-1 mt-0.5 flex-wrap">
+                              <Link className="text-blue-300 hover:underline line-clamp-2 text-[12.5px] leading-tight" to={`/findings/${f.id}`} data-testid={`top-finding-${f.id}`} title={f.title}>{f.title}</Link>
+                              <div className="flex gap-1 mt-1 flex-wrap">
                                 {f.kev_flag && <Chip color="red">KEV</Chip>}
-                                {f.cve && <Chip color="slate">{f.cve}</Chip>}
+                                {f.cve && (
+                                  <Link to={`/findings?cve=${encodeURIComponent(f.cve)}`} data-testid={`top-finding-cve-${f.cve}`}>
+                                    <Chip color="slate">{f.cve}</Chip>
+                                  </Link>
+                                )}
                                 {f.internet_facing && <Chip color="orange">EXPOSED</Chip>}
                               </div>
                             </td>
@@ -265,8 +269,11 @@ export default function Dashboard() {
                 <thead><tr><th className="text-left">CWE</th><th className="text-left">Sample Title</th><th>Findings</th><th>Local Weight</th></tr></thead>
                 <tbody>
                   {cwe.slice(0,10).map(c => (
-                    <tr key={c.cwe} className="border-t border-[#30363D]">
-                      <td className="font-mono text-[12px] text-blue-300">{c.cwe}</td>
+                    <tr key={c.cwe} className="border-t border-[#30363D] hover:bg-slate-800/30">
+                      <td>
+                        <Link to={`/findings?cwe=${encodeURIComponent(c.cwe)}`} data-testid={`cwe-link-${c.cwe}`}
+                              className="font-mono text-[12px] text-blue-300 hover:underline">{c.cwe}</Link>
+                      </td>
                       <td className="text-slate-300 max-w-[420px] truncate">{c.sample_title || "—"}</td>
                       <td className="text-center font-mono">{c.count ?? 0}</td>
                       <td><div className="flex items-center gap-2">

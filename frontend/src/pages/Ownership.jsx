@@ -5,11 +5,12 @@ import { Chip } from "@/components/Badges";
 import { Trash, Plus, Lightning } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
-const FIELDS = ["tags", "environment", "platform", "criticality", "exposure", "department"];
+const FIELDS = ["tags", "environment", "platform", "criticality", "exposure", "department", "cve", "operating_system", "hostname"];
 
 export function AssignmentRules() {
   const [items, setItems] = useState([]);
   const [draft, setDraft] = useState({ name:"", priority:100, field:"tags", operator:"equals", value:"", assign_team:"", active:true });
+  const [preview, setPreview] = useState(null);
   const load = () => api.get("/v1/admin/assignment-rules").then(r => setItems(r.data.items));
   useEffect(() => { load(); }, []);
 
@@ -24,12 +25,45 @@ export function AssignmentRules() {
   const apply = async () => {
     const r = await api.post("/v1/admin/assignment-rules/apply");
     toast.success(`Applied — ${r.data.updated_assets} assets, ${r.data.updated_findings} findings updated`);
+    setPreview(null);
+  };
+  const doPreview = async () => {
+    const r = await api.post("/v1/admin/assignment-rules/preview");
+    setPreview(r.data);
   };
 
   return (
     <Layout title="Assignment Rules" subtitle="Auto-route findings to teams based on asset attributes"
-      actions={<button data-testid="apply-rules" onClick={apply}
-        className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded inline-flex items-center gap-1.5"><Lightning size={14}/> Apply Rules</button>}>
+      actions={
+        <>
+          <button data-testid="preview-rules" onClick={doPreview}
+            className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-blue-500/50 hover:text-blue-300 text-slate-300 rounded inline-flex items-center gap-1.5">
+            Preview
+          </button>
+          <button data-testid="apply-rules" onClick={apply}
+            className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded inline-flex items-center gap-1.5"><Lightning size={14}/> Apply Rules</button>
+        </>
+      }>
+
+      {preview && (
+        <div data-testid="rules-preview" className="border border-blue-500/30 bg-blue-500/5 rounded-md p-3 mb-3">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-[12px] uppercase tracking-wider font-mono text-blue-300">Preview · {preview.total_assets} assets · {preview.no_match_assets} unmatched</div>
+            <button onClick={()=>setPreview(null)} className="text-[11px] text-slate-400 hover:text-slate-200">Dismiss</button>
+          </div>
+          <div className="space-y-1.5">
+            {preview.groups.map((g, i) => (
+              <div key={i} className="flex items-center gap-2 text-[12px] font-mono">
+                <span className="text-blue-300 min-w-[180px] truncate">{g.rule_name}</span>
+                <span className="text-slate-500">→</span>
+                <span className="text-emerald-300 min-w-[140px]">{g.team}</span>
+                <span className="text-slate-300">{g.count} asset{g.count===1?"":"s"}</span>
+                <span className="text-slate-500 truncate ml-2">e.g. {g.sample_hosts.slice(0,3).join(", ")}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-3 mb-3 grid grid-cols-7 gap-2">
         <input placeholder="Rule name" data-testid="rule-name" value={draft.name} onChange={(e)=>setDraft({...draft, name:e.target.value})} className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px]"/>

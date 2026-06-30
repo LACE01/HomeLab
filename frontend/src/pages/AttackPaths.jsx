@@ -113,6 +113,13 @@ export default function AttackPaths() {
                 <Chip color="red">{graph.stats?.internet_sources} sources</Chip>
                 <Chip>{graph.stats?.pivots} pivots</Chip>
                 <Chip color="red">{graph.stats?.crown_jewels} crown jewels</Chip>
+                {selected && (
+                  <a href={`/findings?cve=${encodeURIComponent(selected)}`}
+                     data-testid="drill-cve"
+                     className="ml-2 h-7 px-2.5 text-[11px] bg-blue-500/15 border border-blue-500/40 hover:bg-blue-500/25 text-blue-300 rounded inline-flex items-center gap-1">
+                     <Lightning size={11}/> View {selected} findings
+                  </a>
+                )}
               </div>
             </div>
           )}

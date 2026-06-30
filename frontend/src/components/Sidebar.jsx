@@ -61,6 +61,7 @@ export default function Sidebar() {
         <Group title="Integrations">
           <NavItem to="/integrations" icon={PlugsConnected} label="Connectors" testid="nav-integrations" />
           <NavItem to="/imports" icon={Database} label="Import Jobs" testid="nav-imports" />
+          <NavItem to="/admin/web-scans" icon={Database} label="Web Scan Uploads" testid="nav-web-scans" />
         </Group>
         <Group title="Reports & Admin">
           <NavItem to="/reports" icon={FileArrowDown} label="Reports" testid="nav-reports" />
