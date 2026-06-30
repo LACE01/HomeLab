@@ -39,16 +39,42 @@ See /app/memory/test_credentials.md.
 - Excel export (.xlsx) — CSV implemented
 
 ## Next Tasks
-1. ~~**P2 Refactor**: Split server.py~~ **DONE**
-2. ~~Replace native `<input type='date'>` in TimeRangeSelector with shadcn Calendar/Popover~~ **DONE**
-3. ~~Add request debouncing on TimeRangeSelector rapid-clicks~~ **DONE** (300ms debounce, Promise.all batches the 5 reads)
-4. ~~Toast feedback when `PUT /v1/me/preferences` fails~~ **DONE**
-5. ~~Wipe demo data + remove example connectors + go live with Qualys VMDR~~ **DONE**
-6. Adapter-specific ingestion endpoints (Tenable / CrowdStrike / Wiz / GHAS / Snyk live) — currently only Qualys is live
-7. SLA editor UI
-8. Notification policies (email policies; Discord already live)
-9. Live OpenCTI key once user provides it
-10. Fix stale credential references in `/app/backend/tests/test_reports_iter2.py`
+1. ~~SLA editor UI~~ **DONE**
+2. ~~NVD enrichment + Qualys pagination~~ **DONE**
+3. ~~OpenCTI live integration~~ **DONE** (configured with open.smrtlab.net + bearer key)
+4. ~~Top Risk Findings overlap~~ **DONE** (RiskBar reduced to 80px + colgroup widened to 100px)
+5. Adapter-specific ingestion for Tenable Nessus / CrowdStrike / Wiz / GHAS / Snyk (same pattern as `qualys_sync.py`) once user provides their keys
+6. Notification policies (email + Slack templates; Discord already live)
+7. Quiet-hours / throttling on auto-dispatched notifications now that real Qualys data feeds them
+8. Fix stale credential references in `/app/backend/tests/test_reports_iter2.py`
+
+## Feb 2026 — Qualys-Full, NVD Enrichment, OpenCTI Live, SLA Editor — COMPLETE
+
+### Qualys VMDR full-coverage sync
+- Removed severity filter default; now pulls **all** severities Active/Re-Opened
+- Added **pagination** via Qualys `id_min` cursor (parsed from `<WARNING>/<URL>`); page size 1000, up to 50k detections/run
+- Strips HTML/`&nbsp;` from KB diagnosis/consequence/solution for clean rendering
+- Stores `consequence`, `business_impact`, `cvss_vector`, `external_references` on each finding
+- First full run pulled **45 detections → 39 unique findings** across 5 Eagle County hosts spanning Critical (3) / High (7) / Medium (17) / Low (12)
+
+### NVD enrichment
+- New integration row `NVD` with user-provided API key
+- `qualys_sync` deduplicates CVEs, fetches `https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=X` per unique CVE with the `apiKey` header, caches results
+- Fills `description`, `cvss_score`, `cvss_vector`, `cvss_severity`, `cwe` (CWE-166, CWE-787, etc.), `external_references` whenever Qualys KB lacks them
+- Polite throttle (1s every 25 calls) to stay under NVD's 50 req / 30s with-key limit
+
+### OpenCTI live
+- Configured with `open.smrtlab.net` + bearer api_key
+- `httpx.AsyncClient(follow_redirects=True)` so Cloudflare 302s don't break the call
+- Finding detail page surfaces threat actors / intrusion sets / external references when a CVE has matches in the user's OpenCTI tenant
+
+### SLA Editor UI
+- New page `/admin/sla-policies` with a 5×5 (Severity × Criticality) input matrix
+- `PUT /v1/admin/sla-policies` validates ranges (1–3650 days), persists to `sla_policies` collection (`id=default`), and hot-reloads the in-memory `SLA_DAYS` so new findings immediately inherit the updated targets
+- `load_sla_overrides(db)` called on `on_startup` so policies survive backend restarts
+- Sidebar nav entry added (`ShieldCheck` icon)
+
+## Iteration 3c (Feb 2026) — COMPLETE
 
 ## Qualys VMDR Live Sync (Feb 2026) — COMPLETE
 - `backend/qualys_sync.py` calls `POST /api/2.0/fo/asset/host/vm/detection/?action=list` and the knowledge-base API to enrich QID → title/CVE/CVSS/CWE/solution

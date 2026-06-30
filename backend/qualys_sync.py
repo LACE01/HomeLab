@@ -40,6 +40,14 @@ async def _get_integration(db) -> dict | None:
     return await db.integrations.find_one({"name": "Qualys VMDR"}, {"_id": 0})
 
 
+async def _get_nvd_key(db) -> str | None:
+    """NVD API key is stored on an 'NVD' integration row (or env NVD_API_KEY as fallback)."""
+    import os
+    row = await db.integrations.find_one({"name": "NVD"}, {"_id": 0})
+    key = ((row or {}).get("config") or {}).get("api_key")
+    return key or os.environ.get("NVD_API_KEY") or None
+
+
 async def _record_run(db, status: str, summary: dict, errors: list):
     doc = {
         "id": str(uuid.uuid4()),
@@ -69,32 +77,48 @@ async def _record_run(db, status: str, summary: dict, errors: list):
 
 
 async def _fetch_qualys_detections(endpoint: str, username: str, password: str,
-                                   severities: str = "4-5",
-                                   statuses: str = "Active,Re-Opened") -> bytes:
+                                   severities: str | None = None,
+                                   statuses: str = "Active,Re-Opened",
+                                   id_min: int | None = None,
+                                   truncation_limit: int = 1000) -> bytes:
     """Call Qualys VMDR /api/2.0/fo/asset/host/vm/detection/?action=list and return XML body."""
     url = endpoint.rstrip("/") + "/api/2.0/fo/asset/host/vm/detection/"
-    params = {
+    params: dict = {
         "action": "list",
         "show_results": 1,
         "show_igs": 0,
-        "severities": severities,
         "status": statuses,
-        "truncation_limit": 500,
+        "truncation_limit": truncation_limit,
     }
+    if severities:
+        params["severities"] = severities
+    if id_min is not None:
+        params["id_min"] = id_min
     headers = {"X-Requested-With": "VulnOps"}
-    async with httpx.AsyncClient(timeout=120, auth=(username, password)) as c:
+    async with httpx.AsyncClient(timeout=180, auth=(username, password)) as c:
         r = await c.post(url, params=params, headers=headers)
         r.raise_for_status()
         return r.content
 
 
-def _parse_detections(xml_body: bytes) -> list[dict]:
-    """Parse the Qualys HOST_LIST_VM_DETECTION XML into a flat list of per-detection dicts."""
+def _parse_detections(xml_body: bytes) -> tuple[list[dict], int | None]:
+    """Parse the Qualys XML into a flat list of detection dicts + next id_min for pagination."""
     out: list[dict] = []
+    next_id_min: int | None = None
     try:
         root = ET.fromstring(xml_body)
     except ET.ParseError as e:
         raise RuntimeError(f"Qualys XML parse error: {e}")
+
+    # Pagination cursor lives in <RESPONSE>/<WARNING>/<URL> when truncated.
+    for warn in root.iter("WARNING"):
+        url_el = warn.find("URL")
+        if url_el is not None and url_el.text:
+            # Extract id_min=NNNN from the WARNING URL
+            import re
+            m = re.search(r"id_min=(\d+)", url_el.text)
+            if m:
+                next_id_min = int(m.group(1))
 
     for host in root.iter("HOST"):
         h = {child.tag: (child.text or "").strip() for child in host
@@ -118,7 +142,53 @@ def _parse_detections(xml_body: bytes) -> list[dict]:
                 "os": h.get("OS"),
                 "qualys_host_id": h.get("ID"),
             })
-    return out
+    return out, next_id_min
+
+
+async def _fetch_nvd_cve(nvd_api_key: str, cve: str) -> dict | None:
+    """Fetch a CVE record from NVD 2.0 API. Returns enrichment dict or None."""
+    if not cve or not cve.startswith("CVE-"):
+        return None
+    url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+    headers = {"apiKey": nvd_api_key} if nvd_api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.get(url, params={"cveId": cve}, headers=headers)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        items = data.get("vulnerabilities") or []
+        if not items:
+            return None
+        v = items[0].get("cve", {})
+        descs = v.get("descriptions") or []
+        desc = next((d.get("value") for d in descs if d.get("lang") == "en"), None)
+        metrics = v.get("metrics") or {}
+        cvss31 = (metrics.get("cvssMetricV31") or [{}])[0].get("cvssData") or {}
+        cvss30 = (metrics.get("cvssMetricV30") or [{}])[0].get("cvssData") or {}
+        cvss = cvss31 or cvss30
+        weaknesses = v.get("weaknesses") or []
+        cwe = None
+        for w in weaknesses:
+            for d in w.get("description") or []:
+                if d.get("value", "").startswith("CWE-"):
+                    cwe = d["value"]
+                    break
+            if cwe:
+                break
+        refs = [(rr.get("url"), ",".join(rr.get("tags") or [])) for rr in (v.get("references") or [])][:15]
+        return {
+            "description": desc,
+            "cvss_score": cvss.get("baseScore"),
+            "cvss_vector": cvss.get("vectorString"),
+            "cvss_severity": cvss.get("baseSeverity"),
+            "cwe": cwe,
+            "published": v.get("published"),
+            "last_modified": v.get("lastModified"),
+            "references": refs,
+        }
+    except Exception:
+        return None
 
 
 async def _fetch_knowledgebase(endpoint: str, username: str, password: str, qids: list[str]) -> dict:
@@ -172,30 +242,43 @@ async def _upsert_asset(db, hostname: str, ip: str | None, os_name: str | None) 
     return asset
 
 
-async def _upsert_finding(db, det: dict, kb: dict) -> str:
+async def _upsert_finding(db, det: dict, kb: dict, nvd_cache: dict | None = None) -> str:
     qid = det["qid"]
     kb_entry = kb.get(qid, {})
     asset = await _upsert_asset(db, det["hostname"], det.get("ip"), det.get("os"))
     severity = _norm_severity(det.get("severity"))
     cve = kb_entry.get("cve")
+    nvd = (nvd_cache or {}).get(cve) if cve else None
     canonical = f"{cve or qid}::{asset['hostname']}"
     existing = await db.findings.find_one({"canonical_key": canonical}, {"_id": 0})
+
+    # Strip HTML from Qualys KB fields for nicer display
+    def _strip(s: str | None) -> str | None:
+        if not s:
+            return s
+        import re
+        return re.sub(r"<[^>]+>", "", s).replace("&nbsp;", " ").strip()
 
     base = {
         "source_tool": "Qualys VMDR",
         "source_observation_id": qid,
         "source_native_id": qid,
         "qid": qid, "plugin_id": None,
-        "title": kb_entry.get("title") or f"Qualys QID {qid}",
-        "description": kb_entry.get("diagnosis") or kb_entry.get("consequence"),
+        "title": _strip(kb_entry.get("title")) or f"Qualys QID {qid}",
+        "description": _strip(kb_entry.get("diagnosis")) or (nvd or {}).get("description") or _strip(kb_entry.get("consequence")),
+        "consequence": _strip(kb_entry.get("consequence")),
+        "business_impact": _strip(kb_entry.get("consequence")),  # surface in detail page
         "severity": severity,
-        "cve": cve, "cwe": kb_entry.get("cwe"),
-        "cvss_score": kb_entry.get("cvss"),
-        "epss_score": 0,  # EPSS enriched by nightly_rescore
+        "cve": cve, "cwe": kb_entry.get("cwe") or (nvd or {}).get("cwe"),
+        "cvss_score": (nvd or {}).get("cvss_score") or kb_entry.get("cvss"),
+        "cvss_vector": (nvd or {}).get("cvss_vector"),
+        "epss_score": 0,  # enriched by nightly_rescore
         "kev_flag": False,
         "rti": [],
-        "remediation": kb_entry.get("solution"),
-        "detection_logic": kb_entry.get("category"),
+        "remediation": _strip(kb_entry.get("solution")),
+        "detection_logic": _strip(kb_entry.get("category")),
+        "advisory_links": [{"source": "NVD", "url": f"https://nvd.nist.gov/vuln/detail/{cve}"}] if cve else [],
+        "external_references": (nvd or {}).get("references") or [],
         "asset_id": asset["id"], "asset_hostname": asset["hostname"], "asset_ip": asset.get("ip"),
         "asset_criticality": asset["criticality"], "asset_exposure": asset["exposure"],
         "asset_environment": asset["environment"], "asset_os": asset.get("operating_system"),
@@ -257,28 +340,46 @@ async def run_qualys_sync(db) -> dict:
         raise RuntimeError("Qualys integration missing endpoint/username/api_key")
 
     sync_scope = cfg.get("sync_scope") or {}
-    severities = sync_scope.get("severities", "4-5")
+    # Defaults: pull ALL active vulns (no severity filter), with pagination
+    severities = sync_scope.get("severities")  # None → all severities
     statuses = sync_scope.get("statuses", "Active,Re-Opened")
+    page_size = int(sync_scope.get("page_size", 1000))
+    max_pages = int(sync_scope.get("max_pages", 50))  # 50 * 1000 = 50k detections max per run
+
+    # Read NVD API key from a separate "NVD" integration row (if user added it) or env
+    nvd_key = await _get_nvd_key(db)
 
     started_at = _now_iso()
     errors: list = []
     created = updated = 0
+    detections: list[dict] = []
+    next_id_min: int | None = None
+    pages_fetched = 0
 
     try:
-        xml_body = await _fetch_qualys_detections(endpoint, username, password,
-                                                  severities=severities,
-                                                  statuses=statuses)
-        detections = _parse_detections(xml_body)
+        while pages_fetched < max_pages:
+            xml_body = await _fetch_qualys_detections(
+                endpoint, username, password,
+                severities=severities, statuses=statuses,
+                id_min=next_id_min, truncation_limit=page_size,
+            )
+            page_dets, next_id_min = _parse_detections(xml_body)
+            detections.extend(page_dets)
+            pages_fetched += 1
+            if not next_id_min:
+                break
     except httpx.HTTPStatusError as e:
-        errors.append({"stage": "fetch", "error": f"HTTP {e.response.status_code}: {e.response.text[:200]}"})
-        return await _record_run(db, "failed",
-                                 {"started_at": started_at, "detections": 0, "created": 0,
-                                  "updated": 0, "deduped": 0, "failed": 1}, errors)
+        errors.append({"stage": "fetch", "page": pages_fetched, "error": f"HTTP {e.response.status_code}: {e.response.text[:200]}"})
+        if not detections:
+            return await _record_run(db, "failed",
+                                     {"started_at": started_at, "detections": 0, "created": 0,
+                                      "updated": 0, "deduped": 0, "failed": 1}, errors)
     except Exception as e:
-        errors.append({"stage": "fetch", "error": str(e)})
-        return await _record_run(db, "failed",
-                                 {"started_at": started_at, "detections": 0, "created": 0,
-                                  "updated": 0, "deduped": 0, "failed": 1}, errors)
+        errors.append({"stage": "fetch", "page": pages_fetched, "error": str(e)})
+        if not detections:
+            return await _record_run(db, "failed",
+                                     {"started_at": started_at, "detections": 0, "created": 0,
+                                      "updated": 0, "deduped": 0, "failed": 1}, errors)
 
     qids = sorted({d["qid"] for d in detections if d.get("qid")})
     kb: dict = {}
@@ -290,9 +391,22 @@ async def run_qualys_sync(db) -> dict:
         except Exception as e:
             errors.append({"stage": "kb_fetch", "qids": chunk[:5], "error": str(e)})
 
+    # NVD enrichment for unique CVEs (cached). Rate-limit: ~5 req/sec without key, ~50 req/sec with key.
+    nvd_cache: dict = {}
+    unique_cves = sorted({(kb.get(q) or {}).get("cve") for q in qids if (kb.get(q) or {}).get("cve")})
+    if nvd_key:
+        import asyncio as _asyncio
+        for i, cve in enumerate(unique_cves):
+            data = await _fetch_nvd_cve(nvd_key, cve)
+            if data:
+                nvd_cache[cve] = data
+            # Polite throttle to stay under 50 req / 30s
+            if (i + 1) % 25 == 0:
+                await _asyncio.sleep(1.0)
+
     for det in detections:
         try:
-            outcome = await _upsert_finding(db, det, kb)
+            outcome = await _upsert_finding(db, det, kb, nvd_cache)
             if outcome == "created":
                 created += 1
             else:

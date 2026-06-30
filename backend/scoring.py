@@ -108,3 +108,10 @@ SLA_DAYS = {
 
 def compute_sla_days(severity: str, criticality: str) -> int:
     return SLA_DAYS.get(severity, SLA_DAYS["Medium"]).get(criticality.lower(), 30)
+
+
+async def load_sla_overrides(db) -> None:
+    """Replace in-memory SLA_DAYS with the overrides stored in `sla_policies` (one doc, id=default)."""
+    doc = await db.sla_policies.find_one({"id": "default"}, {"_id": 0})
+    if doc and doc.get("policies"):
+        SLA_DAYS.update(doc["policies"])

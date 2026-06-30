@@ -69,6 +69,7 @@ export default function Sidebar() {
           <NavItem to="/admin/notifications" icon={Bell} label="Notifications" testid="nav-notifications" />
           <NavItem to="/admin/assignment-rules" icon={GearSix} label="Assignment Rules" testid="nav-rules" />
           <NavItem to="/admin/ownership" icon={GearSix} label="Ownership Map" testid="nav-ownership" />
+          <NavItem to="/admin/sla-policies" icon={ShieldCheck} label="SLA Policies" testid="nav-sla" />
         </Group>
       </nav>
 

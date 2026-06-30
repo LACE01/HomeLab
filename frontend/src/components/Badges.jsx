@@ -21,11 +21,11 @@ export const RiskBar = ({ score = 0 }) => {
   const pct = Math.max(0, Math.min(100, score));
   const color = pct >= 80 ? "bg-red-500" : pct >= 60 ? "bg-orange-500" : pct >= 40 ? "bg-amber-500" : pct >= 20 ? "bg-blue-500" : "bg-slate-500";
   return (
-    <div className="flex items-center gap-2 min-w-[90px]">
-      <div className="h-1.5 w-16 bg-slate-800 rounded overflow-hidden">
+    <div className="flex items-center gap-2 min-w-[80px]">
+      <div className="h-1.5 w-14 bg-slate-800 rounded overflow-hidden">
         <div className={`${color} h-full`} style={{ width: `${pct}%` }} />
       </div>
-      <span className="font-mono text-[11px] text-slate-300">{pct}</span>
+      <span className="font-mono text-[11px] text-slate-300 tabular-nums">{pct}</span>
     </div>
   );
 };

@@ -76,6 +76,12 @@ async def on_startup():
     await db.findings.create_index("severity")
     await db.observations.create_index("finding_id")
     await db.api_keys.create_index("key", unique=True)
+    # Hot-load SLA policy overrides if user has saved any
+    try:
+        from scoring import load_sla_overrides
+        await load_sla_overrides(db)
+    except Exception as e:
+        logger.exception(f"SLA override load failed: {e}")
     try:
         await seed_all(db)
         logger.info("Seed completed.")

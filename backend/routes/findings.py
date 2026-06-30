@@ -213,9 +213,10 @@ async def threat_intel_for_cve(cve: str, user: dict = Depends(get_current_user))
         '    } externalReferences { edges { node { source_name url } } } } } } }'
     )
     try:
-        async with httpx.AsyncClient(timeout=10) as c:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
             r = await c.post(endpoint.rstrip("/") + "/graphql",
-                             headers={"Authorization": f"Bearer {api_key}"},
+                             headers={"Authorization": f"Bearer {api_key}",
+                                      "Content-Type": "application/json"},
                              json={"query": query})
         if r.status_code != 200:
             return {"configured": True, "cve": cve, "error": f"OpenCTI HTTP {r.status_code}", "raw": r.text[:300]}

@@ -200,8 +200,8 @@ export default function Dashboard() {
                   <div className="overflow-x-auto">
                     <table className="dense w-full table-fixed">
                       <colgroup>
-                        <col className="w-[80px]"/>
-                        <col className="w-[80px]"/>
+                        <col className="w-[100px]"/>
+                        <col className="w-[90px]"/>
                         <col/>
                         <col className="w-[110px]"/>
                         <col className="w-[110px]"/>

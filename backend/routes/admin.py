@@ -280,6 +280,39 @@ async def get_sla_policies(user: dict = Depends(get_current_user)):
     return {"policies": SLA_DAYS}
 
 
+class SLAUpdate(BaseModel):
+    policies: dict  # {severity: {criticality: days}}
+
+
+@router.put("/v1/admin/sla-policies")
+async def update_sla_policies(body: SLAUpdate, user: dict = Depends(require_role("admin"))):
+    from scoring import SLA_DAYS
+    # Validate structure and coerce ints
+    severities = {"Critical", "High", "Medium", "Low", "Info"}
+    criticalities = {"crown_jewel", "critical", "high", "medium", "low"}
+    cleaned: dict = {}
+    for sev, rows in (body.policies or {}).items():
+        if sev not in severities or not isinstance(rows, dict):
+            raise HTTPException(400, f"Invalid severity '{sev}'")
+        cleaned[sev] = {}
+        for crit, days in rows.items():
+            if crit not in criticalities:
+                raise HTTPException(400, f"Invalid criticality '{crit}'")
+            try:
+                cleaned[sev][crit] = max(1, min(3650, int(days)))
+            except (TypeError, ValueError):
+                raise HTTPException(400, f"days must be int for {sev}/{crit}")
+    # Persist
+    await db.sla_policies.update_one(
+        {"id": "default"},
+        {"$set": {"id": "default", "policies": cleaned, "updated_at": now_iso(), "updated_by": user["email"]}},
+        upsert=True,
+    )
+    # Hot-reload in-memory copy
+    SLA_DAYS.update(cleaned)
+    return {"policies": SLA_DAYS}
+
+
 @router.get("/v1/admin/api-keys")
 async def list_api_keys(user: dict = Depends(require_role("admin"))):
     items = await db.api_keys.find({}, {"_id": 0}).to_list(100)

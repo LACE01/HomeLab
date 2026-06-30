@@ -18,6 +18,7 @@ import { AssignmentRules, OwnershipMappings } from "@/pages/Ownership";
 import Users from "@/pages/Users";
 import Notifications from "@/pages/Notifications";
 import AttackPaths from "@/pages/AttackPaths";
+import SlaPolicies from "@/pages/SlaPolicies";
 
 const Protected = ({ children }) => {
   const { user, loading } = useAuth();
@@ -52,6 +53,7 @@ const AppRouter = () => {
       <Route path="/attack-paths" element={<Protected><AttackPaths/></Protected>}/>
       <Route path="/admin/assignment-rules" element={<Protected><AssignmentRules/></Protected>}/>
       <Route path="/admin/ownership" element={<Protected><OwnershipMappings/></Protected>}/>
+      <Route path="/admin/sla-policies" element={<Protected><SlaPolicies/></Protected>}/>
       <Route path="/admin/users" element={<Protected><Users/></Protected>}/>
       <Route path="/admin/notifications" element={<Protected><Notifications/></Protected>}/>
     </Routes>
