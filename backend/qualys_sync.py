@@ -129,6 +129,9 @@ def _parse_detections(xml_body: bytes) -> tuple[list[dict], int | None]:
             continue
         for det in det_list.findall("DETECTION"):
             d = {child.tag: (child.text or "").strip() for child in det}
+            # Confirmed only — drop Potential and Info per user policy
+            if d.get("TYPE") and d["TYPE"] != "Confirmed":
+                continue
             out.append({
                 "qid": d.get("QID"),
                 "severity": d.get("SEVERITY"),

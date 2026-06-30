@@ -3,7 +3,7 @@ import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import { fmtDate, fmtRel } from "@/lib/utils-fmt";
-import { CheckCircle, WarningCircle, XCircle, GearSix, Lightning } from "@phosphor-icons/react";
+import { CheckCircle, WarningCircle, XCircle, GearSix, Lightning, Info, ArrowsClockwise } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 export function Integrations() {
@@ -11,8 +11,10 @@ export function Integrations() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({});
   const [testing, setTesting] = useState(null);
+  const [qualysScope, setQualysScope] = useState(null);
   const load = () => api.get("/v1/integrations").then(r => setItems(r.data.items));
-  useEffect(() => { load(); }, []);
+  const loadScope = () => api.get("/v1/admin/qualys/scope").then(r => setQualysScope(r.data)).catch(() => setQualysScope(null));
+  useEffect(() => { load(); loadScope(); }, []);
 
   const Icon = ({ s }) =>
     s === "healthy" ? <CheckCircle size={16} className="text-emerald-400"/> :
@@ -27,6 +29,7 @@ export function Integrations() {
       const s = r.data?.summary || {};
       toast.success(`${i.name}: +${s.created || 0} new · ↻${s.updated || 0} updated · ${s.detections || 0} detections`);
       await load();
+      await loadScope();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Sync failed");
     } finally { setTesting(null); }
@@ -67,6 +70,48 @@ export function Integrations() {
 
   return (
     <Layout title="Integrations" subtitle="Configure scanner connectors and ticketing systems with your API keys">
+      {qualysScope?.configured && qualysScope?.role && (
+        <div
+          data-testid="qualys-scope-banner"
+          className={`mb-4 rounded-md border px-4 py-3 flex items-start gap-3 ${
+            qualysScope.is_narrow
+              ? "border-amber-500/40 bg-amber-500/10"
+              : "border-emerald-500/40 bg-emerald-500/10"
+          }`}
+        >
+          <Info size={18} className={qualysScope.is_narrow ? "text-amber-300 shrink-0 mt-0.5" : "text-emerald-300 shrink-0 mt-0.5"}/>
+          <div className="flex-1 min-w-0">
+            <div className="text-[12.5px] font-medium text-slate-100">
+              Qualys API user{" "}
+              <span className="font-mono text-blue-300">{qualysScope.username}</span>{" "}
+              · role <span className="font-mono">{qualysScope.role}</span>{" "}
+              · {qualysScope.host_count} host{qualysScope.host_count === 1 ? "" : "s"} visible
+            </div>
+            <div className="text-[11.5px] text-slate-400 mt-0.5 leading-relaxed">
+              {qualysScope.is_narrow ? (
+                <>
+                  Your API user is scoped narrowly (Reader role and/or limited Asset Group membership).
+                  The legacy <code className="text-slate-300">/api/2.0/fo/asset/host/vm/detection/</code> only
+                  returns detections for the {qualysScope.host_count} host{qualysScope.host_count === 1 ? "" : "s"}
+                  {" "}assigned to this user. To pull your full subscription, promote{" "}
+                  <span className="font-mono">{qualysScope.username}</span> to <strong>Manager</strong> or
+                  <strong> Unit Manager</strong> in Qualys → Users, or add all required Asset Groups.
+                </>
+              ) : (
+                <>API user has full access. Live detections sync at full subscription scope.</>
+              )}
+            </div>
+          </div>
+          <button
+            data-testid="qualys-scope-refresh"
+            onClick={loadScope}
+            className="h-7 px-2.5 text-[11px] border border-[#30363D] hover:border-[#484F58] rounded inline-flex items-center gap-1.5 text-slate-300 shrink-0"
+            title="Re-check role and host count"
+          >
+            <ArrowsClockwise size={12}/> Re-check
+          </button>
+        </div>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         {items.map(i => (
           <div key={i.id} data-testid={`integration-${i.id}`} className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">

@@ -39,14 +39,17 @@ See /app/memory/test_credentials.md.
 - Excel export (.xlsx) — CSV implemented
 
 ## Next Tasks
-1. ~~SLA editor UI~~ **DONE**
-2. ~~NVD enrichment + Qualys pagination~~ **DONE**
-3. ~~OpenCTI live integration~~ **DONE** (configured with open.smrtlab.net + bearer key)
-4. ~~Top Risk Findings overlap~~ **DONE** (RiskBar reduced to 80px + colgroup widened to 100px)
-5. Adapter-specific ingestion for Tenable Nessus / CrowdStrike / Wiz / GHAS / Snyk (same pattern as `qualys_sync.py`) once user provides their keys
-6. Notification policies (email + Slack templates; Discord already live)
-7. Quiet-hours / throttling on auto-dispatched notifications now that real Qualys data feeds them
-8. Fix stale credential references in `/app/backend/tests/test_reports_iter2.py`
+1. **User action needed** — Promote Qualys API user `eagec2zt` from Reader → Manager in Qualys console (or add all required Asset Groups). The Integrations page now shows a live banner with the user's role + host count, and will turn green automatically once permissions widen. Currently scoped to 31 hosts / 36 confirmed detections instead of the full 8.05K subscription.
+2. Adapter-specific ingestion for Tenable Nessus / CrowdStrike Spotlight / Wiz / GHAS / Snyk (same pattern as `qualys_sync.py`) once user provides keys
+3. Quiet-hours / throttling on auto-dispatched Discord notifications
+4. Email + Slack notification templates (Discord already live)
+5. Fix stale credential references in `/app/backend/tests/test_reports_iter2.py`
+
+## Feb 2026 — Qualys Scope Banner + Confirmed-Only Filter — COMPLETE
+- New `GET /v1/admin/qualys/scope` endpoint queries Qualys live for the API user's role (via `msp/user_list.php`) and visible host count (via `/api/2.0/fo/asset/host/?action=list`)
+- New banner on the Integrations page (`data-testid="qualys-scope-banner"`) shows `eagec2zt · role Reader · 31 hosts visible` with an amber alert + Re-check button when scope is narrow; turns green when role is Manager/Unit-Manager or hosts ≥ 100
+- `qualys_sync.py` now filters out `TYPE != "Confirmed"` at parse time → drops Potential vulnerabilities per user policy (kept ~36 Confirmed → 30 unique findings on the current Reader-scoped data)
+- Documented the legacy detection API's Asset Group scope limitation in PRD so this is obvious next time
 
 ## Feb 2026 — Qualys-Full, NVD Enrichment, OpenCTI Live, SLA Editor — COMPLETE
 

@@ -333,6 +333,55 @@ async def list_rescore_runs(user: dict = Depends(require_role("admin"))):
 
 
 # --------------------------- QUALYS LIVE SYNC ---------------------------
+@router.get("/v1/admin/qualys/scope")
+async def qualys_scope(user: dict = Depends(require_role("admin"))):
+    """Return the API user's effective Qualys scope (role + visible host count)
+    so the UI can warn when permissions are too narrow."""
+    import httpx, re
+    import xml.etree.ElementTree as ET
+    integration = await db.integrations.find_one({"name": "Qualys VMDR"}, {"_id": 0})
+    cfg = (integration or {}).get("config") or {}
+    if not (cfg.get("endpoint") and cfg.get("username") and cfg.get("api_key")):
+        return {"configured": False}
+    try:
+        async with httpx.AsyncClient(timeout=30, auth=(cfg["username"], cfg["api_key"])) as c:
+            # Visible hosts
+            r1 = await c.post(f"{cfg['endpoint'].rstrip('/')}/api/2.0/fo/asset/host/",
+                              params={"action": "list", "truncation_limit": 1},
+                              headers={"X-Requested-With": "VulnOps"})
+            root = ET.fromstring(r1.content)
+            total_el = root.find(".//{*}TOTAL") or root.find(".//TOTAL")
+            host_count = int(total_el.text) if total_el is not None and total_el.text else None
+            if host_count is None:
+                # Fallback — count returned hosts on a wider pull
+                r1b = await c.post(f"{cfg['endpoint'].rstrip('/')}/api/2.0/fo/asset/host/",
+                                   params={"action": "list", "truncation_limit": 5000},
+                                   headers={"X-Requested-With": "VulnOps"})
+                host_count = len(list(ET.fromstring(r1b.content).iter("HOST")))
+
+            # Role via msp/user_list
+            role = None
+            try:
+                r2 = await c.post(f"{cfg['endpoint'].rstrip('/')}/msp/user_list.php",
+                                  headers={"X-Requested-With": "VulnOps"})
+                m = re.search(rf"<USER_LOGIN>{re.escape(cfg['username'])}</USER_LOGIN>(.*?)</USER>", r2.text, re.DOTALL)
+                if m:
+                    role_m = re.search(r"<USER_ROLE>([^<]+)</USER_ROLE>", m.group(1))
+                    role = role_m.group(1) if role_m else None
+            except Exception:
+                pass
+        return {
+            "configured": True,
+            "username": cfg["username"],
+            "endpoint": cfg["endpoint"],
+            "role": role,
+            "host_count": host_count,
+            "is_narrow": (role in ("Reader", "Scanner")) or (host_count is not None and host_count < 100),
+        }
+    except Exception as e:
+        return {"configured": True, "error": str(e)}
+
+
 @router.post("/v1/admin/qualys/sync/run")
 async def trigger_qualys_sync(user: dict = Depends(require_role("admin"))):
     """One-shot Qualys VMDR sync (admin only). Returns the run record."""
