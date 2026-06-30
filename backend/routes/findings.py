@@ -246,7 +246,20 @@ async def threat_intel_for_cve(cve: str, user: dict = Depends(get_current_user))
                     "threat_actors": [], "intrusion_sets": [], "malware": [], "campaigns": [],
                     "indicators": [], "external_references": []}
         if r.status_code != 200:
-            return {"configured": True, "cve": cve, "error": f"OpenCTI HTTP {r.status_code}", "raw": r.text[:300]}
+            # Try to extract a friendly Cloudflare error message if present.
+            friendly = None
+            try:
+                err_json = r.json()
+                if isinstance(err_json, dict) and err_json.get("cloudflare_error"):
+                    friendly = (f"OpenCTI origin returned {r.status_code}: {err_json.get('title')}. "
+                                f"{err_json.get('what_you_should_do', '')}").strip()
+            except Exception:
+                pass
+            return {"configured": True, "cve": cve,
+                    "error": friendly or f"OpenCTI HTTP {r.status_code}",
+                    "raw": r.text[:300],
+                    "threat_actors": [], "intrusion_sets": [], "malware": [], "campaigns": [],
+                    "indicators": [], "external_references": []}
         ctype = (r.headers.get("content-type") or "").lower()
         if "application/json" not in ctype:
             # Likely an interstitial (e.g. Cloudflare Access login page).
