@@ -15,6 +15,13 @@ export const AuthProvider = ({ children }) => {
       return;
     }
     const token = localStorage.getItem("vulnops_token");
+    const hasSessionCookie = typeof document !== "undefined" && document.cookie.includes("session_token=");
+    // Skip the /me probe entirely when there's no token AND no session cookie —
+    // it would just produce a noisy 401 in the console on the initial login page.
+    if (!token && !hasSessionCookie) {
+      setLoading(false);
+      return;
+    }
     // Try /auth/me — works with either JWT token OR session_token cookie
     api.get("/auth/me")
       .then((r) => setUser(r.data))

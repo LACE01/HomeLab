@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from db import db
-from auth_utils import get_current_user
+from auth_utils import get_current_user, require_role
 from scoring import compute_risk
 from routes.common import now_iso, _clean, finding_ctx
 
@@ -216,13 +216,31 @@ async def threat_intel_for_cve(cve: str, user: dict = Depends(get_current_user))
         '    } externalReferences { edges { node { source_name url } } } } } } }'
     )
     try:
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        # Optional Cloudflare Access service-token headers — needed when the
+        # OpenCTI tenant sits behind Cloudflare Zero Trust Access.
+        if cfg.get("cf_access_client_id"):
+            headers["CF-Access-Client-Id"] = cfg["cf_access_client_id"]
+        if cfg.get("cf_access_client_secret"):
+            headers["CF-Access-Client-Secret"] = cfg["cf_access_client_secret"]
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
             r = await c.post(endpoint.rstrip("/") + "/graphql",
-                             headers={"Authorization": f"Bearer {api_key}",
-                                      "Content-Type": "application/json"},
-                             json={"query": query})
+                             headers=headers, json={"query": query})
         if r.status_code != 200:
             return {"configured": True, "cve": cve, "error": f"OpenCTI HTTP {r.status_code}", "raw": r.text[:300]}
+        ctype = (r.headers.get("content-type") or "").lower()
+        if "application/json" not in ctype:
+            # Likely an interstitial (e.g. Cloudflare Access login page).
+            cf_access = "cloudflare access" in r.text.lower() or "cf-access" in r.text.lower()
+            msg = ("OpenCTI endpoint is behind Cloudflare Access — add a service "
+                   "token to the OpenCTI integration config "
+                   "(cf_access_client_id + cf_access_client_secret) or disable "
+                   "Cloudflare Access on the /graphql route.") if cf_access else (
+                   f"OpenCTI returned non-JSON ({ctype or 'no content-type'}) — "
+                   "verify the endpoint is the GraphQL URL and the API key is valid.")
+            return {"configured": True, "cve": cve, "error": msg,
+                    "threat_actors": [], "intrusion_sets": [], "malware": [], "campaigns": [],
+                    "indicators": [], "external_references": []}
         data = r.json().get("data", {}).get("vulnerabilities", {}).get("edges", [])
         actors, sets_, malware, campaigns, refs = [], [], [], [], []
         for v in data:
@@ -443,7 +461,7 @@ class OwnerTeamBody(BaseModel):
 
 
 @router.post("/v1/findings/bulk-owner")
-async def bulk_owner(body: OwnerTeamBody, user: dict = Depends(get_current_user)):
+async def bulk_owner(body: OwnerTeamBody, user: dict = Depends(require_role("admin", "manager"))):
     """Bulk-update owner_team for selected findings. Sets ownership_confidence to 1.0
     because a human explicitly assigned them."""
     await db.findings.update_many(

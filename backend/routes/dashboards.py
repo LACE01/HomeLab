@@ -31,6 +31,10 @@ async def dashboard_analyst(
     reopened = await db.findings.count_documents({"status": "Reopened"})
     overdue = await db.findings.count_documents({"due_at": {"$lt": now_iso()}, "status": {"$in": open_states}})
     unassigned = await db.findings.count_documents({"assigned_to": None, "status": {"$in": open_states}})
+    unassigned_team = await db.findings.count_documents({
+        "status": {"$in": open_states},
+        "$or": [{"owner_team": None}, {"owner_team": "Unassigned"}, {"owner_team": ""}],
+    })
     low_confidence = await db.findings.count_documents({"ownership_confidence": {"$lt": 0.7}, "status": {"$in": open_states}})
     top = await db.findings.find({"status": {"$in": open_states}}, {"_id": 0}).sort("risk_score", -1).limit(10).to_list(10)
     recent_imports = await db.import_jobs.find({}, {"_id": 0}).sort("started_at", -1).limit(6).to_list(6)
@@ -39,6 +43,7 @@ async def dashboard_analyst(
         "open_findings": open_findings, "new_findings": new_findings,
         "needs_triage": triage, "kev_findings": kev, "rti_findings": rti_high,
         "reopened": reopened, "overdue": overdue, "unassigned": unassigned,
+        "unassigned_team": unassigned_team,
         "low_confidence_ownership": low_confidence, "top_findings": top,
         "recent_imports": recent_imports, "failed_imports": failed_imports,
         "range": range, "range_days": days, "range_start": start_iso, "range_end": end_iso,

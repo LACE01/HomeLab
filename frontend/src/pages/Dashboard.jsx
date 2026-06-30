@@ -12,7 +12,8 @@ import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid,
   BarChart, Bar, Cell, PieChart, Pie, Legend,
 } from "recharts";
-import { Lightning, Fire, Clock, ArrowsClockwise, Warning, UserCircle, ChartLineUp, FileArrowDown } from "@phosphor-icons/react";
+import { Lightning, Fire, Clock, ArrowsClockwise, Warning, UserCircle, ChartLineUp, FileArrowDown, Sparkle } from "@phosphor-icons/react";
+import { toast } from "sonner";
 
 const Stat = ({ label, value, icon: Icon, tone = "slate", testid }) => {
   const tones = {
@@ -121,6 +122,27 @@ export default function Dashboard() {
     URL.revokeObjectURL(url);
   };
 
+  const [applyingRules, setApplyingRules] = useState(false);
+  const applyAssignmentRules = async () => {
+    if (applyingRules) return;
+    setApplyingRules(true);
+    const t = toast.loading("Applying assignment rules to all assets…");
+    try {
+      const r = await api.post("/v1/admin/assignment-rules/apply");
+      toast.success(
+        `Applied. ${r.data.updated_assets ?? 0} assets · ${r.data.updated_findings ?? 0} findings re-routed.`,
+        { id: t },
+      );
+      // Refresh analyst stats so the Unassigned tile drops
+      const a = await api.get("/v1/dashboards/analyst", { params: rangeParams });
+      setAnalyst(a.data);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to apply rules", { id: t });
+    } finally {
+      setApplyingRules(false);
+    }
+  };
+
   const Tab = ({ id, children, testid }) => (
     <button data-testid={testid} onClick={() => setTab(id)}
       className={`px-3 py-1 text-[12px] rounded-sm transition-colors ${tab === id ? "bg-blue-500/15 text-blue-300 border border-blue-500/30" : "text-slate-400 hover:text-slate-200 border border-transparent"}`}>
@@ -157,6 +179,29 @@ export default function Dashboard() {
 
       {tab === "ops" && analyst && (
         <div className="space-y-4">
+          {role === "admin" && analyst.unassigned_team > 0 && (
+            <div data-testid="apply-rules-banner" className="border border-amber-500/30 bg-amber-500/5 rounded-md px-4 py-2.5 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <UserCircle size={18} className="text-amber-300 shrink-0" />
+                <div>
+                  <div className="text-[12.5px] text-amber-200 font-medium">
+                    {analyst.unassigned_team.toLocaleString()} findings have no owner team
+                  </div>
+                  <div className="text-[11px] text-amber-300/70 mt-0.5">
+                    Run the assignment-rules engine to auto-route by hostname / OS / tags. Findings under an active SLA exception are skipped.
+                  </div>
+                </div>
+              </div>
+              <button
+                data-testid="apply-rules-btn"
+                onClick={applyAssignmentRules}
+                disabled={applyingRules}
+                className="h-8 px-3.5 text-[12px] bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 rounded inline-flex items-center gap-1.5 disabled:opacity-50 shrink-0"
+              >
+                <Sparkle size={14} weight="fill" /> {applyingRules ? "Applying…" : "Apply Assignment Rules"}
+              </button>
+            </div>
+          )}
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
             {tileOn("stat-open") && <Stat label="Open Findings" value={analyst.open_findings} icon={ChartLineUp} testid="stat-open" />}
             {tileOn("stat-triage") && <Stat label="Needs Triage" value={analyst.needs_triage} tone="amber" icon={Warning} testid="stat-triage" />}
