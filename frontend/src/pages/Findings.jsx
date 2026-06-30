@@ -200,8 +200,8 @@ export default function Findings() {
               data-testid="view-mode-by-asset"
               onClick={() => {
                 setViewMode("by_asset");
-                // Selecting "by Asset" implicitly groups by asset hostname.
-                if (groupBy === "none") setGroupBy("asset");
+                // "by Asset" always groups by asset hostname (overrides prior cve grouping).
+                if (groupBy !== "asset") setGroupBy("asset");
               }}
               className={`px-2.5 h-7 text-[11.5px] inline-flex items-center gap-1 ${viewMode==="by_asset" && groupBy!=="none" ?"bg-blue-500/15 text-blue-300":"text-slate-400 hover:bg-slate-800/40"}`}
             >
@@ -211,8 +211,8 @@ export default function Findings() {
               data-testid="view-mode-by-vulnerability"
               onClick={() => {
                 setViewMode("by_vulnerability");
-                // Selecting "by Vulnerability" implicitly groups by CVE.
-                if (groupBy === "none" || groupBy === "asset") setGroupBy("cve");
+                // "by Vulnerability" always groups by CVE (overrides prior asset grouping).
+                if (groupBy !== "cve") setGroupBy("cve");
               }}
               className={`px-2.5 h-7 text-[11.5px] inline-flex items-center gap-1 ${viewMode==="by_vulnerability" && groupBy!=="none" ?"bg-blue-500/15 text-blue-300":"text-slate-400 hover:bg-slate-800/40"}`}
             >
