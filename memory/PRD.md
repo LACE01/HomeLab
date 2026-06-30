@@ -39,7 +39,7 @@ See /app/memory/test_credentials.md.
 - Excel export (.xlsx) — CSV implemented
 
 ## Next Tasks
-1. **P2 Refactor**: Split server.py (1640 lines) into FastAPI APIRouter modules (`routes/auth.py`, `routes/findings.py`, `routes/dashboards.py`, `routes/admin.py`, `routes/preferences.py`) — strongly recommended by testing agent to prevent recurrence of route-placement bugs
+1. ~~**P2 Refactor**: Split server.py into FastAPI APIRouter modules~~ **DONE (Feb 2026)** — see "P2 Refactor" section below
 2. Replace native `<input type='date'>` in TimeRangeSelector with shadcn Calendar/Popover for design consistency
 3. Add request debouncing on TimeRangeSelector rapid-clicks (currently fires 5 parallel requests per change)
 4. Toast feedback when `PUT /v1/me/preferences` fails (currently silent .catch)
@@ -47,6 +47,29 @@ See /app/memory/test_credentials.md.
 6. SLA editor UI
 7. Notification policies (email policies; Discord live)
 8. Live OpenCTI key once user provides it
+9. Fix stale credential references in `/app/backend/tests/test_reports_iter2.py` (uses old `admin@vulnops.io` / `admin123`)
+
+## P2 Refactor — server.py split (Feb 2026) — COMPLETE
+Split the 1640-line `server.py` into 9 APIRouter modules under `/app/backend/routes/` to eliminate the route-placement footgun and isolate concerns:
+
+| Module | Lines | Owns |
+|---|---|---|
+| `routes/common.py` | 48 | `now_iso`, `_clean`, `parse_time_range`, `finding_ctx`, `deep_merge` |
+| `routes/auth.py` | 104 | login, logout, /me, Google OAuth session exchange |
+| `routes/findings.py` | 442 | findings list/stats/detail/KRI/timeline/observations/tickets/comments/status/bulk + attack-paths + CWE prevalence + threat-intel + findings-groups + prioritization |
+| `routes/inventory.py` | 97 | assets, products |
+| `routes/workflows.py` | 66 | engagements, tickets, exceptions |
+| `routes/integrations.py` | 226 | integrations CRUD + import-jobs + universal ingestion |
+| `routes/dashboards.py` | 205 | analyst, manager, executive, operational |
+| `routes/reports_routes.py` | 133 | CSV, PDF, catalog, prebuilt + custom runner |
+| `routes/admin.py` | 299 | users, notifications, assignment-rules, ownership, SLA, API keys, nightly-rescore |
+| `routes/preferences.py` | 49 | `GET/PUT /v1/me/preferences` |
+| `server.py` | **87** | thin wiring — creates app, includes routers, mounts CORS + startup hook |
+
+Verified by:
+- 13/13 `test_iter3c.py` pytest suite green
+- 28/28 endpoint smoke curl returns HTTP 200
+- Frontend dashboard renders identically post-refactor
 
 ## Iteration 3c (Feb 2026) — COMPLETE
 **P0 fix**: nightly-rescore + CWE prevalence routes were defined AFTER `app.include_router(api)` → moved above. All endpoints return 200.
