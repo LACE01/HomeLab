@@ -234,6 +234,120 @@ async def get_finding(finding_id: str, user: dict = Depends(get_current_user)):
     return f
 
 
+@api.get("/v1/findings/{finding_id}/kri")
+async def finding_kri(finding_id: str, user: dict = Depends(get_current_user)):
+    """KRI / ZDES / BII / urgency tier / Empirical percentile / Critical Indicators for one finding."""
+    from scoring_v2 import (compute_kri, compute_zdes, compute_bii, urgency_tier,
+                            critical_indicators, empirical_percentile, cwe_prevalence_map)
+    f = await db.findings.find_one({"id": finding_id}, {"_id": 0})
+    if not f:
+        raise HTTPException(404, "Finding not found")
+    cwe_map = await cwe_prevalence_map(db)
+    cwe_w = cwe_map.get(f.get("cwe"), 1.0)
+    kri = compute_kri(f, cwe_w)
+    zdes = compute_zdes(f)
+    asset = await db.assets.find_one({"id": f.get("asset_id")}, {"_id": 0}) or {}
+    bii = compute_bii(f, asset.get("criticality", "medium"), patch_hours_estimated=f.get("patch_hours_estimated", 4.0))
+    tier = urgency_tier(kri["kri_score"], bool(f.get("kev_flag")), f.get("risk_score") or 0)
+
+    # Cohort = open findings of same severity
+    cohort_cursor = db.findings.find(
+        {"severity": f.get("severity"), "status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]}},
+        {"_id": 0, "epss_score": 1, "cvss_score": 1, "cwe": 1}
+    )
+    cohort_scores = []
+    async for c in cohort_cursor:
+        cw = cwe_map.get(c.get("cwe"), 1.0)
+        cohort_scores.append(compute_kri(c, cw)["kri_score"])
+    pct = empirical_percentile(kri["kri_score"], cohort_scores)
+    indicators = critical_indicators(f)
+
+    return {
+        "finding_id": finding_id,
+        **kri, **zdes, **bii,
+        "urgency_tier": tier,
+        "due_basis": f"KRI {kri['kri_score']:.3f} · CVSS {f.get('cvss_score')} · EPSS {f.get('epss_score')} · "
+                     f"CWE local weight {cwe_w} · {'KEV' if f.get('kev_flag') else 'no-KEV'} · "
+                     f"asset {asset.get('criticality', 'medium')}",
+        "empirical": pct,
+        "critical_indicators": indicators,
+        "patch_hours_estimated": f.get("patch_hours_estimated", 4.0),
+    }
+
+
+@api.get("/v1/cwe-prevalence")
+async def cwe_prevalence(user: dict = Depends(get_current_user)):
+    from scoring_v2 import cwe_prevalence_map
+    weights = await cwe_prevalence_map(db)
+    items = [{"cwe": k, "weight": v} for k, v in weights.items()]
+    items.sort(key=lambda x: -x["weight"])
+    return {"items": items}
+
+
+# --------------------------- THREAT INTEL (OpenCTI) ---------------------------
+@api.get("/v1/threat-intel/{cve}")
+async def threat_intel_for_cve(cve: str, user: dict = Depends(get_current_user)):
+    """Query OpenCTI for threat-intel context around a CVE.
+    Reads endpoint + api_key from the OpenCTI integration record (Admin → Integrations)."""
+    integration = await db.integrations.find_one({"name": "OpenCTI"}, {"_id": 0})
+    cfg = (integration or {}).get("config") or {}
+    endpoint = cfg.get("endpoint")
+    api_key = cfg.get("api_key")
+
+    if not endpoint or not api_key:
+        # Return a representative synthetic intel envelope so the UI works pre-config
+        return {
+            "configured": False,
+            "cve": cve,
+            "message": "OpenCTI not configured. Add endpoint + api_key in Integrations → OpenCTI to enable live enrichment.",
+            "threat_actors": [], "intrusion_sets": [], "malware": [], "campaigns": [],
+            "indicators": [], "external_references": [],
+        }
+
+    import httpx
+    query = (
+        '{ vulnerabilities(filters: {mode:and, filters:[{key:"name", values:["'
+        + cve + '"]}], filterGroups:[]}) {'
+        '  edges { node { id name '
+        '    stixCoreRelationships {'
+        '      edges { node { id relationship_type to { ... on ThreatActor { name } ... on IntrusionSet { name } '
+        '        ... on Malware { name } ... on Campaign { name } } } }'
+        '    } externalReferences { edges { node { source_name url } } } } } } }'
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.post(endpoint.rstrip("/") + "/graphql",
+                             headers={"Authorization": f"Bearer {api_key}"},
+                             json={"query": query})
+        if r.status_code != 200:
+            return {"configured": True, "cve": cve, "error": f"OpenCTI HTTP {r.status_code}", "raw": r.text[:300]}
+        data = r.json().get("data", {}).get("vulnerabilities", {}).get("edges", [])
+        actors, sets_, malware, campaigns, refs = [], [], [], [], []
+        for v in data:
+            node = v.get("node", {})
+            for er in node.get("externalReferences", {}).get("edges", []):
+                en = er.get("node", {})
+                refs.append({"source": en.get("source_name"), "url": en.get("url")})
+            for rel in node.get("stixCoreRelationships", {}).get("edges", []):
+                rn = rel.get("node", {})
+                target = rn.get("to", {}) or {}
+                name = target.get("name")
+                if not name:
+                    continue
+                # Bucket by relationship_type heuristics
+                rtype = rn.get("relationship_type", "")
+                if "actor" in rtype.lower(): actors.append(name)
+                elif "intrusion" in rtype.lower(): sets_.append(name)
+                elif "campaign" in rtype.lower(): campaigns.append(name)
+                else: malware.append(name)
+        return {"configured": True, "cve": cve,
+                "threat_actors": list(set(actors)), "intrusion_sets": list(set(sets_)),
+                "malware": list(set(malware)), "campaigns": list(set(campaigns)),
+                "external_references": refs[:20]}
+    except Exception as e:
+        return {"configured": True, "cve": cve, "error": str(e)}
+
+
 @api.get("/v1/findings/{finding_id}/timeline")
 async def finding_timeline(finding_id: str, user: dict = Depends(get_current_user)):
     items = await db.activity_log.find({"entity_type": "finding", "entity_id": finding_id}, {"_id": 0}).sort("timestamp", -1).to_list(200)

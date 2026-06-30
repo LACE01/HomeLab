@@ -277,7 +277,8 @@ async def seed_all(db):
         })
     # Ticket/connector integrations
     for n, t, lg in [("Jira", "ticketing", "jira"), ("ServiceNow", "ticketing", "servicenow"),
-                     ("GitHub", "vcs", "github"), ("GitLab", "vcs", "gitlab"), ("Azure DevOps", "vcs", "azure")]:
+                     ("GitHub", "vcs", "github"), ("GitLab", "vcs", "gitlab"), ("Azure DevOps", "vcs", "azure"),
+                     ("OpenCTI", "threat_intel", "opencti")]:
         integrations.append({
             "id": _id(), "name": n, "type": t, "logo": lg, "status": "healthy",
             "last_sync_at": iso(now - timedelta(hours=random.randint(1, 6))),

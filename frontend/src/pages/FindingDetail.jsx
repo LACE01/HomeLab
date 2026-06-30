@@ -29,6 +29,8 @@ export default function FindingDetail() {
   const [comments, setComments] = useState([]);
   const [newComment, setNewComment] = useState("");
   const [statusVal, setStatusVal] = useState("");
+  const [kri, setKri] = useState(null);
+  const [intel, setIntel] = useState(null);
 
   useEffect(() => {
     api.get(`/v1/findings/${id}`).then(r => { setF(r.data); setStatusVal(r.data.status); });
@@ -36,7 +38,12 @@ export default function FindingDetail() {
     api.get(`/v1/findings/${id}/observations`).then(r => setObs(r.data.items));
     api.get(`/v1/findings/${id}/timeline`).then(r => setActivity(r.data.items));
     api.get(`/v1/findings/${id}/comments`).then(r => setComments(r.data.items));
+    api.get(`/v1/findings/${id}/kri`).then(r => setKri(r.data));
   }, [id]);
+
+  useEffect(() => {
+    if (f?.cve) api.get(`/v1/threat-intel/${f.cve}`).then(r => setIntel(r.data));
+  }, [f?.cve]);
 
   const updateStatus = async (s) => {
     await api.patch(`/v1/findings/${id}/status`, { status: s });
@@ -110,6 +117,97 @@ export default function FindingDetail() {
               </tbody>
             </table>
           </Section>
+
+          {kri && (
+            <Section title="Empirical Score (KRI / ZDES / BII)" testid="section-empirical">
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+                <div className="border border-[#30363D] rounded p-2.5 bg-[#161B22]">
+                  <div className="text-[9px] uppercase font-mono text-slate-500 tracking-wider">Empirical %ile</div>
+                  <div className="text-[22px] font-mono font-semibold text-red-300 mt-0.5" data-testid="empirical-pct">{(100-kri.empirical.top_pct).toFixed(1)}%</div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">Top {kri.empirical.top_pct}%</div>
+                </div>
+                <div className="border border-[#30363D] rounded p-2.5 bg-[#161B22]">
+                  <div className="text-[9px] uppercase font-mono text-slate-500 tracking-wider">KRI</div>
+                  <div className="text-[22px] font-mono font-semibold text-blue-300 mt-0.5">{kri.kri_score}</div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">EPSS × CVSS × CWE</div>
+                </div>
+                <div className="border border-[#30363D] rounded p-2.5 bg-[#161B22]">
+                  <div className="text-[9px] uppercase font-mono text-slate-500 tracking-wider">ZDES</div>
+                  <div className="text-[22px] font-mono font-semibold text-amber-300 mt-0.5">{kri.zdes_score}</div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">Zero-day exposure</div>
+                </div>
+                <div className="border border-[#30363D] rounded p-2.5 bg-[#161B22]">
+                  <div className="text-[9px] uppercase font-mono text-slate-500 tracking-wider">BII (Patch ROI)</div>
+                  <div className="text-[22px] font-mono font-semibold text-emerald-300 mt-0.5">{kri.bii_score}</div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">{kri.patch_hours_estimated}h est. effort</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Urgency Tier:</span>
+                <Chip color={kri.urgency_tier==="Urgent"?"red":kri.urgency_tier==="Standard"?"amber":"slate"}>{kri.urgency_tier}</Chip>
+              </div>
+              <div className="text-[11px] font-mono text-slate-500 mb-3 leading-relaxed">
+                <span className="text-slate-400">Due basis:</span> {kri.due_basis}
+              </div>
+
+              <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider mb-2">Critical Indicators</div>
+              <div className="grid grid-cols-2 lg:grid-cols-3 gap-1.5">
+                {kri.critical_indicators.map(i => {
+                  const sigColor = {high:"red", medium:"amber", low:"slate", none:"slate"}[i.signal];
+                  const trendArrow = {up:"↑", down:"↓", flat:"→", unknown:"·"}[i.trend];
+                  const trendColor = i.trend==="up"?"text-red-300":i.trend==="down"?"text-emerald-300":"text-slate-500";
+                  return (
+                    <div key={i.key} className="flex items-center justify-between border border-[#30363D] rounded px-2 py-1.5 bg-[#161B22]">
+                      <span className="text-[12px] text-slate-200">{i.label}</span>
+                      <div className="flex items-center gap-1.5">
+                        <Chip color={sigColor}>{i.signal}</Chip>
+                        <span className={`font-mono text-[14px] ${trendColor}`}>{trendArrow}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {kri.empirical.distribution?.length > 0 && (
+                <div className="mt-4">
+                  <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider mb-1">Score Distribution (cohort: same severity)</div>
+                  <div className="flex items-end gap-0.5 h-12">
+                    {kri.empirical.distribution.map((v, i) => {
+                      const max = Math.max(...kri.empirical.distribution, 1);
+                      const h = Math.max(2, (v / max) * 100);
+                      const myBucket = Math.floor((kri.kri_score * 20) / Math.max(...kri.empirical.distribution.map((_,idx)=>idx+1), 1));
+                      return <div key={i} className={`flex-1 ${i===myBucket?"bg-red-400":"bg-slate-700"}`} style={{height:`${h}%`}}/>;
+                    })}
+                  </div>
+                </div>
+              )}
+            </Section>
+          )}
+
+          {f.cve && intel && (
+            <Section title="Threat Intelligence (OpenCTI)" testid="section-threat-intel">
+              {!intel.configured && (
+                <div className="text-[12.5px] text-amber-300 bg-amber-900/10 border border-amber-500/30 rounded p-2.5">
+                  {intel.message}
+                  <div className="text-[11px] text-slate-400 mt-1">Go to Integrations → OpenCTI → Configure (endpoint + api_key).</div>
+                </div>
+              )}
+              {intel.error && (
+                <div className="text-[12px] text-red-300">OpenCTI error: {intel.error}</div>
+              )}
+              {intel.configured && !intel.error && (
+                <div className="space-y-2">
+                  <KV k="Threat Actors" v={intel.threat_actors?.join(", ") || "—"}/>
+                  <KV k="Intrusion Sets" v={intel.intrusion_sets?.join(", ") || "—"}/>
+                  <KV k="Malware Families" v={intel.malware?.join(", ") || "—"}/>
+                  <KV k="Campaigns" v={intel.campaigns?.join(", ") || "—"}/>
+                  {(intel.external_references||[]).slice(0,8).map((r,i) => (
+                    <a key={i} href={r.url} target="_blank" rel="noopener noreferrer" className="block text-[12px] text-blue-300 hover:underline truncate">{r.source} — {r.url}</a>
+                  ))}
+                </div>
+              )}
+            </Section>
+          )}
 
           <Section title="Observations / Detection History" testid="section-observations">
             <table className="dense w-full">
