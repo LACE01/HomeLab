@@ -28,6 +28,7 @@ export default function FindingDetail() {
   const [activity, setActivity] = useState([]);
   const [comments, setComments] = useState([]);
   const [newComment, setNewComment] = useState("");
+  const [attachments, setAttachments] = useState([]);
   const [statusVal, setStatusVal] = useState("");
   const [kri, setKri] = useState(null);
   const [intel, setIntel] = useState(null);
@@ -52,10 +53,23 @@ export default function FindingDetail() {
   };
 
   const addComment = async () => {
-    if (!newComment.trim()) return;
-    await api.post(`/v1/findings/${id}/comments`, { text: newComment });
-    setNewComment("");
+    if (!newComment.trim() && attachments.length === 0) return;
+    await api.post(`/v1/findings/${id}/comments`, { text: newComment, attachments });
+    setNewComment(""); setAttachments([]);
     const r = await api.get(`/v1/findings/${id}/comments`); setComments(r.data.items);
+  };
+
+  const handleFiles = async (files) => {
+    const arr = Array.from(files || []);
+    const out = [...attachments];
+    for (const file of arr) {
+      if (!file.type.startsWith("image/") && file.type !== "application/pdf") continue;
+      if (file.size > 1_000_000) { alert(`${file.name} > 1MB — skipped`); continue; }
+      const reader = new FileReader();
+      const data_url = await new Promise((res) => { reader.onload = () => res(reader.result); reader.readAsDataURL(file); });
+      out.push({ name: file.name, mime: file.type, data_url });
+    }
+    setAttachments(out);
   };
 
   if (!f) return <Layout title="Finding…"><div className="text-slate-500">Loading…</div></Layout>;
@@ -244,13 +258,41 @@ export default function FindingDetail() {
               {comments.map(c => (
                 <div key={c.id} className="border border-[#30363D] rounded p-2.5 bg-[#161B22]">
                   <div className="text-[10.5px] font-mono text-slate-500">{c.author} · {fmtDate(c.created_at)}</div>
-                  <div className="text-[12.5px] text-slate-200 mt-1">{c.text}</div>
+                  {c.text && <div className="text-[12.5px] text-slate-200 mt-1 whitespace-pre-wrap">{c.text}</div>}
+                  {(c.attachments || []).length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {c.attachments.map((a, i) => a.mime?.startsWith("image/") ? (
+                        <a key={i} href={a.data_url} target="_blank" rel="noopener noreferrer" title={a.name}>
+                          <img src={a.data_url} alt={a.name} className="max-h-24 rounded border border-[#30363D] hover:border-blue-500/50"/>
+                        </a>
+                      ) : (
+                        <a key={i} href={a.data_url} download={a.name} className="text-[11.5px] text-blue-300 hover:underline">📎 {a.name}</a>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
+            {attachments.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                {attachments.map((a, i) => (
+                  <div key={i} className="flex items-center gap-1.5 px-2 py-1 border border-[#30363D] rounded bg-[#161B22] text-[11px]">
+                    {a.mime?.startsWith("image/") && <img src={a.data_url} alt="" className="h-6 w-6 object-cover rounded"/>}
+                    <span className="text-slate-300 truncate max-w-[140px]">{a.name}</span>
+                    <button onClick={()=>setAttachments(attachments.filter((_,j)=>j!==i))} className="text-red-400 hover:text-red-300">×</button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="flex gap-2">
-              <input data-testid="comment-input" value={newComment} onChange={(e)=>setNewComment(e.target.value)} placeholder="Add a triage note…"
-                className="flex-1 h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12.5px] text-slate-200"/>
+              <input data-testid="comment-input" value={newComment} onChange={(e)=>setNewComment(e.target.value)} placeholder="Add a triage note (paste screenshot or attach below)…"
+                className="flex-1 h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12.5px] text-slate-200"
+                onPaste={(e) => { const items = e.clipboardData?.items; if (items) { const files=[]; for (const it of items) if (it.kind==='file') { const f=it.getAsFile(); if (f) files.push(f); } if (files.length) handleFiles(files); } }}
+              />
+              <label data-testid="comment-attach" className="h-8 px-2.5 text-[12px] border border-[#30363D] hover:border-blue-500/50 rounded inline-flex items-center gap-1 cursor-pointer text-slate-300">
+                📎
+                <input type="file" multiple accept="image/*,application/pdf" className="hidden" onChange={(e)=>handleFiles(e.target.files)}/>
+              </label>
               <button data-testid="comment-add" onClick={addComment} className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded inline-flex items-center gap-1">
                 <ChatCircle size={14}/> Add
               </button>

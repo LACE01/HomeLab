@@ -374,12 +374,20 @@ async def finding_comments(finding_id: str, user: dict = Depends(get_current_use
 
 class CommentBody(BaseModel):
     text: str
+    attachments: Optional[List[dict]] = None  # [{name, mime, data_url}] — data_url is base64 (small images only)
 
 
 @api.post("/v1/findings/{finding_id}/comments")
 async def add_comment(finding_id: str, body: CommentBody, user: dict = Depends(get_current_user)):
+    # Reject oversized attachments (>1MB base64 → ~750KB binary)
+    atts = body.attachments or []
+    for a in atts:
+        if isinstance(a.get("data_url"), str) and len(a["data_url"]) > 1_400_000:
+            raise HTTPException(413, f"Attachment '{a.get('name','?')}' exceeds 1 MB limit")
+        if a.get("mime") and not a["mime"].startswith(("image/", "application/pdf")):
+            raise HTTPException(400, f"Only image and PDF attachments allowed (got {a['mime']})")
     c = {"id": str(uuid.uuid4()), "finding_id": finding_id, "author": user["email"],
-         "text": body.text, "created_at": now_iso()}
+         "text": body.text, "attachments": atts, "created_at": now_iso()}
     await db.comments.insert_one(c)
     return _clean(c)
 
@@ -1427,6 +1435,22 @@ async def on_startup():
         logger.info("Seed completed.")
     except Exception as e:
         logger.exception(f"Seed failed: {e}")
+    # Nightly rescore loop (24h)
+    import asyncio as _a
+    from nightly import nightly_loop
+    _a.create_task(nightly_loop(db, interval_hours=24))
+
+
+@api.post("/v1/admin/nightly-rescore/run")
+async def trigger_nightly(user: dict = Depends(require_role("admin"))):
+    from nightly import run_nightly_rescore
+    return await run_nightly_rescore(db)
+
+
+@api.get("/v1/admin/nightly-rescore/runs")
+async def list_rescore_runs(user: dict = Depends(get_current_user)):
+    items = await db.rescoring_runs.find({}, {"_id": 0}).sort("ran_at", -1).limit(50).to_list(50)
+    return {"items": items}
 
 
 @api.get("/")

@@ -44,6 +44,7 @@ export default function Dashboard() {
   const [manager, setManager] = useState(null);
   const [exec, setExec] = useState(null);
   const [sevStats, setSevStats] = useState(null);
+  const [cwe, setCwe] = useState([]);
   const [tab, setTab] = useState(role === "executive" ? "exec" : role === "manager" ? "mgr" : "ops");
 
   useEffect(() => {
@@ -51,6 +52,7 @@ export default function Dashboard() {
     api.get("/v1/dashboards/manager").then(r => setManager(r.data));
     api.get("/v1/dashboards/executive").then(r => setExec(r.data));
     api.get("/v1/findings/stats").then(r => setSevStats(r.data));
+    api.get("/v1/cwe-prevalence").then(r => setCwe(r.data.items || []));
   }, []);
 
   const downloadPdf = async () => {
@@ -158,6 +160,33 @@ export default function Dashboard() {
               </div>
             </Panel>
           </div>
+
+          {/* CWE Prevalence — your local systemic weaknesses (KRI methodology) */}
+          {cwe.length > 0 && (
+            <Panel title="CWE Prevalence — Local Systemic Weaknesses" testid="panel-cwe">
+              <div className="p-3 text-[11px] text-slate-500 mb-1">
+                CWEs ranked by frequency in YOUR environment. Higher weight = more recurring → gets a multiplier in KRI scoring.
+              </div>
+              <table className="dense w-full">
+                <thead><tr><th className="text-left">CWE</th><th className="text-left">Sample Title</th><th>Findings</th><th>Local Weight</th></tr></thead>
+                <tbody>
+                  {cwe.slice(0,10).map(c => (
+                    <tr key={c.cwe} className="border-t border-[#30363D]">
+                      <td className="font-mono text-[12px] text-blue-300">{c.cwe}</td>
+                      <td className="text-slate-300 max-w-[420px] truncate">{c.sample_title}</td>
+                      <td className="text-center font-mono">{c.count}</td>
+                      <td><div className="flex items-center gap-2">
+                        <div className="h-1.5 w-24 bg-slate-800 rounded overflow-hidden">
+                          <div className="h-full bg-blue-400" style={{width:`${((c.weight-0.8)/0.7)*100}%`}}/>
+                        </div>
+                        <span className="font-mono text-[11px]">{c.weight}×</span>
+                      </div></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Panel>
+          )}
         </div>
       )}
 
