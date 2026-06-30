@@ -87,11 +87,27 @@ export default function Dashboard() {
     // Skip custom request until both dates are set
     if (range === "custom" && (!customRange.start || !customRange.end)) return;
 
-    api.get("/v1/dashboards/analyst", { params: rangeParams }).then(r => setAnalyst(r.data));
-    api.get("/v1/dashboards/manager", { params: rangeParams }).then(r => setManager(r.data));
-    api.get("/v1/dashboards/executive", { params: rangeParams }).then(r => setExec(r.data));
-    api.get("/v1/findings/stats").then(r => setSevStats(r.data));
-    api.get("/v1/cwe-prevalence").then(r => setCwe(r.data.items || []));
+    // Debounce: wait 300ms after the last range/prefs change before firing the
+    // 5 parallel dashboard requests. Prevents request bursts on rapid clicks.
+    let cancelled = false;
+    const fire = async () => {
+      // Bundle the 5 reads in parallel
+      const [a, m, e, s, c] = await Promise.all([
+        api.get("/v1/dashboards/analyst",   { params: rangeParams }),
+        api.get("/v1/dashboards/manager",   { params: rangeParams }),
+        api.get("/v1/dashboards/executive", { params: rangeParams }),
+        api.get("/v1/findings/stats"),
+        api.get("/v1/cwe-prevalence"),
+      ]);
+      if (cancelled) return;
+      setAnalyst(a.data);
+      setManager(m.data);
+      setExec(e.data);
+      setSevStats(s.data);
+      setCwe(c.data.items || []);
+    };
+    const t = setTimeout(fire, 300);
+    return () => { cancelled = true; clearTimeout(t); };
   }, [prefs, range, rangeParams, customRange.start, customRange.end]);
 
   const setRange = (r) => setSection("dashboard", { range: r });
@@ -154,8 +170,9 @@ export default function Dashboard() {
             {tileOn("stat-new") && <Stat label={`New (${analyst.range || range})`} value={analyst.new_findings} tone="blue" testid="stat-new" />}
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 min-w-0">
             {tileOn("panel-severity") && (
+              <div className="min-w-0">
               <Panel title="Open Findings by Severity" testid="panel-severity">
                 <div className="p-3 h-[260px]">
                   {sevStats && (
@@ -174,43 +191,56 @@ export default function Dashboard() {
                   )}
                 </div>
               </Panel>
+              </div>
             )}
 
             {tileOn("panel-top-findings") && (
-              <div className="lg:col-span-2">
+              <div className="lg:col-span-2 min-w-0">
                 <Panel title="Top Risk Findings" testid="panel-top-findings">
-                  <table className="dense w-full">
-                    <thead><tr><th className="text-left">Risk</th><th className="text-left">Severity</th><th className="text-left">Title</th><th className="text-left">Asset</th><th className="text-left">Owner</th><th className="text-left">Due</th></tr></thead>
-                    <tbody>
-                      {analyst.top_findings.map(f => (
-                        <tr key={f.id} className="border-t border-[#30363D] hover:bg-slate-800/30">
-                          <td><RiskBar score={f.risk_score} /></td>
-                          <td><SevBadge severity={f.severity} /></td>
-                          <td><Link className="text-blue-300 hover:underline" to={`/findings/${f.id}`} data-testid={`top-finding-${f.id}`}>{f.title?.slice(0,68)}</Link>
-                            <div className="flex gap-1 mt-0.5">
-                              {f.kev_flag && <Chip color="red">KEV</Chip>}
-                              {f.cve && <Chip color="slate">{f.cve}</Chip>}
-                              {f.internet_facing && <Chip color="orange">EXPOSED</Chip>}
-                            </div>
-                          </td>
-                          <td className="font-mono text-[11.5px]">{f.asset_hostname}</td>
-                          <td className="text-slate-400">{f.owner_team}</td>
-                          <td className={isOverdue(f.due_at) ? "text-red-300" : "text-slate-400"}>{fmtRel(f.due_at)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <div className="overflow-x-auto">
+                    <table className="dense w-full table-fixed">
+                      <colgroup>
+                        <col className="w-[80px]"/>
+                        <col className="w-[80px]"/>
+                        <col/>
+                        <col className="w-[110px]"/>
+                        <col className="w-[110px]"/>
+                        <col className="w-[90px]"/>
+                      </colgroup>
+                      <thead><tr><th className="text-left">Risk</th><th className="text-left">Severity</th><th className="text-left">Title</th><th className="text-left">Asset</th><th className="text-left">Owner</th><th className="text-left">Due</th></tr></thead>
+                      <tbody>
+                        {analyst.top_findings.map(f => (
+                          <tr key={f.id} className="border-t border-[#30363D] hover:bg-slate-800/30">
+                            <td><RiskBar score={f.risk_score} /></td>
+                            <td><SevBadge severity={f.severity} /></td>
+                            <td className="min-w-0">
+                              <Link className="text-blue-300 hover:underline block truncate" to={`/findings/${f.id}`} data-testid={`top-finding-${f.id}`} title={f.title}>{f.title}</Link>
+                              <div className="flex gap-1 mt-0.5 flex-wrap">
+                                {f.kev_flag && <Chip color="red">KEV</Chip>}
+                                {f.cve && <Chip color="slate">{f.cve}</Chip>}
+                                {f.internet_facing && <Chip color="orange">EXPOSED</Chip>}
+                              </div>
+                            </td>
+                            <td className="font-mono text-[11.5px] truncate" title={f.asset_hostname}>{f.asset_hostname}</td>
+                            <td className="text-slate-400 truncate" title={f.owner_team}>{f.owner_team}</td>
+                            <td className={isOverdue(f.due_at) ? "text-red-300 text-[11px]" : "text-slate-400 text-[11px]"}>{fmtRel(f.due_at)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </Panel>
               </div>
             )}
 
             {tileOn("panel-imports") && (
+              <div className="min-w-0">
               <Panel title="Recent Imports" testid="panel-imports">
                 <div className="divide-y divide-[#30363D]">
                   {analyst.recent_imports.map(j => (
                     <div key={j.id} className="px-4 py-2.5">
                       <div className="flex items-center justify-between">
-                        <div className="text-[12.5px] text-slate-200">{j.source_name}</div>
+                        <div className="text-[12.5px] text-slate-200 truncate">{j.source_name}</div>
                         <Chip color={j.status === "success" ? "green" : "red"}>{j.status}</Chip>
                       </div>
                       <div className="text-[11px] text-slate-500 mt-0.5 font-mono">
@@ -221,6 +251,7 @@ export default function Dashboard() {
                   ))}
                 </div>
               </Panel>
+              </div>
             )}
           </div>
 

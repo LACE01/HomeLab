@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { api } from "@/lib/api";
 
 /**
@@ -25,7 +26,10 @@ export function usePreferences() {
     setPrefs(next);
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      api.put("/v1/me/preferences", { prefs: next }).catch(() => {});
+      api.put("/v1/me/preferences", { prefs: next })
+        .catch((e) => {
+          toast.error(e.response?.data?.detail || "Failed to save preferences — your last change wasn't persisted");
+        });
     }, 400);
   }, []);
 

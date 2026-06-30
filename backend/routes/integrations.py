@@ -47,7 +47,11 @@ async def update_integration(integration_id: str, body: IntegrationConfig, user:
     update = body.model_dump(exclude_none=True)
     for k, v in update.items():
         cfg[k] = v
-    await db.integrations.update_one({"id": integration_id}, {"$set": {"config": cfg, "last_changed_at": now_iso()}})
+    # If credentials are now present, lift the "not_configured" status to "healthy" (user must Test to confirm)
+    new_status = integration.get("status", "not_configured")
+    if cfg.get("endpoint") and (cfg.get("api_key") or cfg.get("username")) and new_status == "not_configured":
+        new_status = "healthy"
+    await db.integrations.update_one({"id": integration_id}, {"$set": {"config": cfg, "status": new_status, "last_changed_at": now_iso()}})
     return {"ok": True}
 
 

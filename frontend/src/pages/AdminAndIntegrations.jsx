@@ -14,7 +14,23 @@ export function Integrations() {
   const load = () => api.get("/v1/integrations").then(r => setItems(r.data.items));
   useEffect(() => { load(); }, []);
 
-  const Icon = ({ s }) => s === "healthy" ? <CheckCircle size={16} className="text-emerald-400"/> : s === "degraded" ? <WarningCircle size={16} className="text-amber-400"/> : <XCircle size={16} className="text-red-400"/>;
+  const Icon = ({ s }) =>
+    s === "healthy" ? <CheckCircle size={16} className="text-emerald-400"/> :
+    s === "degraded" ? <WarningCircle size={16} className="text-amber-400"/> :
+    s === "not_configured" ? <GearSix size={16} className="text-slate-500"/> :
+    <XCircle size={16} className="text-red-400"/>;
+
+  const sync = async (i) => {
+    setTesting(i.id);
+    try {
+      const r = await api.post(`/v1/admin/qualys/sync/run`);
+      const s = r.data?.summary || {};
+      toast.success(`${i.name}: +${s.created || 0} new · ↻${s.updated || 0} updated · ${s.detections || 0} detections`);
+      await load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Sync failed");
+    } finally { setTesting(null); }
+  };
 
   const openEdit = (i) => {
     setEditing(i);
@@ -74,8 +90,18 @@ export function Integrations() {
             </div>
 
             <div className="mt-3 flex items-center justify-between gap-2">
-              <Chip color={i.status === "healthy" ? "green" : i.status === "degraded" ? "amber" : "red"}>{i.status}</Chip>
+              <Chip color={
+                i.status === "healthy" ? "green" :
+                i.status === "degraded" ? "amber" :
+                i.status === "not_configured" ? "slate" : "red"
+              }>{i.status === "not_configured" ? "not configured" : i.status}</Chip>
               <div className="flex gap-1.5">
+                {i.name === "Qualys VMDR" && i.status !== "not_configured" && (
+                  <button data-testid={`sync-${i.id}`} disabled={testing===i.id} onClick={()=>sync(i)}
+                    className="h-7 px-2.5 text-[11px] bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25 rounded inline-flex items-center gap-1 disabled:opacity-50">
+                    <Lightning size={12}/> {testing===i.id ? "Syncing…" : "Sync now"}
+                  </button>
+                )}
                 <button data-testid={`test-${i.id}`} disabled={testing===i.id} onClick={()=>test(i)}
                   className="h-7 px-2.5 text-[11px] border border-[#30363D] hover:border-emerald-500/50 hover:text-emerald-300 rounded inline-flex items-center gap-1 disabled:opacity-50">
                   <Lightning size={12}/> {testing===i.id ? "Testing…" : "Test"}

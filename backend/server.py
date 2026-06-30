@@ -84,4 +84,7 @@ async def on_startup():
     # Nightly rescore loop (24h)
     import asyncio as _a
     from nightly import nightly_loop
+    from qualys_sync import qualys_poll_loop
     _a.create_task(nightly_loop(db, interval_hours=24))
+    # Qualys live sync loop (60min) — skips when integration is not configured
+    _a.create_task(qualys_poll_loop(db, interval_minutes=60))

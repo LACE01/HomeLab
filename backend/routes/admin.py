@@ -297,3 +297,29 @@ async def trigger_nightly(user: dict = Depends(require_role("admin"))):
 async def list_rescore_runs(user: dict = Depends(require_role("admin"))):
     items = await db.rescoring_runs.find({}, {"_id": 0}).sort("ran_at", -1).limit(50).to_list(50)
     return {"items": items}
+
+
+# --------------------------- QUALYS LIVE SYNC ---------------------------
+@router.post("/v1/admin/qualys/sync/run")
+async def trigger_qualys_sync(user: dict = Depends(require_role("admin"))):
+    """One-shot Qualys VMDR sync (admin only). Returns the run record."""
+    from qualys_sync import run_qualys_sync
+    try:
+        return await run_qualys_sync(db)
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/v1/admin/qualys/sync/runs")
+async def list_qualys_runs(user: dict = Depends(require_role("admin"))):
+    items = await db.qualys_sync_runs.find({}, {"_id": 0}).sort("ran_at", -1).limit(50).to_list(50)
+    return {"items": items}
+
+
+# --------------------------- DATA WIPE (one-shot demo cleanup) ---------------------------
+@router.post("/v1/admin/wipe-demo-data")
+async def wipe_demo(user: dict = Depends(require_role("admin"))):
+    """Delete every operational data collection (findings, assets, products, tickets, etc.).
+    Keeps users, integrations config, notification channels, assignment rules, API keys."""
+    from seed import wipe_demo_data
+    return {"deleted": await wipe_demo_data(db)}

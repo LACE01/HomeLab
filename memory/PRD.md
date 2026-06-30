@@ -39,15 +39,34 @@ See /app/memory/test_credentials.md.
 - Excel export (.xlsx) — CSV implemented
 
 ## Next Tasks
-1. ~~**P2 Refactor**: Split server.py into FastAPI APIRouter modules~~ **DONE (Feb 2026)** — see "P2 Refactor" section below
-2. Replace native `<input type='date'>` in TimeRangeSelector with shadcn Calendar/Popover for design consistency
-3. Add request debouncing on TimeRangeSelector rapid-clicks (currently fires 5 parallel requests per change)
-4. Toast feedback when `PUT /v1/me/preferences` fails (currently silent .catch)
-5. Adapter-specific ingestion endpoints (Qualys / Nessus)
-6. SLA editor UI
-7. Notification policies (email policies; Discord live)
-8. Live OpenCTI key once user provides it
-9. Fix stale credential references in `/app/backend/tests/test_reports_iter2.py` (uses old `admin@vulnops.io` / `admin123`)
+1. ~~**P2 Refactor**: Split server.py~~ **DONE**
+2. ~~Replace native `<input type='date'>` in TimeRangeSelector with shadcn Calendar/Popover~~ **DONE**
+3. ~~Add request debouncing on TimeRangeSelector rapid-clicks~~ **DONE** (300ms debounce, Promise.all batches the 5 reads)
+4. ~~Toast feedback when `PUT /v1/me/preferences` fails~~ **DONE**
+5. ~~Wipe demo data + remove example connectors + go live with Qualys VMDR~~ **DONE**
+6. Adapter-specific ingestion endpoints (Tenable / CrowdStrike / Wiz / GHAS / Snyk live) — currently only Qualys is live
+7. SLA editor UI
+8. Notification policies (email policies; Discord already live)
+9. Live OpenCTI key once user provides it
+10. Fix stale credential references in `/app/backend/tests/test_reports_iter2.py`
+
+## Qualys VMDR Live Sync (Feb 2026) — COMPLETE
+- `backend/qualys_sync.py` calls `POST /api/2.0/fo/asset/host/vm/detection/?action=list` and the knowledge-base API to enrich QID → title/CVE/CVSS/CWE/solution
+- Default scope: severities 4-5, status Active/Re-Opened (override via integration `config.sync_scope`)
+- Auth: HTTP Basic via username + api_key (stored on Qualys VMDR integration config)
+- Admin endpoints:
+  - `POST /api/v1/admin/qualys/sync/run` — one-shot sync (button)
+  - `GET /api/v1/admin/qualys/sync/runs` — history
+  - `POST /api/v1/admin/wipe-demo-data` — delete all operational data (used once to flush seeded demo)
+- Background loop: 60-min poll started in `server.on_startup`; auto-skips when integration is not configured
+- Auto-creates assets on first detection (low ownership confidence so the assignment-rules engine can pick them up)
+- Surfaces every run in both `qualys_sync_runs` and the standard `import_jobs` collection so the dashboard's Recent Imports panel shows live progress
+- **First live run (June 30, 2026)**: 11 detections pulled, 5 real Eagle County assets created, 10 findings ingested with real CVEs (CVE-2026-21218, CVE-2026-26130, CVE-2024-34116, etc.)
+
+## Demo-data cleanup (Feb 2026) — COMPLETE
+- `seed.py` rewritten as minimal operational scaffolding (users, assignment_rules, Discord channel, API key, integration cards only)
+- Other connectors (Tenable, CrowdStrike, Defender, Wiz, GHAS, Snyk, Jira, ServiceNow, GitHub, GitLab, Azure DevOps, OpenCTI) now show `not_configured` status with a grey gear icon in the Integrations UI; "Sync now" button appears only on connectors with valid credentials
+- Dashboard overlap fixed: `Top Risk Findings` panel now uses `table-fixed` + `overflow-x-auto` + `min-w-0` grid children so cells truncate cleanly instead of bleeding into the right-hand `Recent Imports` panel
 
 ## P2 Refactor — server.py split (Feb 2026) — COMPLETE
 Split the 1640-line `server.py` into 9 APIRouter modules under `/app/backend/routes/` to eliminate the route-placement footgun and isolate concerns:
