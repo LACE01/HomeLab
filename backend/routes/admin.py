@@ -337,7 +337,8 @@ async def list_rescore_runs(user: dict = Depends(require_role("admin"))):
 async def qualys_scope(user: dict = Depends(require_role("admin"))):
     """Return the API user's effective Qualys scope (role + visible host count)
     so the UI can warn when permissions are too narrow."""
-    import httpx, re
+    import httpx
+    import re
     import xml.etree.ElementTree as ET
     integration = await db.integrations.find_one({"name": "Qualys VMDR"}, {"_id": 0})
     cfg = (integration or {}).get("config") or {}
@@ -384,12 +385,36 @@ async def qualys_scope(user: dict = Depends(require_role("admin"))):
 
 @router.post("/v1/admin/qualys/sync/run")
 async def trigger_qualys_sync(user: dict = Depends(require_role("admin"))):
-    """One-shot Qualys VMDR sync (admin only). Returns the run record."""
+    """Kick off a Qualys VMDR sync in the background and return immediately.
+    The browser polls GET /v1/admin/qualys/sync/runs for completion."""
     from qualys_sync import run_qualys_sync
-    try:
-        return await run_qualys_sync(db)
-    except RuntimeError as e:
-        raise HTTPException(400, str(e))
+    import asyncio
+    import uuid as _uuid
+    existing = await db.qualys_sync_runs.find_one({"status": "running"}, {"_id": 0})
+    if existing:
+        return {"id": existing["id"], "status": "running", "message": "Sync already in progress"}
+
+    job_id = str(_uuid.uuid4())
+    await db.qualys_sync_runs.insert_one({
+        "id": job_id, "status": "running", "ran_at": now_iso(),
+        "summary": {"detections": 0, "created": 0, "updated": 0, "deduped": 0, "failed": 0},
+        "errors": [],
+    })
+
+    async def _runner():
+        try:
+            result = await run_qualys_sync(db)
+            # `run_qualys_sync` writes its own record; remove the placeholder
+            await db.qualys_sync_runs.delete_one({"id": job_id})
+            return result
+        except Exception as e:
+            await db.qualys_sync_runs.update_one(
+                {"id": job_id},
+                {"$set": {"status": "failed", "errors": [{"stage": "runner", "error": str(e)}]}},
+            )
+
+    asyncio.create_task(_runner())
+    return {"id": job_id, "status": "running", "message": "Sync started — poll /v1/admin/qualys/sync/runs"}
 
 
 @router.get("/v1/admin/qualys/sync/runs")

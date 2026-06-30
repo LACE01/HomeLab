@@ -24,14 +24,33 @@ export function Integrations() {
 
   const sync = async (i) => {
     setTesting(i.id);
+    let toastId;
     try {
       const r = await api.post(`/v1/admin/qualys/sync/run`);
-      const s = r.data?.summary || {};
-      toast.success(`${i.name}: +${s.created || 0} new · ↻${s.updated || 0} updated · ${s.detections || 0} detections`);
+      // Sync now runs async — poll until the latest run completes
+      toastId = toast.loading(`${i.name}: sync started — pulling detections…`);
+      const startId = r.data?.id;
+      const startedAt = Date.now();
+      const MAX_MS = 10 * 60 * 1000; // 10 min cap
+      while (Date.now() - startedAt < MAX_MS) {
+        await new Promise(res => setTimeout(res, 4000));
+        const runs = await api.get("/v1/admin/qualys/sync/runs");
+        const latest = (runs.data?.items || [])[0];
+        // Stop when we see a completed run that's newer than ours OR the same one finished
+        if (latest && latest.status !== "running" && latest.id !== startId) {
+          const s = latest.summary || {};
+          toast.success(`${i.name}: +${s.created || 0} new · ↻${s.updated || 0} updated · ${s.detections || 0} detections`, { id: toastId });
+          break;
+        }
+        if (latest && latest.id === startId && latest.status === "failed") {
+          toast.error(`${i.name}: sync failed — ${latest.errors?.[0]?.error || "unknown error"}`, { id: toastId });
+          break;
+        }
+      }
       await load();
       await loadScope();
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Sync failed");
+      toast.error(e.response?.data?.detail || "Sync failed to start", { id: toastId });
     } finally { setTesting(null); }
   };
 

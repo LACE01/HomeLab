@@ -394,19 +394,9 @@ async def run_qualys_sync(db) -> dict:
         except Exception as e:
             errors.append({"stage": "kb_fetch", "qids": chunk[:5], "error": str(e)})
 
-    # NVD enrichment for unique CVEs (cached). Rate-limit: ~5 req/sec without key, ~50 req/sec with key.
+    # Stage 1 — Insert/update all findings immediately with Qualys KB data only.
+    # NVD enrichment happens in a separate post-pass so the UI sees findings within seconds.
     nvd_cache: dict = {}
-    unique_cves = sorted({(kb.get(q) or {}).get("cve") for q in qids if (kb.get(q) or {}).get("cve")})
-    if nvd_key:
-        import asyncio as _asyncio
-        for i, cve in enumerate(unique_cves):
-            data = await _fetch_nvd_cve(nvd_key, cve)
-            if data:
-                nvd_cache[cve] = data
-            # Polite throttle to stay under 50 req / 30s
-            if (i + 1) % 25 == 0:
-                await _asyncio.sleep(1.0)
-
     for det in detections:
         try:
             outcome = await _upsert_finding(db, det, kb, nvd_cache)
@@ -417,11 +407,45 @@ async def run_qualys_sync(db) -> dict:
         except Exception as e:
             errors.append({"stage": "upsert", "qid": det.get("qid"), "hostname": det.get("hostname"), "error": str(e)})
 
+    # Stage 2 — Best-effort NVD enrichment with rate-limit handling.
+    # Skips remaining CVEs after 5 consecutive failures; updates findings in-place.
+    unique_cves = sorted({(kb.get(q) or {}).get("cve") for q in qids if (kb.get(q) or {}).get("cve")})
+    nvd_enriched = 0
+    if nvd_key and unique_cves:
+        import asyncio as _asyncio
+        nvd_fail = 0
+        for cve in unique_cves:
+            if nvd_fail >= 5:
+                errors.append({"stage": "nvd", "skipped_remaining": len(unique_cves) - nvd_enriched, "error": "NVD rate-limit / 503 — skipping remaining CVEs"})
+                break
+            data = await _fetch_nvd_cve(nvd_key, cve)
+            if data:
+                # Patch findings with NVD-only fields where Qualys lacks them
+                set_doc = {}
+                if data.get("description"):
+                    set_doc["description"] = data["description"]
+                if data.get("cvss_score") is not None:
+                    set_doc["cvss_score"] = data["cvss_score"]
+                if data.get("cvss_vector"):
+                    set_doc["cvss_vector"] = data["cvss_vector"]
+                if data.get("cwe"):
+                    set_doc["cwe"] = data["cwe"]
+                if data.get("references"):
+                    set_doc["external_references"] = data["references"]
+                if set_doc:
+                    await db.findings.update_many({"cve": cve}, {"$set": set_doc})
+                nvd_enriched += 1
+                nvd_fail = 0
+            else:
+                nvd_fail += 1
+            await _asyncio.sleep(0.7)
+
     summary = {
         "started_at": started_at,
         "detections": len(detections),
         "unique_qids": len(qids),
         "kb_entries": len(kb),
+        "nvd_enriched": nvd_enriched,
         "created": created,
         "updated": updated,
         "deduped": updated,
