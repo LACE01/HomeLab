@@ -1,7 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { usePreferences } from "@/lib/usePreferences";
 import Layout from "@/components/Layout";
+import TimeRangeSelector from "@/components/TimeRangeSelector";
+import TilePicker from "@/components/TilePicker";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtRel, isOverdue } from "@/lib/utils-fmt";
 import { Link } from "react-router-dom";
@@ -37,23 +40,63 @@ const Panel = ({ title, children, actions, testid }) => (
   </div>
 );
 
+// Catalog of tiles (per tab) for the TilePicker
+const TILE_CATALOG = [
+  { id: "stat-open", label: "Open Findings", group: "Stats" },
+  { id: "stat-triage", label: "Needs Triage", group: "Stats" },
+  { id: "stat-kev", label: "KEV (Exploited)", group: "Stats" },
+  { id: "stat-rti", label: "Active Attacks", group: "Stats" },
+  { id: "stat-overdue", label: "Overdue", group: "Stats" },
+  { id: "stat-reopened", label: "Reopened", group: "Stats" },
+  { id: "stat-unassigned", label: "Unassigned", group: "Stats" },
+  { id: "stat-lowconf", label: "Low-Confidence Owner", group: "Stats" },
+  { id: "stat-failedimports", label: "Failed Imports", group: "Stats" },
+  { id: "stat-new", label: "New (window)", group: "Stats" },
+  { id: "panel-severity", label: "Open Findings by Severity", group: "Panels" },
+  { id: "panel-top-findings", label: "Top Risk Findings", group: "Panels" },
+  { id: "panel-imports", label: "Recent Imports", group: "Panels" },
+  { id: "panel-cwe", label: "CWE Prevalence", group: "Panels" },
+];
+
 export default function Dashboard() {
   const { user } = useAuth();
   const role = user?.role || "analyst";
+  const { prefs, setSection } = usePreferences();
   const [analyst, setAnalyst] = useState(null);
   const [manager, setManager] = useState(null);
   const [exec, setExec] = useState(null);
   const [sevStats, setSevStats] = useState(null);
   const [cwe, setCwe] = useState([]);
   const [tab, setTab] = useState(role === "executive" ? "exec" : role === "manager" ? "mgr" : "ops");
+  const [customRange, setCustomRange] = useState({ start: "", end: "" });
+
+  const range = prefs?.dashboard?.range || "30d";
+  const tiles = prefs?.dashboard?.tiles || {};
+  const tileOn = (id) => tiles[id] !== false; // default-on
+
+  const rangeParams = useMemo(() => {
+    if (range === "custom") {
+      return { range: "custom", start: customRange.start, end: customRange.end };
+    }
+    return { range };
+  }, [range, customRange]);
 
   useEffect(() => {
-    api.get("/v1/dashboards/analyst").then(r => setAnalyst(r.data));
-    api.get("/v1/dashboards/manager").then(r => setManager(r.data));
-    api.get("/v1/dashboards/executive").then(r => setExec(r.data));
+    // Wait for prefs to load, then refetch when range changes
+    if (!prefs) return;
+    // Skip custom request until both dates are set
+    if (range === "custom" && (!customRange.start || !customRange.end)) return;
+
+    api.get("/v1/dashboards/analyst", { params: rangeParams }).then(r => setAnalyst(r.data));
+    api.get("/v1/dashboards/manager", { params: rangeParams }).then(r => setManager(r.data));
+    api.get("/v1/dashboards/executive", { params: rangeParams }).then(r => setExec(r.data));
     api.get("/v1/findings/stats").then(r => setSevStats(r.data));
     api.get("/v1/cwe-prevalence").then(r => setCwe(r.data.items || []));
-  }, []);
+  }, [prefs, range, rangeParams, customRange.start, customRange.end]);
+
+  const setRange = (r) => setSection("dashboard", { range: r });
+  const toggleTile = (id) => setSection("dashboard", { tiles: { ...tiles, [id]: !tileOn(id) } });
+  const resetTiles = () => setSection("dashboard", { tiles: {} });
 
   const downloadPdf = async () => {
     const r = await api.get("/v1/reports/pdf/executive", { responseType: "blob" });
@@ -72,11 +115,24 @@ export default function Dashboard() {
   return (
     <Layout title="Dashboard" subtitle="Live security posture across products, assets, and findings"
       actions={<>
+        <TimeRangeSelector
+          value={range}
+          onChange={setRange}
+          customStart={customRange.start}
+          customEnd={customRange.end}
+          onCustomChange={(d) => setCustomRange({ start: d.start || "", end: d.end || "" })}
+        />
         <div className="flex items-center gap-1 mr-1">
           <Tab id="ops" testid="tab-analyst">Analyst</Tab>
           <Tab id="mgr" testid="tab-manager">Manager</Tab>
           <Tab id="exec" testid="tab-executive">Executive</Tab>
         </div>
+        <TilePicker
+          tiles={tiles}
+          catalog={TILE_CATALOG}
+          onToggle={toggleTile}
+          onResetAll={resetTiles}
+        />
         <button data-testid="export-exec-pdf" onClick={downloadPdf}
           className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] hover:bg-slate-800/40 rounded inline-flex items-center gap-1.5 text-slate-300">
           <FileArrowDown size={14}/> Export PDF
@@ -86,83 +142,90 @@ export default function Dashboard() {
       {tab === "ops" && analyst && (
         <div className="space-y-4">
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
-            <Stat label="Open Findings" value={analyst.open_findings} icon={ChartLineUp} testid="stat-open" />
-            <Stat label="Needs Triage" value={analyst.needs_triage} tone="amber" icon={Warning} testid="stat-triage" />
-            <Stat label="KEV (Exploited)" value={analyst.kev_findings} tone="red" icon={Fire} testid="stat-kev" />
-            <Stat label="Active Attacks" value={analyst.rti_findings} tone="orange" icon={Lightning} testid="stat-rti" />
-            <Stat label="Overdue" value={analyst.overdue} tone="red" icon={Clock} testid="stat-overdue" />
-            <Stat label="Reopened" value={analyst.reopened} tone="amber" icon={ArrowsClockwise} testid="stat-reopened" />
-            <Stat label="Unassigned" value={analyst.unassigned} tone="blue" icon={UserCircle} testid="stat-unassigned" />
-            <Stat label="Low-Confidence Owner" value={analyst.low_confidence_ownership} tone="amber" testid="stat-lowconf" />
-            <Stat label="Failed Imports" value={analyst.failed_imports} tone={analyst.failed_imports > 0 ? "red" : "slate"} testid="stat-failedimports" />
-            <Stat label="New (24h)" value={analyst.new_findings} tone="blue" testid="stat-new" />
+            {tileOn("stat-open") && <Stat label="Open Findings" value={analyst.open_findings} icon={ChartLineUp} testid="stat-open" />}
+            {tileOn("stat-triage") && <Stat label="Needs Triage" value={analyst.needs_triage} tone="amber" icon={Warning} testid="stat-triage" />}
+            {tileOn("stat-kev") && <Stat label="KEV (Exploited)" value={analyst.kev_findings} tone="red" icon={Fire} testid="stat-kev" />}
+            {tileOn("stat-rti") && <Stat label="Active Attacks" value={analyst.rti_findings} tone="orange" icon={Lightning} testid="stat-rti" />}
+            {tileOn("stat-overdue") && <Stat label="Overdue" value={analyst.overdue} tone="red" icon={Clock} testid="stat-overdue" />}
+            {tileOn("stat-reopened") && <Stat label="Reopened" value={analyst.reopened} tone="amber" icon={ArrowsClockwise} testid="stat-reopened" />}
+            {tileOn("stat-unassigned") && <Stat label="Unassigned" value={analyst.unassigned} tone="blue" icon={UserCircle} testid="stat-unassigned" />}
+            {tileOn("stat-lowconf") && <Stat label="Low-Confidence Owner" value={analyst.low_confidence_ownership} tone="amber" testid="stat-lowconf" />}
+            {tileOn("stat-failedimports") && <Stat label="Failed Imports" value={analyst.failed_imports} tone={analyst.failed_imports > 0 ? "red" : "slate"} testid="stat-failedimports" />}
+            {tileOn("stat-new") && <Stat label={`New (${analyst.range || range})`} value={analyst.new_findings} tone="blue" testid="stat-new" />}
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-            <Panel title="Open Findings by Severity" testid="panel-severity">
-              <div className="p-3 h-[260px]">
-                {sevStats && (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie data={["Critical","High","Medium","Low","Info"].map(s => ({name: s, value: sevStats.by_severity?.[s] || 0}))}
-                        cx="50%" cy="50%" innerRadius={50} outerRadius={85} paddingAngle={2} dataKey="value"
-                        label={({name, value}) => value > 0 ? `${name}: ${value}` : ""}
-                        labelLine={false}>
-                        <Cell fill="#ef4444"/><Cell fill="#f97316"/><Cell fill="#f59e0b"/><Cell fill="#3b82f6"/><Cell fill="#64748b"/>
-                      </Pie>
-                      <Tooltip contentStyle={{ background:"#0D1117", border:"1px solid #30363D", fontSize:12 }}/>
-                      <Legend wrapperStyle={{fontSize:11, color:"#94a3b8"}}/>
-                    </PieChart>
-                  </ResponsiveContainer>
-                )}
-              </div>
-            </Panel>
-
-            <div className="lg:col-span-2">
-              <Panel title="Top Risk Findings" testid="panel-top-findings">
-                <table className="dense w-full">
-                  <thead><tr><th className="text-left">Risk</th><th className="text-left">Severity</th><th className="text-left">Title</th><th className="text-left">Asset</th><th className="text-left">Owner</th><th className="text-left">Due</th></tr></thead>
-                  <tbody>
-                    {analyst.top_findings.map(f => (
-                      <tr key={f.id} className="border-t border-[#30363D] hover:bg-slate-800/30">
-                        <td><RiskBar score={f.risk_score} /></td>
-                        <td><SevBadge severity={f.severity} /></td>
-                        <td><Link className="text-blue-300 hover:underline" to={`/findings/${f.id}`} data-testid={`top-finding-${f.id}`}>{f.title?.slice(0,68)}</Link>
-                          <div className="flex gap-1 mt-0.5">
-                            {f.kev_flag && <Chip color="red">KEV</Chip>}
-                            {f.cve && <Chip color="slate">{f.cve}</Chip>}
-                            {f.internet_facing && <Chip color="orange">EXPOSED</Chip>}
-                          </div>
-                        </td>
-                        <td className="font-mono text-[11.5px]">{f.asset_hostname}</td>
-                        <td className="text-slate-400">{f.owner_team}</td>
-                        <td className={isOverdue(f.due_at) ? "text-red-300" : "text-slate-400"}>{fmtRel(f.due_at)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+            {tileOn("panel-severity") && (
+              <Panel title="Open Findings by Severity" testid="panel-severity">
+                <div className="p-3 h-[260px]">
+                  {sevStats && (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie data={["Critical","High","Medium","Low","Info"].map(s => ({name: s, value: sevStats.by_severity?.[s] || 0}))}
+                          cx="50%" cy="50%" innerRadius={50} outerRadius={85} paddingAngle={2} dataKey="value"
+                          label={({name, value}) => value > 0 ? `${name}: ${value}` : ""}
+                          labelLine={false}>
+                          <Cell fill="#ef4444"/><Cell fill="#f97316"/><Cell fill="#f59e0b"/><Cell fill="#3b82f6"/><Cell fill="#64748b"/>
+                        </Pie>
+                        <Tooltip contentStyle={{ background:"#0D1117", border:"1px solid #30363D", fontSize:12 }}/>
+                        <Legend wrapperStyle={{fontSize:11, color:"#94a3b8"}}/>
+                      </PieChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
               </Panel>
-            </div>
-            <Panel title="Recent Imports" testid="panel-imports">
-              <div className="divide-y divide-[#30363D]">
-                {analyst.recent_imports.map(j => (
-                  <div key={j.id} className="px-4 py-2.5">
-                    <div className="flex items-center justify-between">
-                      <div className="text-[12.5px] text-slate-200">{j.source_name}</div>
-                      <Chip color={j.status === "success" ? "green" : "red"}>{j.status}</Chip>
-                    </div>
-                    <div className="text-[11px] text-slate-500 mt-0.5 font-mono">
-                      +{j.created_count} new · ↻{j.updated_count} updated · {j.deduplicated_count} dedup
-                    </div>
-                    <div className="text-[10.5px] text-slate-600 mt-0.5">{fmtRel(j.started_at)}</div>
-                  </div>
-                ))}
+            )}
+
+            {tileOn("panel-top-findings") && (
+              <div className="lg:col-span-2">
+                <Panel title="Top Risk Findings" testid="panel-top-findings">
+                  <table className="dense w-full">
+                    <thead><tr><th className="text-left">Risk</th><th className="text-left">Severity</th><th className="text-left">Title</th><th className="text-left">Asset</th><th className="text-left">Owner</th><th className="text-left">Due</th></tr></thead>
+                    <tbody>
+                      {analyst.top_findings.map(f => (
+                        <tr key={f.id} className="border-t border-[#30363D] hover:bg-slate-800/30">
+                          <td><RiskBar score={f.risk_score} /></td>
+                          <td><SevBadge severity={f.severity} /></td>
+                          <td><Link className="text-blue-300 hover:underline" to={`/findings/${f.id}`} data-testid={`top-finding-${f.id}`}>{f.title?.slice(0,68)}</Link>
+                            <div className="flex gap-1 mt-0.5">
+                              {f.kev_flag && <Chip color="red">KEV</Chip>}
+                              {f.cve && <Chip color="slate">{f.cve}</Chip>}
+                              {f.internet_facing && <Chip color="orange">EXPOSED</Chip>}
+                            </div>
+                          </td>
+                          <td className="font-mono text-[11.5px]">{f.asset_hostname}</td>
+                          <td className="text-slate-400">{f.owner_team}</td>
+                          <td className={isOverdue(f.due_at) ? "text-red-300" : "text-slate-400"}>{fmtRel(f.due_at)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </Panel>
               </div>
-            </Panel>
+            )}
+
+            {tileOn("panel-imports") && (
+              <Panel title="Recent Imports" testid="panel-imports">
+                <div className="divide-y divide-[#30363D]">
+                  {analyst.recent_imports.map(j => (
+                    <div key={j.id} className="px-4 py-2.5">
+                      <div className="flex items-center justify-between">
+                        <div className="text-[12.5px] text-slate-200">{j.source_name}</div>
+                        <Chip color={j.status === "success" ? "green" : "red"}>{j.status}</Chip>
+                      </div>
+                      <div className="text-[11px] text-slate-500 mt-0.5 font-mono">
+                        +{j.created_count} new · ↻{j.updated_count} updated · {j.deduplicated_count} dedup
+                      </div>
+                      <div className="text-[10.5px] text-slate-600 mt-0.5">{fmtRel(j.started_at)}</div>
+                    </div>
+                  ))}
+                </div>
+              </Panel>
+            )}
           </div>
 
           {/* CWE Prevalence — your local systemic weaknesses (KRI methodology) */}
-          {cwe.length > 0 && (
+          {tileOn("panel-cwe") && cwe.length > 0 && (
             <Panel title="CWE Prevalence — Local Systemic Weaknesses" testid="panel-cwe">
               <div className="p-3 text-[11px] text-slate-500 mb-1">
                 CWEs ranked by frequency in YOUR environment. Higher weight = more recurring → gets a multiplier in KRI scoring.
@@ -173,8 +236,8 @@ export default function Dashboard() {
                   {cwe.slice(0,10).map(c => (
                     <tr key={c.cwe} className="border-t border-[#30363D]">
                       <td className="font-mono text-[12px] text-blue-300">{c.cwe}</td>
-                      <td className="text-slate-300 max-w-[420px] truncate">{c.sample_title}</td>
-                      <td className="text-center font-mono">{c.count}</td>
+                      <td className="text-slate-300 max-w-[420px] truncate">{c.sample_title || "—"}</td>
+                      <td className="text-center font-mono">{c.count ?? 0}</td>
                       <td><div className="flex items-center gap-2">
                         <div className="h-1.5 w-24 bg-slate-800 rounded overflow-hidden">
                           <div className="h-full bg-blue-400" style={{width:`${((c.weight-0.8)/0.7)*100}%`}}/>
@@ -193,7 +256,7 @@ export default function Dashboard() {
       {tab === "mgr" && manager && (
         <div className="space-y-4">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <Panel title="Risk Score Trend (30d)">
+            <Panel title={`Risk Score Trend (${manager.range || range})`}>
               <div className="p-3 h-[260px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={manager.snapshots}>
@@ -245,7 +308,7 @@ export default function Dashboard() {
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="lg:col-span-2">
-              <Panel title="Risk Score / SLA Trend (30d)">
+              <Panel title={`Risk Score / SLA Trend (${exec.range || range})`}>
                 <div className="p-3 h-[280px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={exec.snapshots}>

@@ -1,11 +1,12 @@
 import { useEffect, useState, useMemo } from "react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { usePreferences } from "@/lib/usePreferences";
 import Layout from "@/components/Layout";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtRel, isOverdue } from "@/lib/utils-fmt";
 import { Link } from "react-router-dom";
-import { MagnifyingGlass, FileArrowDown, FunnelSimple } from "@phosphor-icons/react";
+import { MagnifyingGlass, FileArrowDown, FunnelSimple, CaretDown, CaretRight, StackSimple, ListBullets, GridFour } from "@phosphor-icons/react";
 
 const VIEWS = [
   { id: "", label: "All Open" },
@@ -19,8 +20,18 @@ const VIEWS = [
 
 const STATUSES = ["New","Needs triage","Valid","False positive","Duplicate","Mitigated","Accepted risk","Fixed pending validation","Fixed validated","Reopened"];
 
+const GROUP_OPTIONS = [
+  { id: "none", label: "Flat list" },
+  { id: "cve", label: "by CVE-ID" },
+  { id: "os", label: "by Operating System" },
+  { id: "title", label: "by Title" },
+  { id: "severity", label: "by Severity" },
+  { id: "asset", label: "by Asset" },
+];
+
 export default function Findings() {
   const { user } = useAuth();
+  const { prefs, setSection } = usePreferences();
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   const [q, setQ] = useState("");
@@ -32,9 +43,27 @@ export default function Findings() {
   const [bulkAssignee, setBulkAssignee] = useState("");
   const [loading, setLoading] = useState(false);
   const [myQueue, setMyQueue] = useState(!!user?.team);
+  const [groups, setGroups] = useState([]);
+  const [expanded, setExpanded] = useState(new Set());
+  const [groupChildren, setGroupChildren] = useState({}); // key → finding[]
+
+  const groupBy = prefs?.findings?.group_by || "none";
+  const viewMode = prefs?.findings?.view_mode || "by_asset";
 
   const load = async () => {
     setLoading(true);
+    if (groupBy !== "none") {
+      const params = { group_by: groupBy, view_mode: viewMode, limit: 100 };
+      if (severity) params.severity = severity;
+      if (status) params.status = status;
+      if (myQueue && user?.team) params.owner_team = user.team;
+      const r = await api.get("/v1/findings-groups", { params });
+      setGroups(r.data.groups || []);
+      setExpanded(new Set());
+      setGroupChildren({});
+      setLoading(false);
+      return;
+    }
     const params = { limit: 200 };
     if (q) params.q = q;
     if (view) params.view = view;
@@ -44,7 +73,26 @@ export default function Findings() {
     const r = await api.get("/v1/findings", { params });
     setItems(r.data.items); setTotal(r.data.total); setLoading(false); setSelected(new Set());
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [view, severity, status, myQueue]);
+  useEffect(() => { if (prefs) load(); /* eslint-disable-next-line */ }, [prefs, view, severity, status, myQueue, groupBy, viewMode]);
+
+  const setGroupBy = (id) => setSection("findings", { group_by: id });
+  const setViewMode = (id) => setSection("findings", { view_mode: id });
+
+  const expandGroup = async (key) => {
+    const next = new Set(expanded);
+    if (next.has(key)) { next.delete(key); setExpanded(next); return; }
+    next.add(key); setExpanded(next);
+    if (groupChildren[key]) return;
+    // Fetch children matching this group key
+    const params = { limit: 50 };
+    if (groupBy === "cve") params.cve = key;
+    else if (groupBy === "severity") params.severity = key;
+    else if (groupBy === "asset") params.q = key;
+    else if (groupBy === "os") params.q = key;
+    else if (groupBy === "title") params.q = key;
+    const r = await api.get("/v1/findings", { params });
+    setGroupChildren(prev => ({ ...prev, [key]: r.data.items || [] }));
+  };
 
   const exportCsv = async () => {
     const params = {};
@@ -117,6 +165,41 @@ export default function Findings() {
             </button>
           ))}
         </div>
+        {/* Grouping & view-mode controls (Iteration 3c) */}
+        <div className="px-3 py-1.5 flex flex-wrap gap-2 items-center border-t border-[#30363D]">
+          <span className="text-[10px] uppercase tracking-wider font-mono text-slate-500 mr-1 inline-flex items-center gap-1">
+            <StackSimple size={11}/> Group
+          </span>
+          <select
+            data-testid="group-by"
+            value={groupBy}
+            onChange={(e)=>setGroupBy(e.target.value)}
+            className="h-7 bg-[#161B22] border border-[#30363D] rounded px-2 text-[11.5px] text-slate-200"
+          >
+            {GROUP_OPTIONS.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+          </select>
+          <div className="flex items-center border border-[#30363D] rounded overflow-hidden ml-2" data-testid="view-mode-toggle">
+            <button
+              data-testid="view-mode-by-asset"
+              onClick={()=>setViewMode("by_asset")}
+              className={`px-2.5 h-7 text-[11.5px] inline-flex items-center gap-1 ${viewMode==="by_asset"?"bg-blue-500/15 text-blue-300":"text-slate-400 hover:bg-slate-800/40"}`}
+            >
+              <ListBullets size={11}/> by Asset
+            </button>
+            <button
+              data-testid="view-mode-by-vulnerability"
+              onClick={()=>setViewMode("by_vulnerability")}
+              className={`px-2.5 h-7 text-[11.5px] inline-flex items-center gap-1 ${viewMode==="by_vulnerability"?"bg-blue-500/15 text-blue-300":"text-slate-400 hover:bg-slate-800/40"}`}
+            >
+              <GridFour size={11}/> by Vulnerability
+            </button>
+          </div>
+          {groupBy !== "none" && (
+            <span className="text-[10.5px] font-mono text-slate-500 ml-auto">
+              {groups.length} group{groups.length===1?"":"s"}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Bulk actions */}
@@ -137,52 +220,120 @@ export default function Findings() {
 
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">
         <div className="px-3 py-2 flex items-center justify-between border-b border-[#30363D]">
-          <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500">{loading ? "Loading…" : counter}</div>
+          <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500">
+            {loading ? "Loading…" : (groupBy !== "none" ? `${groups.length} groups · ${viewMode === "by_vulnerability" ? "by vulnerability" : "by asset"}` : counter)}
+          </div>
         </div>
-        <div className="overflow-x-auto">
-          <table data-testid="findings-table" className="dense w-full">
-            <thead>
-              <tr>
-                <th className="w-7"><input type="checkbox" data-testid="select-all" onChange={(e)=>toggleAll(e.target.checked)} /></th>
-                <th className="text-left">Risk</th><th className="text-left">Severity</th>
-                <th className="text-left">Title / CVE</th><th className="text-left">Asset</th>
-                <th className="text-left">CVSS</th><th className="text-left">EPSS</th>
-                <th className="text-left">Status</th><th className="text-left">Owner</th>
-                <th className="text-left">Source</th><th className="text-left">SLA</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map(f => (
-                <tr key={f.id} className="border-t border-[#30363D] hover:bg-slate-800/30">
-                  <td><input type="checkbox" data-testid={`select-${f.id}`} checked={selected.has(f.id)} onChange={()=>toggleOne(f.id)} /></td>
-                  <td><RiskBar score={f.risk_score} /></td>
-                  <td><SevBadge severity={f.severity} /></td>
-                  <td className="max-w-[420px]">
-                    <Link to={`/findings/${f.id}`} data-testid={`finding-link-${f.id}`} className="text-blue-300 hover:underline">{f.title}</Link>
-                    <div className="flex gap-1 mt-0.5 flex-wrap">
-                      {f.kev_flag && <Chip color="red">KEV</Chip>}
-                      {f.cve && <Chip color="slate">{f.cve}</Chip>}
-                      {f.rti?.includes("active_attacks") && <Chip color="red">ACTIVE</Chip>}
-                      {f.rti?.includes("zero_day") && <Chip color="purple">0-DAY</Chip>}
-                      {f.rti?.includes("wormable") && <Chip color="orange">WORM</Chip>}
-                      {f.internet_facing && <Chip color="orange">EXPOSED</Chip>}
-                      {f.patch_available === false && <Chip color="amber">NO PATCH</Chip>}
+
+        {groupBy !== "none" ? (
+          <div className="divide-y divide-[#30363D]" data-testid="findings-grouped">
+            {groups.map((g) => {
+              const isOpen = expanded.has(g.key);
+              const children = groupChildren[g.key] || [];
+              return (
+                <div key={g.key} data-testid={`group-${g.key}`}>
+                  <button
+                    onClick={() => expandGroup(g.key)}
+                    data-testid={`group-toggle-${g.key}`}
+                    className="w-full px-3 py-2 flex items-center gap-2 hover:bg-slate-800/30 text-left"
+                  >
+                    {isOpen ? <CaretDown size={12} className="text-slate-400"/> : <CaretRight size={12} className="text-slate-500"/>}
+                    <RiskBar score={g.max_risk}/>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {(g.severities || []).slice(0,3).map(s => <SevBadge key={s} severity={s}/>)}
                     </div>
-                  </td>
-                  <td><Link to={`/assets/${f.asset_id}`} className="font-mono text-[11.5px] text-slate-300 hover:text-blue-300">{f.asset_hostname}</Link>
-                    <div className="text-[10.5px] text-slate-600 font-mono">{f.asset_ip || "—"}</div>
-                  </td>
-                  <td className="font-mono text-[11.5px]">{f.cvss_score?.toFixed?.(1) ?? "—"}</td>
-                  <td className="font-mono text-[11.5px]">{f.epss_score ? (f.epss_score*100).toFixed(1)+"%" : "—"}</td>
-                  <td><Chip color={f.status === "Reopened" ? "orange" : f.status?.includes("Fixed") ? "green" : f.status === "New" ? "blue" : "slate"}>{f.status}</Chip></td>
-                  <td className="text-slate-400 text-[11.5px]">{f.owner_team}</td>
-                  <td className="text-slate-500 text-[11px]">{f.source_tool}</td>
-                  <td className={isOverdue(f.due_at) ? "text-red-300 text-[11px]" : "text-slate-500 text-[11px]"}>{fmtRel(f.due_at)}</td>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[12.5px] text-slate-200 font-mono truncate">{g.key}</div>
+                      {g.sample_title && <div className="text-[11px] text-slate-500 truncate">{g.sample_title}</div>}
+                    </div>
+                    <div className="flex items-center gap-2 text-[11px] font-mono">
+                      {g.kev === 1 && <Chip color="red">KEV</Chip>}
+                      {g.asset_count != null && <span className="text-slate-400">{g.asset_count} asset{g.asset_count===1?"":"s"}</span>}
+                      <span className="text-slate-300">{g.count} finding{g.count===1?"":"s"}</span>
+                    </div>
+                  </button>
+                  {isOpen && (
+                    <div className="bg-[#0a0d12] border-t border-[#30363D]">
+                      <table className="dense w-full">
+                        <tbody>
+                          {children.map(f => (
+                            <tr key={f.id} className="border-t border-[#30363D] hover:bg-slate-800/30">
+                              <td className="pl-8 w-[60px]"><RiskBar score={f.risk_score}/></td>
+                              <td className="w-[80px]"><SevBadge severity={f.severity}/></td>
+                              <td>
+                                <Link to={`/findings/${f.id}`} data-testid={`grouped-finding-${f.id}`} className="text-blue-300 hover:underline text-[12px]">{f.title}</Link>
+                                <div className="flex gap-1 mt-0.5 flex-wrap">
+                                  {f.kev_flag && <Chip color="red">KEV</Chip>}
+                                  {f.cve && <Chip color="slate">{f.cve}</Chip>}
+                                  {f.internet_facing && <Chip color="orange">EXPOSED</Chip>}
+                                </div>
+                              </td>
+                              <td><Link to={`/assets/${f.asset_id}`} className="font-mono text-[11.5px] text-slate-300 hover:text-blue-300">{f.asset_hostname}</Link></td>
+                              <td><Chip color={f.status === "Reopened" ? "orange" : f.status?.includes("Fixed") ? "green" : f.status === "New" ? "blue" : "slate"}>{f.status}</Chip></td>
+                              <td className="text-slate-400 text-[11.5px]">{f.owner_team}</td>
+                              <td className={isOverdue(f.due_at) ? "text-red-300 text-[11px]" : "text-slate-500 text-[11px]"}>{fmtRel(f.due_at)}</td>
+                            </tr>
+                          ))}
+                          {children.length === 0 && (
+                            <tr><td colSpan={7} className="px-8 py-2 text-[11px] text-slate-500">Loading findings…</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {!loading && groups.length === 0 && (
+              <div className="px-4 py-6 text-center text-[12px] text-slate-500">No groups match current filters.</div>
+            )}
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table data-testid="findings-table" className="dense w-full">
+              <thead>
+                <tr>
+                  <th className="w-7"><input type="checkbox" data-testid="select-all" onChange={(e)=>toggleAll(e.target.checked)} /></th>
+                  <th className="text-left">Risk</th><th className="text-left">Severity</th>
+                  <th className="text-left">Title / CVE</th><th className="text-left">Asset</th>
+                  <th className="text-left">CVSS</th><th className="text-left">EPSS</th>
+                  <th className="text-left">Status</th><th className="text-left">Owner</th>
+                  <th className="text-left">Source</th><th className="text-left">SLA</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {items.map(f => (
+                  <tr key={f.id} className="border-t border-[#30363D] hover:bg-slate-800/30">
+                    <td><input type="checkbox" data-testid={`select-${f.id}`} checked={selected.has(f.id)} onChange={()=>toggleOne(f.id)} /></td>
+                    <td><RiskBar score={f.risk_score} /></td>
+                    <td><SevBadge severity={f.severity} /></td>
+                    <td className="max-w-[420px]">
+                      <Link to={`/findings/${f.id}`} data-testid={`finding-link-${f.id}`} className="text-blue-300 hover:underline">{f.title}</Link>
+                      <div className="flex gap-1 mt-0.5 flex-wrap">
+                        {f.kev_flag && <Chip color="red">KEV</Chip>}
+                        {f.cve && <Chip color="slate">{f.cve}</Chip>}
+                        {f.rti?.includes("active_attacks") && <Chip color="red">ACTIVE</Chip>}
+                        {f.rti?.includes("zero_day") && <Chip color="purple">0-DAY</Chip>}
+                        {f.rti?.includes("wormable") && <Chip color="orange">WORM</Chip>}
+                        {f.internet_facing && <Chip color="orange">EXPOSED</Chip>}
+                        {f.patch_available === false && <Chip color="amber">NO PATCH</Chip>}
+                      </div>
+                    </td>
+                    <td><Link to={`/assets/${f.asset_id}`} className="font-mono text-[11.5px] text-slate-300 hover:text-blue-300">{f.asset_hostname}</Link>
+                      <div className="text-[10.5px] text-slate-600 font-mono">{f.asset_ip || "—"}</div>
+                    </td>
+                    <td className="font-mono text-[11.5px]">{f.cvss_score?.toFixed?.(1) ?? "—"}</td>
+                    <td className="font-mono text-[11.5px]">{f.epss_score ? (f.epss_score*100).toFixed(1)+"%" : "—"}</td>
+                    <td><Chip color={f.status === "Reopened" ? "orange" : f.status?.includes("Fixed") ? "green" : f.status === "New" ? "blue" : "slate"}>{f.status}</Chip></td>
+                    <td className="text-slate-400 text-[11.5px]">{f.owner_team}</td>
+                    <td className="text-slate-500 text-[11px]">{f.source_tool}</td>
+                    <td className={isOverdue(f.due_at) ? "text-red-300 text-[11px]" : "text-slate-500 text-[11px]"}>{fmtRel(f.due_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </Layout>
   );

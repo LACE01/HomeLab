@@ -1,0 +1,33 @@
+{
+  "summary": "Iteration 3c (P0 fix + configurable dashboards) fully verified. Backend: 13/13 pytest tests pass — P0 fix confirmed (POST /v1/admin/nightly-rescore/run returns 200, GET /v1/admin/nightly-rescore/runs returns items[], GET /v1/cwe-prevalence returns enriched items with {cwe,weight,count,sample_title}); time-range param works on analyst (range=7d→range_days=7, default 30d), executive (custom start/end), and manager (invalid range=foo does NOT crash, returns range_days=None and full snapshots); user preferences GET returns nested default object, PUT persists deep-merged values and is reflected on subsequent GET; /v1/findings-groups returns groups[] with all expected fields {key,count,asset_count,max_risk,severities,kev,sample_title} for group_by=cve&view_mode=by_vulnerability, group_by=severity returns severity-keyed groups, invalid group_by=garbage correctly rejected with 422. Frontend: Dashboard TimeRangeSelector renders 7d/30d/90d/4mo/6mo/12mo/Custom buttons with correct testids; clicking time-range-7d updates the stat-new label to 'NEW (7D)' immediately. TilePicker popover opens, toggling tile-picker-toggle-stat-kev hides the KEV tile, and the hidden state PERSISTS across full page reload (PUT /v1/me/preferences debounce works). Tile-picker Reset button restores all tiles. Findings page: group-by dropdown contains exactly the expected values [none,cve,os,title,severity,asset]; selecting cve switches to findings-grouped panel and triggers GET /v1/findings-groups?group_by=cve&view_mode=by_asset; clicking view-mode-by-vulnerability re-issues the request with view_mode=by_vulnerability; full page reload re-fires the same persisted params (group_by=cve&view_mode=by_vulnerability) confirming preferences round-trip; setting group_by=none reverts to the flat findings-table.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard (all tabs)", "issues": ["Console warning: Recharts ResponsiveContainer logs 'width(-1) and height(-1) of chart should be greater than 0' on initial load — purely cosmetic console noise, charts render fine after layout settles. Consider giving the Pie chart container an explicit minHeight to silence the warning."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter3c.py",
+    "/app/test_reports/pytest/iter7_iter3c.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 1639 lines — exceeds the 700-line guideline. Strongly recommend splitting into routers/modules (auth, dashboards, findings, admin, preferences, reports). Risk of recurrence of the P0 bug pattern (route defined after include_router) is high in such a large single file.",
+    "GET /v1/admin/nightly-rescore/runs is gated by get_current_user (not require_role('admin')) — any authenticated user can read the rescore audit log. If audit history is considered sensitive, gate it behind admin role for consistency with the POST /run sibling.",
+    "parse_time_range silently coerces unknown range_key to (None,None,None). The intent is clear but consider returning a flag/HTTP 400 for truly malformed input vs. the documented 'all' alias — current behaviour conflates 'foo' with 'all'.",
+    "DEFAULT_PREFS.findings.view_mode default is 'by_asset' but Dashboard.jsx defaults the range to '30d' from prefs?.dashboard?.range || '30d'. If usePreferences PUT fails silently (.catch(() => {})), the user sees no feedback. Consider surfacing a toast on persistence failure.",
+    "findings-groups endpoint has no auth-role restriction beyond authentication; that is fine, but the pipeline returns sample_title and sample_id from $first which is non-deterministic without a $sort before $group — sample finding shown to user may change between calls.",
+    "TimeRangeSelector custom-date inputs use native <input type='date'> which renders the browser default picker, inconsistent with the rest of the dark-mode UI (matches the 'browser default picker' anti-pattern called out in test guidelines). Consider a shadcn Calendar/Popover.",
+    "Dashboard.jsx fires 5 parallel /v1/dashboards/* + /findings/stats + /cwe-prevalence requests every time prefs OR range changes — debounce or memoize, otherwise rapid TimeRangeSelector clicks fire bursts of requests."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter3c.py"],
+  "success_rate": {"backend": "100% (13/13)", "frontend": "100% (all 8 frontend scenarios)"},
+  "test_credentials": "luisarce731@outlook.com / vz7NOHcP64WRBEOg3C2I (super admin) — read from /app/memory/test_credentials.md",
+  "seed_data_creation": "None — used existing seeded findings/snapshots. User preferences for the admin account were set during testing then reset to defaults (range=30d, stat-kev=true).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 3c (P0 fix + configurable dashboards/preferences/grouping) is GREEN. Regression test suite is /app/backend/tests/test_iter3c.py — rerun before any future change to server.py (especially route placement around line 1470, the 'LATE-DEFINED ROUTES' comment). The persisted preferences for the super admin are reset to defaults at the end of test_put_prefs_persist. The DEFAULT_PREFS deep-merge means any new tile id added to TILE_CATALOG on the frontend will default to True unless explicitly added to DEFAULT_PREFS.dashboard.tiles too — keep these two lists in sync.",
+  "rca of the issue": "P0 (404 on nightly-rescore + cwe-prevalence) was caused by route registration ordering: routes added to the APIRouter AFTER app.include_router(api) are silently ignored by FastAPI. The fix moved /v1/admin/nightly-rescore/run, /v1/admin/nightly-rescore/runs, and /v1/cwe-prevalence above line 1610 (app.include_router(api)), verified by tests TestP0Fixes.* all returning 200. Strong recommendation in code-review comments: extract routers into separate modules so this footgun cannot recur as server.py keeps growing."
+}

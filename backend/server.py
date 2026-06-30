@@ -44,6 +44,19 @@ def _clean(doc: dict) -> dict:
     return doc
 
 
+def parse_time_range(range_key: Optional[str], start: Optional[str], end: Optional[str]) -> tuple:
+    """Resolve a time range key (7d/30d/90d/4mo/6mo/12mo/custom/all) → (start_iso, end_iso, days).
+    Returns (None, None, None) when range is 'all' or unset."""
+    now = datetime.now(timezone.utc)
+    if range_key == "custom" and start and end:
+        return start, end, max(1, (datetime.fromisoformat(end.replace("Z","+00:00")) - datetime.fromisoformat(start.replace("Z","+00:00"))).days)
+    presets = {"7d": 7, "30d": 30, "90d": 90, "4mo": 120, "6mo": 180, "12mo": 365}
+    if range_key in presets:
+        days = presets[range_key]
+        return (now - timedelta(days=days)).isoformat(), now.isoformat(), days
+    return None, None, None
+
+
 # --------------------------- AUTH ---------------------------
 class LoginBody(BaseModel):
     email: EmailStr
@@ -279,8 +292,19 @@ async def finding_kri(finding_id: str, user: dict = Depends(get_current_user)):
 async def cwe_prevalence(user: dict = Depends(get_current_user)):
     from scoring_v2 import cwe_prevalence_map
     weights = await cwe_prevalence_map(db)
-    items = [{"cwe": k, "weight": v} for k, v in weights.items()]
-    items.sort(key=lambda x: -x["weight"])
+    # Enrich with finding counts and a sample title per CWE
+    pipeline = [
+        {"$match": {"cwe": {"$ne": None}}},
+        {"$group": {"_id": "$cwe", "count": {"$sum": 1}, "sample_title": {"$first": "$title"}}},
+    ]
+    enrich: dict = {}
+    async for r in db.findings.aggregate(pipeline):
+        enrich[r["_id"]] = {"count": r["count"], "sample_title": r.get("sample_title")}
+    items = []
+    for cwe, w in weights.items():
+        e = enrich.get(cwe, {"count": 0, "sample_title": ""})
+        items.append({"cwe": cwe, "weight": w, "count": e["count"], "sample_title": e["sample_title"]})
+    items.sort(key=lambda x: (-x["weight"], -x["count"]))
     return {"items": items}
 
 
@@ -706,10 +730,20 @@ async def get_import_job(job_id: str, user: dict = Depends(get_current_user)):
 
 # --------------------------- DASHBOARDS ---------------------------
 @api.get("/v1/dashboards/analyst")
-async def dashboard_analyst(user: dict = Depends(get_current_user)):
+async def dashboard_analyst(
+    user: dict = Depends(get_current_user),
+    range: Optional[str] = "30d",
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+):
     open_states = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
     open_findings = await db.findings.count_documents({"status": {"$in": open_states}})
-    new_findings = await db.findings.count_documents({"status": "New"})
+    start_iso, end_iso, days = parse_time_range(range, start, end)
+    # "New in window" — count findings created within the selected range
+    new_q: dict = {"status": "New"}
+    if start_iso:
+        new_q["created_at"] = {"$gte": start_iso, "$lte": end_iso}
+    new_findings = await db.findings.count_documents(new_q)
     triage = await db.findings.count_documents({"status": "Needs triage"})
     kev = await db.findings.count_documents({"kev_flag": True, "status": {"$in": open_states}})
     rti_high = await db.findings.count_documents({"rti": "active_attacks", "status": {"$in": open_states}})
@@ -726,11 +760,17 @@ async def dashboard_analyst(user: dict = Depends(get_current_user)):
         "reopened": reopened, "overdue": overdue, "unassigned": unassigned,
         "low_confidence_ownership": low_confidence, "top_findings": top,
         "recent_imports": recent_imports, "failed_imports": failed_imports,
+        "range": range, "range_days": days, "range_start": start_iso, "range_end": end_iso,
     }
 
 
 @api.get("/v1/dashboards/manager")
-async def dashboard_manager(user: dict = Depends(get_current_user)):
+async def dashboard_manager(
+    user: dict = Depends(get_current_user),
+    range: Optional[str] = "30d",
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+):
     teams: dict = {}
     async for f in db.findings.find({"status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]}}, {"_id": 0, "owner_team": 1, "due_at": 1, "severity": 1}):
         t = f.get("owner_team", "Unassigned")
@@ -740,17 +780,34 @@ async def dashboard_manager(user: dict = Depends(get_current_user)):
             teams[t]["overdue"] += 1
         if f.get("severity") == "Critical":
             teams[t]["critical"] += 1
-    snapshots = await db.score_snapshots.find({}, {"_id": 0}).sort("date", 1).to_list(60)
+    snap_q: dict = {}
+    start_iso, end_iso, days = parse_time_range(range, start, end)
+    if start_iso:
+        snap_q["date"] = {"$gte": start_iso[:10], "$lte": end_iso[:10]}
+    snapshots = await db.score_snapshots.find(snap_q, {"_id": 0}).sort("date", 1).to_list(400)
     exception_count = await db.exceptions.count_documents({"status": "active"})
     return {
         "by_team": [{"team": k, **v} for k, v in teams.items()],
         "snapshots": snapshots, "active_exceptions": exception_count,
+        "range": range, "range_days": days,
     }
 
 
 @api.get("/v1/dashboards/executive")
-async def dashboard_executive(user: dict = Depends(get_current_user)):
-    snapshots = await db.score_snapshots.find({}, {"_id": 0}).sort("date", 1).to_list(60)
+async def dashboard_executive(
+    user: dict = Depends(get_current_user),
+    range: Optional[str] = "30d",
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+):
+    snap_q: dict = {}
+    start_iso, end_iso, days = parse_time_range(range, start, end)
+    if start_iso:
+        snap_q["date"] = {"$gte": start_iso[:10], "$lte": end_iso[:10]}
+    snapshots = await db.score_snapshots.find(snap_q, {"_id": 0}).sort("date", 1).to_list(400)
+    # Fallback to last snapshot if window is empty
+    if not snapshots:
+        snapshots = await db.score_snapshots.find({}, {"_id": 0}).sort("date", 1).to_list(60)
     current = snapshots[-1] if snapshots else {"org_score": 0, "sla_compliance": 0, "mttr_days": 0}
 
     products = await db.products.find({}, {"_id": 0}).to_list(50)
@@ -786,6 +843,7 @@ async def dashboard_executive(user: dict = Depends(get_current_user)):
             {"factor": "SLA adherence", "impact": "+4", "reason": f"{current.get('sla_compliance', 0)}% on-time remediation"},
             {"factor": "Scan coverage", "impact": "+3", "reason": "94% of inventory under active scanning"},
         ],
+        "range": range, "range_days": days,
     }
 
 
@@ -1409,6 +1467,145 @@ async def dashboard_operational(user: dict = Depends(get_current_user), team: Op
     }
 
 
+# --------------------------- LATE-DEFINED ROUTES ---------------------------
+@api.post("/v1/admin/nightly-rescore/run")
+async def trigger_nightly(user: dict = Depends(require_role("admin"))):
+    from nightly import run_nightly_rescore
+    return await run_nightly_rescore(db)
+
+
+@api.get("/v1/admin/nightly-rescore/runs")
+async def list_rescore_runs(user: dict = Depends(get_current_user)):
+    items = await db.rescoring_runs.find({}, {"_id": 0}).sort("ran_at", -1).limit(50).to_list(50)
+    return {"items": items}
+
+
+# --------------------------- USER PREFERENCES (Tile picker / saved layouts) ---------------------------
+DEFAULT_PREFS: dict = {
+    "dashboard": {
+        "range": "30d",
+        "tiles": {
+            "stat-open": True, "stat-triage": True, "stat-kev": True, "stat-rti": True,
+            "stat-overdue": True, "stat-reopened": True, "stat-unassigned": True,
+            "stat-lowconf": True, "stat-failedimports": True, "stat-new": True,
+            "panel-severity": True, "panel-top-findings": True, "panel-imports": True,
+            "panel-cwe": True,
+        },
+    },
+    "findings": {
+        "group_by": "none",   # none | cve | os | title | severity | asset
+        "view_mode": "by_asset",  # by_asset | by_vulnerability
+    },
+}
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    out = dict(base)
+    for k, v in (override or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+@api.get("/v1/me/preferences")
+async def get_my_preferences(user: dict = Depends(get_current_user)):
+    doc = await db.user_preferences.find_one({"user_id": user["id"]}, {"_id": 0})
+    prefs = doc.get("prefs", {}) if doc else {}
+    return _deep_merge(DEFAULT_PREFS, prefs)
+
+
+class PrefsBody(BaseModel):
+    prefs: dict
+
+
+@api.put("/v1/me/preferences")
+async def put_my_preferences(body: PrefsBody, user: dict = Depends(get_current_user)):
+    merged = _deep_merge(DEFAULT_PREFS, body.prefs or {})
+    await db.user_preferences.update_one(
+        {"user_id": user["id"]},
+        {"$set": {"user_id": user["id"], "prefs": merged, "updated_at": now_iso()}},
+        upsert=True,
+    )
+    return merged
+
+
+# --------------------------- FINDINGS GROUPING ---------------------------
+@api.get("/v1/findings-groups")
+async def findings_group(
+    user: dict = Depends(get_current_user),
+    group_by: str = Query("cve", regex="^(cve|os|title|severity|asset|none)$"),
+    view_mode: str = Query("by_asset", regex="^(by_asset|by_vulnerability)$"),
+    severity: Optional[str] = None,
+    status: Optional[str] = None,
+    owner_team: Optional[str] = None,
+    limit: int = 100,
+):
+    flt: dict = {"status": {"$in": ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]}}
+    if severity:
+        flt["severity"] = severity
+    if status:
+        flt["status"] = status
+    if owner_team:
+        flt["owner_team"] = owner_team
+
+    # Map group_by to the appropriate field; "asset" groups by hostname; "os" groups by asset_os
+    field_map = {
+        "cve": "$cve", "os": "$asset_os", "title": "$title",
+        "severity": "$severity", "asset": "$asset_hostname",
+    }
+    if group_by == "none":
+        # Fall back to plain list (limited) to keep contract uniform
+        items = await db.findings.find(flt, {"_id": 0}).sort("risk_score", -1).limit(limit).to_list(limit)
+        return {"group_by": "none", "view_mode": view_mode, "groups": [{"key": "—", "count": len(items), "max_risk": items[0]["risk_score"] if items else 0, "items": items}]}
+
+    grp_field = field_map[group_by]
+    # "by_vulnerability" view collapses by canonical_key (de-dupes the same CVE across assets)
+    if view_mode == "by_vulnerability" and group_by == "cve":
+        pipeline = [
+            {"$match": flt},
+            {"$group": {"_id": grp_field,
+                        "count": {"$sum": 1},
+                        "unique_assets": {"$addToSet": "$asset_id"},
+                        "max_risk": {"$max": "$risk_score"},
+                        "severities": {"$addToSet": "$severity"},
+                        "kev": {"$max": {"$cond": [{"$eq": ["$kev_flag", True]}, 1, 0]}},
+                        "sample_title": {"$first": "$title"},
+                        "sample_id": {"$first": "$id"}}},
+            {"$project": {"_id": 0, "key": "$_id", "count": 1, "max_risk": 1,
+                          "asset_count": {"$size": "$unique_assets"}, "severities": 1,
+                          "kev": 1, "sample_title": 1, "sample_id": 1}},
+            {"$sort": {"max_risk": -1}},
+            {"$limit": limit},
+        ]
+    else:
+        pipeline = [
+            {"$match": flt},
+            {"$group": {"_id": grp_field,
+                        "count": {"$sum": 1},
+                        "max_risk": {"$max": "$risk_score"},
+                        "severities": {"$addToSet": "$severity"},
+                        "sample_title": {"$first": "$title"},
+                        "sample_id": {"$first": "$id"}}},
+            {"$project": {"_id": 0, "key": "$_id", "count": 1, "max_risk": 1,
+                          "severities": 1, "sample_title": 1, "sample_id": 1}},
+            {"$sort": {"max_risk": -1, "count": -1}},
+            {"$limit": limit},
+        ]
+    groups = [r async for r in db.findings.aggregate(pipeline)]
+    # Replace None keys for display
+    for g in groups:
+        if g.get("key") is None:
+            g["key"] = "—"
+    return {"group_by": group_by, "view_mode": view_mode, "groups": groups, "total_groups": len(groups)}
+
+
+@api.get("/")
+async def root():
+    return {"name": "VulnOps API", "version": "1.0.0", "status": "ok"}
+
+
 # --------------------------- INCLUDE & STARTUP ---------------------------
 app.include_router(api)
 
@@ -1439,20 +1636,3 @@ async def on_startup():
     import asyncio as _a
     from nightly import nightly_loop
     _a.create_task(nightly_loop(db, interval_hours=24))
-
-
-@api.post("/v1/admin/nightly-rescore/run")
-async def trigger_nightly(user: dict = Depends(require_role("admin"))):
-    from nightly import run_nightly_rescore
-    return await run_nightly_rescore(db)
-
-
-@api.get("/v1/admin/nightly-rescore/runs")
-async def list_rescore_runs(user: dict = Depends(get_current_user)):
-    items = await db.rescoring_runs.find({}, {"_id": 0}).sort("ran_at", -1).limit(50).to_list(50)
-    return {"items": items}
-
-
-@api.get("/")
-async def root():
-    return {"name": "VulnOps API", "version": "1.0.0", "status": "ok"}
