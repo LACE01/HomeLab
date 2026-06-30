@@ -371,8 +371,21 @@ export default function FindingDetail() {
           </Section>
 
           <Section title="References">
-            {(f.advisory_links || []).map(l => <a key={l} href={l} target="_blank" rel="noopener noreferrer" className="block text-[12px] text-blue-300 hover:underline truncate">{l}</a>)}
-            {(f.exploit_references || []).map(l => <a key={l} href={l} target="_blank" rel="noopener noreferrer" className="block text-[12px] text-orange-300 hover:underline truncate">{l}</a>)}
+            {(f.advisory_links || []).map((l, i) => {
+              const url = typeof l === "string" ? l : l?.url;
+              const label = typeof l === "string" ? l : (l?.source || l?.url || "Reference");
+              return url ? <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="block text-[12px] text-blue-300 hover:underline truncate">{label}</a> : null;
+            })}
+            {(f.exploit_references || []).map((l, i) => {
+              const url = typeof l === "string" ? l : l?.url;
+              const label = typeof l === "string" ? l : (l?.source || l?.url || "Exploit");
+              return url ? <a key={`x-${i}`} href={url} target="_blank" rel="noopener noreferrer" className="block text-[12px] text-orange-300 hover:underline truncate">{label}</a> : null;
+            })}
+            {(f.external_references || []).slice(0, 12).map((r, i) => {
+              const url = Array.isArray(r) ? r[0] : (r?.url || (typeof r === "string" ? r : null));
+              const label = Array.isArray(r) ? (r[1] || r[0]) : (r?.source || r?.url || "Ref");
+              return url ? <a key={`e-${i}`} href={url} target="_blank" rel="noopener noreferrer" className="block text-[12px] text-slate-400 hover:text-blue-300 hover:underline truncate">{label}</a> : null;
+            })}
           </Section>
         </div>
       </div>
