@@ -194,17 +194,18 @@ async def seed_all(db):
     for col in ["users", "api_keys", "assets", "products", "findings", "observations",
                 "tickets", "exceptions", "engagements", "integrations", "import_jobs",
                 "activity_log", "score_snapshots", "ownership_mappings", "comments",
-                "assignment_rules", "user_sessions"]:
+                "assignment_rules", "user_sessions",
+                "notification_channels", "notification_rules", "notifications_outbox"]:
         await db[col].delete_many({})
 
     now = datetime.now(timezone.utc)
 
-    # Users
+    # Users — single super admin (demo accounts removed per user request)
     users = [
-        {"id": _id(), "email": "admin@vulnops.io", "name": "Site Admin", "role": "admin", "team": None, "department": "Security", "password_hash": hash_password("admin123"), "created_at": iso(now)},
-        {"id": _id(), "email": "analyst@vulnops.io", "name": "Alex Analyst", "role": "analyst", "team": "Platform Eng", "department": "Engineering", "password_hash": hash_password("analyst123"), "created_at": iso(now)},
-        {"id": _id(), "email": "manager@vulnops.io", "name": "Morgan Manager", "role": "manager", "team": "Payments Squad", "department": "Engineering", "password_hash": hash_password("manager123"), "created_at": iso(now)},
-        {"id": _id(), "email": "exec@vulnops.io", "name": "Erin Executive", "role": "executive", "team": None, "department": "Executive", "password_hash": hash_password("exec123"), "created_at": iso(now)},
+        {"id": _id(), "email": "luisarce731@outlook.com", "name": "Luis Arce", "role": "admin",
+         "team": None, "department": "Security",
+         "password_hash": hash_password("vz7NOHcP64WRBEOg3C2I"),
+         "created_at": iso(now)},
     ]
     await db.users.insert_many(users)
 
@@ -217,6 +218,13 @@ async def seed_all(db):
         {"id": _id(), "name": "Production Linux → Platform Eng", "priority": 50, "field": "environment", "operator": "equals", "value": "production", "assign_team": "Platform Eng", "active": True, "created_at": iso(now)},
     ]
     await db.assignment_rules.insert_many(default_rules)
+
+    # Seed Discord notification channel (provided by user)
+    await db.notification_channels.insert_many([
+        {"id": _id(), "name": "Discord #vulnops", "type": "discord",
+         "webhook_url": "https://discord.com/api/webhooks/1521206679675469974/6hD5ksMOW3QlCzXVR5V3uCeNMp50AnDfzNtM70eajuOMwv-Ae6Uu1gH0NodYarEPjwPw",
+         "enabled": True, "created_at": iso(now)},
+    ])
 
     # API Keys
     await db.api_keys.insert_one({

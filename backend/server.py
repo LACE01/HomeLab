@@ -883,21 +883,166 @@ async def list_users(user: dict = Depends(require_role("admin"))):
     return {"items": items}
 
 
+class UserCreate(BaseModel):
+    email: EmailStr
+    name: str
+    role: str = "analyst"
+    team: Optional[str] = None
+    department: Optional[str] = None
+    password: Optional[str] = None
+
+
+@api.post("/v1/admin/users")
+async def create_user(body: UserCreate, user: dict = Depends(require_role("admin"))):
+    existing = await db.users.find_one({"email": body.email.lower()})
+    if existing:
+        raise HTTPException(409, "Email already exists")
+    if body.role not in ["admin", "analyst", "manager", "executive"]:
+        raise HTTPException(400, "Invalid role")
+    new = {
+        "id": str(uuid.uuid4()), "email": body.email.lower(), "name": body.name,
+        "role": body.role, "team": body.team, "department": body.department,
+        "password_hash": hash_password(body.password) if body.password else None,
+        "created_at": now_iso(), "active": True,
+    }
+    await db.users.insert_one(new)
+    return {"id": new["id"], "email": new["email"]}
+
+
 class UserUpdate(BaseModel):
+    name: Optional[str] = None
     team: Optional[str] = None
     department: Optional[str] = None
     role: Optional[str] = None
+    active: Optional[bool] = None
+    password: Optional[str] = None
 
 
 @api.patch("/v1/admin/users/{user_id}")
 async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(require_role("admin"))):
-    update = {k: v for k, v in body.model_dump().items() if v is not None}
+    update = {}
+    for k, v in body.model_dump(exclude_none=True).items():
+        if k == "password":
+            update["password_hash"] = hash_password(v)
+        else:
+            update[k] = v
     if not update:
         raise HTTPException(400, "No fields to update")
     res = await db.users.update_one({"id": user_id}, {"$set": update})
     if res.matched_count == 0:
         raise HTTPException(404, "User not found")
     return {"ok": True}
+
+
+@api.delete("/v1/admin/users/{user_id}")
+async def delete_user(user_id: str, user: dict = Depends(require_role("admin"))):
+    if user_id == user["id"]:
+        raise HTTPException(400, "Cannot delete your own account")
+    res = await db.users.delete_one({"id": user_id})
+    await db.user_sessions.delete_many({"user_id": user_id})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "User not found")
+    return {"ok": True}
+
+
+# --------------------------- NOTIFICATION CHANNELS & RULES ---------------------------
+class ChannelIn(BaseModel):
+    name: str
+    type: str
+    webhook_url: Optional[str] = None
+    to: Optional[str] = None
+    enabled: bool = True
+
+
+@api.get("/v1/admin/notification-channels")
+async def list_channels(user: dict = Depends(get_current_user)):
+    items = await db.notification_channels.find({}, {"_id": 0}).to_list(100)
+    for c in items:
+        if c.get("webhook_url") and len(c["webhook_url"]) > 30:
+            c["webhook_url_masked"] = c["webhook_url"][:32] + "•••" + c["webhook_url"][-6:]
+        c.pop("webhook_url", None)
+    return {"items": items}
+
+
+@api.post("/v1/admin/notification-channels")
+async def create_channel(body: ChannelIn, user: dict = Depends(require_role("admin"))):
+    from notifier import CHANNELS
+    if body.type not in CHANNELS:
+        raise HTTPException(400, f"type must be one of {CHANNELS}")
+    if body.type == "email" and not body.to:
+        raise HTTPException(400, "to (recipient email) is required for email channels")
+    if body.type in ("discord", "slack", "teams", "webhook") and not body.webhook_url:
+        raise HTTPException(400, "webhook_url is required for this channel type")
+    doc = {**body.model_dump(), "id": str(uuid.uuid4()), "created_at": now_iso()}
+    await db.notification_channels.insert_one(doc)
+    return {"id": doc["id"]}
+
+
+@api.delete("/v1/admin/notification-channels/{channel_id}")
+async def delete_channel(channel_id: str, user: dict = Depends(require_role("admin"))):
+    await db.notification_channels.delete_one({"id": channel_id})
+    return {"ok": True}
+
+
+@api.post("/v1/admin/notification-channels/{channel_id}/test")
+async def test_channel(channel_id: str, user: dict = Depends(require_role("admin"))):
+    from notifier import deliver
+    channel = await db.notification_channels.find_one({"id": channel_id}, {"_id": 0})
+    if not channel:
+        raise HTTPException(404, "Channel not found")
+    ctx = {
+        "severity": "Critical", "title": "Test notification — Log4Shell RCE",
+        "cve": "CVE-2021-44228", "asset": "web-prod-01", "owner_team": "Platform Eng",
+        "risk_score": 96, "due_at": "2026-03-01",
+        "url": "https://remediationhub.preview.emergentagent.com/findings/demo",
+    }
+    rec = await deliver(channel, "new_assignment", ctx, db)
+    return {"delivered": rec["delivered"], "status_code": rec["status_code"], "response": rec["response"]}
+
+
+class RuleIn(BaseModel):
+    name: str
+    trigger: str
+    channel_ids: list[str]
+    severity_in: Optional[list[str]] = None
+    owner_team: Optional[str] = None
+    template_id: Optional[str] = None
+    frequency: str = "immediate"
+    active: bool = True
+
+
+@api.get("/v1/admin/notification-rules")
+async def list_rules_notif(user: dict = Depends(get_current_user)):
+    items = await db.notification_rules.find({}, {"_id": 0}).to_list(200)
+    return {"items": items}
+
+
+@api.post("/v1/admin/notification-rules")
+async def create_rule_notif(body: RuleIn, user: dict = Depends(require_role("admin"))):
+    from notifier import TRIGGERS
+    if body.trigger not in TRIGGERS:
+        raise HTTPException(400, f"trigger must be one of {TRIGGERS}")
+    doc = {**body.model_dump(), "id": str(uuid.uuid4()), "created_at": now_iso()}
+    await db.notification_rules.insert_one(doc)
+    return {"id": doc["id"]}
+
+
+@api.delete("/v1/admin/notification-rules/{rule_id}")
+async def delete_rule_notif(rule_id: str, user: dict = Depends(require_role("admin"))):
+    await db.notification_rules.delete_one({"id": rule_id})
+    return {"ok": True}
+
+
+@api.get("/v1/admin/notifications-outbox")
+async def list_outbox(user: dict = Depends(get_current_user)):
+    items = await db.notifications_outbox.find({}, {"_id": 0}).sort("created_at", -1).limit(200).to_list(200)
+    return {"items": items}
+
+
+@api.get("/v1/admin/notification-meta")
+async def notification_meta(user: dict = Depends(get_current_user)):
+    from notifier import TRIGGERS, CHANNELS, TEMPLATES
+    return {"triggers": TRIGGERS, "channels": CHANNELS, "templates": list(TEMPLATES.keys())}
 
 
 # --------------------------- ASSIGNMENT RULES ---------------------------
