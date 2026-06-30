@@ -7,8 +7,8 @@ import { FcGoogle } from "react-icons/fc";
 export default function Login() {
   const { login } = useAuth();
   const nav = useNavigate();
-  const [email, setEmail] = useState("admin@vulnops.io");
-  const [pwd, setPwd] = useState("admin123");
+  const [email, setEmail] = useState("");
+  const [pwd, setPwd] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -25,13 +25,6 @@ export default function Login() {
     const redirectUrl = window.location.origin + "/";
     window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
   };
-
-  const demoLogins = [
-    { email: "admin@vulnops.io", pwd: "admin123", role: "Admin" },
-    { email: "analyst@vulnops.io", pwd: "analyst123", role: "Analyst" },
-    { email: "manager@vulnops.io", pwd: "manager123", role: "Manager" },
-    { email: "exec@vulnops.io", pwd: "exec123", role: "Executive" },
-  ];
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-[#090C10] px-4">
@@ -82,20 +75,6 @@ export default function Login() {
               {busy ? "Signing in…" : "Sign in"}
             </button>
           </form>
-        </div>
-
-        <div className="mt-4 border border-[#30363D] bg-[#0D1117] rounded-md p-3">
-          <div className="text-[10px] uppercase tracking-wider font-mono text-slate-500 mb-2">Demo accounts</div>
-          <div className="grid grid-cols-2 gap-1.5">
-            {demoLogins.map((d) => (
-              <button key={d.email} type="button" data-testid={`demo-${d.role.toLowerCase()}`}
-                onClick={() => { setEmail(d.email); setPwd(d.pwd); }}
-                className="text-left px-2 py-1.5 rounded bg-[#161B22] hover:bg-[#1f2630] border border-[#30363D]">
-                <div className="text-[11px] text-slate-200">{d.role}</div>
-                <div className="text-[10px] font-mono text-slate-500 truncate">{d.email}</div>
-              </button>
-            ))}
-          </div>
         </div>
       </div>
     </div>

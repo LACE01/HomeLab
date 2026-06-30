@@ -7,7 +7,7 @@ import { fmtRel, isOverdue } from "@/lib/utils-fmt";
 import { Link } from "react-router-dom";
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid,
-  BarChart, Bar, Cell,
+  BarChart, Bar, Cell, PieChart, Pie, Legend,
 } from "recharts";
 import { Lightning, Fire, Clock, ArrowsClockwise, Warning, UserCircle, ChartLineUp, FileArrowDown } from "@phosphor-icons/react";
 
@@ -43,12 +43,14 @@ export default function Dashboard() {
   const [analyst, setAnalyst] = useState(null);
   const [manager, setManager] = useState(null);
   const [exec, setExec] = useState(null);
+  const [sevStats, setSevStats] = useState(null);
   const [tab, setTab] = useState(role === "executive" ? "exec" : role === "manager" ? "mgr" : "ops");
 
   useEffect(() => {
     api.get("/v1/dashboards/analyst").then(r => setAnalyst(r.data));
     api.get("/v1/dashboards/manager").then(r => setManager(r.data));
     api.get("/v1/dashboards/executive").then(r => setExec(r.data));
+    api.get("/v1/findings/stats").then(r => setSevStats(r.data));
   }, []);
 
   const downloadPdf = async () => {
@@ -94,7 +96,26 @@ export default function Dashboard() {
             <Stat label="New (24h)" value={analyst.new_findings} tone="blue" testid="stat-new" />
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+            <Panel title="Open Findings by Severity" testid="panel-severity">
+              <div className="p-3 h-[260px]">
+                {sevStats && (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={["Critical","High","Medium","Low","Info"].map(s => ({name: s, value: sevStats.by_severity?.[s] || 0}))}
+                        cx="50%" cy="50%" innerRadius={50} outerRadius={85} paddingAngle={2} dataKey="value"
+                        label={({name, value}) => value > 0 ? `${name}: ${value}` : ""}
+                        labelLine={false}>
+                        <Cell fill="#ef4444"/><Cell fill="#f97316"/><Cell fill="#f59e0b"/><Cell fill="#3b82f6"/><Cell fill="#64748b"/>
+                      </Pie>
+                      <Tooltip contentStyle={{ background:"#0D1117", border:"1px solid #30363D", fontSize:12 }}/>
+                      <Legend wrapperStyle={{fontSize:11, color:"#94a3b8"}}/>
+                    </PieChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </Panel>
+
             <div className="lg:col-span-2">
               <Panel title="Top Risk Findings" testid="panel-top-findings">
                 <table className="dense w-full">

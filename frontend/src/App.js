@@ -17,6 +17,7 @@ import Operational from "@/pages/Operational";
 import { AssignmentRules, OwnershipMappings } from "@/pages/Ownership";
 import Users from "@/pages/Users";
 import Notifications from "@/pages/Notifications";
+import AttackPaths from "@/pages/AttackPaths";
 
 const Protected = ({ children }) => {
   const { user, loading } = useAuth();
@@ -48,6 +49,7 @@ const AppRouter = () => {
       <Route path="/reports" element={<Protected><Reports/></Protected>}/>
       <Route path="/admin" element={<Protected><Admin/></Protected>}/>
       <Route path="/operational" element={<Protected><Operational/></Protected>}/>
+      <Route path="/attack-paths" element={<Protected><AttackPaths/></Protected>}/>
       <Route path="/admin/assignment-rules" element={<Protected><AssignmentRules/></Protected>}/>
       <Route path="/admin/ownership" element={<Protected><OwnershipMappings/></Protected>}/>
       <Route path="/admin/users" element={<Protected><Users/></Protected>}/>

@@ -162,3 +162,30 @@ async def deliver(channel: dict, template_id: str, ctx: dict, db) -> dict:
     record["response"] = result.get("text", "")
     await db.notifications_outbox.insert_one(record)
     return record
+
+
+async def dispatch(trigger: str, ctx: dict, db) -> int:
+    """Find all enabled rules matching `trigger` and ctx, then deliver via each rule's channels.
+    Returns count of deliveries attempted."""
+    rules = await db.notification_rules.find({"trigger": trigger, "active": True}, {"_id": 0}).to_list(200)
+    sent = 0
+    for rule in rules:
+        # Severity filter
+        sevs = rule.get("severity_in") or []
+        if sevs and ctx.get("severity") not in sevs:
+            continue
+        # Owner team filter
+        team = rule.get("owner_team")
+        if team and ctx.get("owner_team") != team:
+            continue
+        template_id = rule.get("template_id") or "new_assignment"
+        for ch_id in rule.get("channel_ids", []):
+            channel = await db.notification_channels.find_one({"id": ch_id, "enabled": {"$ne": False}}, {"_id": 0})
+            if not channel:
+                continue
+            try:
+                await deliver(channel, template_id, ctx, db)
+                sent += 1
+            except Exception as e:
+                logger.exception(f"Auto-dispatch failed for rule {rule.get('id')} channel {ch_id}: {e}")
+    return sent

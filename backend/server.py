@@ -132,6 +132,17 @@ async def google_session(body: GoogleSessionBody, response: Response):
                      "role": user["role"], "picture": picture}}
 
 
+def _finding_ctx(f: dict) -> dict:
+    """Build a notification context dict from a finding doc."""
+    return {
+        "severity": f.get("severity"), "title": f.get("title"),
+        "cve": f.get("cve") or "—", "asset": f.get("asset_hostname"),
+        "owner_team": f.get("owner_team"), "risk_score": f.get("risk_score"),
+        "due_at": (f.get("due_at") or "")[:19],
+        "url": f"/findings/{f.get('id')}",
+    }
+
+
 # --------------------------- FINDINGS ---------------------------
 @api.get("/v1/findings")
 async def list_findings(
@@ -282,6 +293,12 @@ async def update_status(finding_id: str, body: StatusUpdate, user: dict = Depend
         "action": "status_changed", "actor": user["email"], "timestamp": now_iso(),
         "details": f"Status set to {body.status}" + (f" — {body.note}" if body.note else ""),
     })
+    # Auto-dispatch: reopened
+    if body.status == "Reopened":
+        from notifier import dispatch
+        f = await db.findings.find_one({"id": finding_id}, {"_id": 0})
+        if f:
+            await dispatch("finding_reopened", _finding_ctx(f), db)
     return {"ok": True}
 
 
@@ -322,6 +339,36 @@ async def prioritization_preview(finding_id: str, user: dict = Depends(get_curre
         raise HTTPException(404, "Finding not found")
     asset = await db.assets.find_one({"id": f.get("asset_id")}, {"_id": 0})
     return compute_risk(f, asset)
+
+
+# --------------------------- ATTACK PATH ANALYSIS ---------------------------
+@api.get("/v1/attack-paths/cves")
+async def attack_path_cves(user: dict = Depends(get_current_user)):
+    """List CVEs that have open findings on 2+ assets (good candidates for path analysis)."""
+    pipeline = [
+        {"$match": {"cve": {"$ne": None, "$exists": True},
+                    "status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]}}},
+        {"$group": {"_id": "$cve",
+                    "asset_count": {"$addToSet": "$asset_id"},
+                    "title": {"$first": "$title"},
+                    "severity": {"$first": "$severity"},
+                    "kev": {"$first": "$kev_flag"},
+                    "max_risk": {"$max": "$risk_score"}}},
+        {"$project": {"_id": 0, "cve": "$_id", "title": 1, "severity": 1, "kev": 1,
+                      "max_risk": 1, "affected_assets": {"$size": "$asset_count"}}},
+        {"$match": {"affected_assets": {"$gte": 1}}},
+        {"$sort": {"max_risk": -1}},
+        {"$limit": 100},
+    ]
+    items = [r async for r in db.findings.aggregate(pipeline)]
+    return {"items": items}
+
+
+@api.get("/v1/attack-paths/graph")
+async def attack_path_graph(cve: Optional[str] = None, finding_id: Optional[str] = None,
+                             user: dict = Depends(get_current_user)):
+    from attack_path import build_attack_path
+    return await build_attack_path(db, cve=cve, finding_id=finding_id)
 
 
 # --------------------------- ASSETS ---------------------------
@@ -850,6 +897,19 @@ async def ingest_universal(body: UniversalIngestBody, request: Request, _: dict 
                 new_finding["risk_breakdown"] = risk["breakdown"]
                 await db.findings.insert_one(new_finding)
                 created += 1
+                # Auto-dispatch on new finding
+                try:
+                    from notifier import dispatch
+                    ctx = _finding_ctx(new_finding)
+                    sev = new_finding.get("severity")
+                    if sev == "Critical":
+                        await dispatch("finding_created_critical", ctx, db)
+                    elif sev == "High":
+                        await dispatch("finding_created_high", ctx, db)
+                    if new_finding.get("kev_flag"):
+                        await dispatch("kev_match", ctx, db)
+                except Exception as e:
+                    logger.exception(f"notify dispatch failed: {e}")
 
             # Observation
             await db.observations.insert_one({
