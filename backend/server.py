@@ -1475,7 +1475,7 @@ async def trigger_nightly(user: dict = Depends(require_role("admin"))):
 
 
 @api.get("/v1/admin/nightly-rescore/runs")
-async def list_rescore_runs(user: dict = Depends(get_current_user)):
+async def list_rescore_runs(user: dict = Depends(require_role("admin"))):
     items = await db.rescoring_runs.find({}, {"_id": 0}).sort("ran_at", -1).limit(50).to_list(50)
     return {"items": items}
 
@@ -1565,6 +1565,7 @@ async def findings_group(
     if view_mode == "by_vulnerability" and group_by == "cve":
         pipeline = [
             {"$match": flt},
+            {"$sort": {"risk_score": -1}},
             {"$group": {"_id": grp_field,
                         "count": {"$sum": 1},
                         "unique_assets": {"$addToSet": "$asset_id"},
@@ -1582,6 +1583,7 @@ async def findings_group(
     else:
         pipeline = [
             {"$match": flt},
+            {"$sort": {"risk_score": -1}},
             {"$group": {"_id": grp_field,
                         "count": {"$sum": 1},
                         "max_risk": {"$max": "$risk_score"},

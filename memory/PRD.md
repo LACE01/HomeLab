@@ -39,7 +39,29 @@ See /app/memory/test_credentials.md.
 - Excel export (.xlsx) — CSV implemented
 
 ## Next Tasks
-1. User feedback round
-2. Add adapter ingestion endpoints (Qualys / Nessus specific)
-3. SLA editor UI
-4. Notification policies
+1. **P2 Refactor**: Split server.py (1640 lines) into FastAPI APIRouter modules (`routes/auth.py`, `routes/findings.py`, `routes/dashboards.py`, `routes/admin.py`, `routes/preferences.py`) — strongly recommended by testing agent to prevent recurrence of route-placement bugs
+2. Replace native `<input type='date'>` in TimeRangeSelector with shadcn Calendar/Popover for design consistency
+3. Add request debouncing on TimeRangeSelector rapid-clicks (currently fires 5 parallel requests per change)
+4. Toast feedback when `PUT /v1/me/preferences` fails (currently silent .catch)
+5. Adapter-specific ingestion endpoints (Qualys / Nessus)
+6. SLA editor UI
+7. Notification policies (email policies; Discord live)
+8. Live OpenCTI key once user provides it
+
+## Iteration 3c (Feb 2026) — COMPLETE
+**P0 fix**: nightly-rescore + CWE prevalence routes were defined AFTER `app.include_router(api)` → moved above. All endpoints return 200.
+
+**Configurable dashboards**:
+- All three dashboard endpoints (`/v1/dashboards/analyst|manager|executive`) accept `range` query param (7d / 30d / 90d / 4mo / 6mo / 12mo / custom with start+end).
+- New helper `parse_time_range()` in server.py.
+
+**Tile picker & saved layouts (per-user)**:
+- New endpoints: `GET /v1/me/preferences`, `PUT /v1/me/preferences`. MongoDB collection `user_preferences` stores `{dashboard:{range,tiles}, findings:{group_by,view_mode}}`.
+- New frontend components: `TimeRangeSelector`, `TilePicker`, `usePreferences` hook (debounced auto-save).
+
+**Findings grouping**:
+- New endpoint `GET /v1/findings-groups?group_by={none|cve|os|title|severity|asset}&view_mode={by_asset|by_vulnerability}`.
+- Findings page renders grouped accordion when `group_by !== "none"`; clicking a group expands to list its child findings.
+- View mode toggle differentiates "by asset" (rows = asset×CVE) vs "by vulnerability" (rows = CVE, with `asset_count`).
+
+**Test coverage**: `/app/backend/tests/test_iter3c.py` — 13/13 backend tests + 8/8 frontend scenarios green (see `/app/test_reports/iteration_7.json`).
