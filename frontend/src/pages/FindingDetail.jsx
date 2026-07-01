@@ -602,6 +602,8 @@ export default function FindingDetail() {
             <KV k="QID" v={f.qid} mono/>
             <KV k="Plugin ID" v={f.plugin_id} mono/>
             <KV k="Source ID" v={f.source_observation_id} mono/>
+            {f.port && <KV k="Port" v={`${f.port}/${f.protocol || "tcp"}`} mono/>}
+            {f.service && <KV k="Service" v={[f.service, f.service_product, f.service_version].filter(Boolean).join(" ")} />}
           </Section>
 
           <Section title="Scoring">

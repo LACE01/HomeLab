@@ -606,6 +606,30 @@ async def upload_web_scans(
         raise HTTPException(400, f"Failed to parse XLSX: {e}")
 
 
+# --------------------------- NMAP SCAN UPLOAD ---------------------------
+@router.post("/v1/admin/nmap/upload")
+async def upload_nmap_scan(
+    file: UploadFile = File(...),
+    vantage: str = Form("internal"),
+    label: str = Form(""),
+    user: dict = Depends(require_role("admin")),
+):
+    """Upload an `nmap -oX` XML file. vantage='external' means the scan was run from
+    outside your network (so open ports found = real internet reachability); vantage=
+    'internal' means it was run from inside (used for port/service enrichment only,
+    no exposure-verification claims)."""
+    from nmap_scan import import_nmap_xml
+    if not file.filename or not file.filename.lower().endswith(".xml"):
+        raise HTTPException(400, "File must be .xml (nmap -oX output)")
+    content = await file.read()
+    try:
+        return await import_nmap_xml(db, content, vantage=vantage, source_label=label or None)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(400, f"Failed to parse Nmap XML: {e}")
+
+
 # --------------------------- OWNERSHIP RULES PREVIEW ---------------------------
 @router.post("/v1/admin/assignment-rules/preview")
 async def preview_rules(user: dict = Depends(get_current_user)):

@@ -186,12 +186,18 @@ async def dashboard_exposure(user: dict = Depends(get_current_user)):
             "risk_sum": round(r["total_risk"], 1), "owner_team": r.get("owner_team"),
         })
 
+    mismatch_assets = await db.assets.find(
+        {"exposure_mismatch": True}, {"_id": 0, "id": 1, "hostname": 1, "exposure": 1,
+                                       "exposure_mismatch_note": 1, "exposure_verified_at": 1}
+    ).to_list(200)
+
     return {
         "total_assets": total_assets, "exposed_assets": exposed_assets,
         "exposed_open": exposed_open, "exposed_crit_high": exposed_crit_high,
         "exposed_kev": exposed_kev, "exposed_unassigned": exposed_unassigned,
         "by_environment": [{"environment": k, "count": v} for k, v in sorted(by_env.items(), key=lambda x: -x[1])],
         "top_exposed_assets": top_exposed,
+        "exposure_mismatches": mismatch_assets,
     }
 
 

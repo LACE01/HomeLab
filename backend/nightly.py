@@ -198,14 +198,49 @@ async def compute_org_snapshot(db, for_date: str = None) -> dict:
     return doc
 
 
+async def _promote_verified(db, finding: dict, note: str) -> dict:
+    await db.findings.update_one({"id": finding["id"]}, {"$set": {
+        "status": "Fixed validated", "last_changed_at": now_iso_(),
+        "verification_status": "passed", "verification_note": note,
+    }})
+    await db.activity_log.insert_one({
+        "id": str(uuid.uuid4()), "entity_type": "finding", "entity_id": finding["id"],
+        "action": "status_changed", "actor": "verification_sweep", "timestamp": now_iso_(),
+        "details": note,
+    })
+    return {"verified": True, "status": "Fixed validated", "note": note}
+
+
 async def check_single_verification(db, finding: dict) -> dict:
-    """Shared by the manual 'Verify now' endpoint and the nightly sweep. Only promotes to
-    Fixed validated when there's real evidence the host was rescanned since the fix was
-    marked -- a successful import from the same source_tool with a started_at after
-    fixed_marked_at -- rather than just letting a timer expire. If no rescan evidence
-    exists yet, it reports that honestly instead of guessing."""
-    source = finding.get("source_tool")
+    """Shared by the manual 'Verify now' endpoint and the nightly sweep. Two kinds of
+    evidence can promote a finding to Fixed validated:
+
+    1. Port evidence (strongest, when available): if the finding has a `port` recorded
+       (Nmap-sourced findings always have one) and a Nmap scan of the same asset run
+       after the fix no longer lists that port as open, that's a direct, concrete check
+       that the specific exposed service is actually gone.
+    2. Source-sync evidence (fallback): a successful import from the finding's own
+       source_tool with a started_at after fixed_marked_at -- the host was rescanned by
+       the same tool that found the issue and it didn't reappear.
+
+    If neither exists yet, it reports that honestly instead of guessing."""
     fixed_at = finding.get("fixed_marked_at") or finding.get("last_changed_at")
+
+    port = finding.get("port")
+    if port and finding.get("asset_id") and fixed_at:
+        asset = await db.assets.find_one({"id": finding["asset_id"]}, {"_id": 0})
+        scan_at = (asset or {}).get("nmap_last_scan_at")
+        if asset and scan_at and scan_at > fixed_at:
+            still_open = any(p.get("port") == port for p in (asset.get("open_ports") or []))
+            if not still_open:
+                note = (f"Auto-verified: an Nmap scan run after the fix shows port {port} is no longer "
+                        f"open on {asset.get('hostname')}.")
+                return await _promote_verified(db, finding, note)
+            else:
+                return {"verified": False, "status": finding.get("status"),
+                        "note": f"Port {port} was still open on the most recent Nmap scan ({scan_at[:10]}) -- not verified yet."}
+
+    source = finding.get("source_tool")
     rescanned = False
     if source and fixed_at:
         rescanned = await db.import_jobs.count_documents({
@@ -214,16 +249,7 @@ async def check_single_verification(db, finding: dict) -> dict:
 
     if rescanned:
         note = f"Auto-verified: a {source} sync ran after the fix and this finding did not reappear."
-        await db.findings.update_one({"id": finding["id"]}, {"$set": {
-            "status": "Fixed validated", "last_changed_at": now_iso_(),
-            "verification_status": "passed", "verification_note": note,
-        }})
-        await db.activity_log.insert_one({
-            "id": str(uuid.uuid4()), "entity_type": "finding", "entity_id": finding["id"],
-            "action": "status_changed", "actor": "verification_sweep", "timestamp": now_iso_(),
-            "details": note,
-        })
-        return {"verified": True, "status": "Fixed validated", "note": note}
+        return await _promote_verified(db, finding, note)
 
     note = (f"Still waiting on a fresh {source} sync since this was marked fixed."
             if source else "No source tool recorded for this finding -- can't confirm a rescan happened.")

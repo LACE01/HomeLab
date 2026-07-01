@@ -3,7 +3,7 @@ import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip, RiskBar } from "@/components/Badges";
 import { Link, useNavigate } from "react-router-dom";
-import { Globe, Fire, UserCircle, ShareNetwork } from "@phosphor-icons/react";
+import { Globe, Fire, UserCircle, ShareNetwork, Warning } from "@phosphor-icons/react";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
 } from "recharts";
@@ -93,6 +93,25 @@ export default function Exposure() {
           </div>
         </div>
       </div>
+
+      {d.exposure_mismatches?.length > 0 && (
+        <div className="border border-amber-500/30 bg-amber-500/5 rounded-md overflow-hidden mb-4">
+          <div className="px-4 py-2.5 border-b border-amber-500/20 text-[11px] uppercase tracking-wider font-mono text-amber-300 flex items-center gap-2">
+            <Warning size={13}/> Exposure Mismatches — {d.exposure_mismatches.length} asset{d.exposure_mismatches.length===1?"":"s"} (from external Nmap scans)
+          </div>
+          <div className="divide-y divide-amber-500/10">
+            {d.exposure_mismatches.map(a => (
+              <div key={a.id} className="px-4 py-2.5 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <Link to={`/assets/${a.id}`} className="text-blue-300 hover:underline font-mono text-[12px]">{a.hostname}</Link>
+                  <div className="text-[11px] text-amber-200/80 mt-0.5">{a.exposure_mismatch_note}</div>
+                </div>
+                <Chip color="amber">marked "{a.exposure}"</Chip>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md px-4 py-3 flex items-center justify-between gap-3">
         <div className="text-[12px] text-slate-400">

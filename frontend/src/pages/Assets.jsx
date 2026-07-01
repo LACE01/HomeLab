@@ -190,6 +190,38 @@ export function AssetDetail() {
         </div>
       </div>
 
+      {a.open_ports?.length > 0 && (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden mb-4">
+          <div className="px-4 py-2 border-b border-[#30363D] flex items-center justify-between">
+            <h3 className="text-[11px] uppercase tracking-wider font-mono text-slate-400">
+              Open Ports ({a.open_ports.length}) — via Nmap
+            </h3>
+            <div className="text-[10.5px] text-slate-500 font-mono flex items-center gap-2">
+              {a.detected_os && <span>OS guess: {a.detected_os}</span>}
+              {a.nmap_last_scan_at && <span>Last scanned {a.nmap_last_scan_at.slice(0,10)}</span>}
+            </div>
+          </div>
+          {a.exposure_mismatch && (
+            <div className="px-4 py-2 bg-amber-500/5 border-b border-amber-500/20 text-[11.5px] text-amber-200">
+              {a.exposure_mismatch_note}
+            </div>
+          )}
+          <table className="dense w-full">
+            <thead><tr><th>Port</th><th>Protocol</th><th className="text-left">Service</th><th className="text-left">Product / Version</th></tr></thead>
+            <tbody>
+              {a.open_ports.map((p, i) => (
+                <tr key={i} className="border-t border-[#30363D]">
+                  <td className="text-center font-mono">{p.port}</td>
+                  <td className="text-center text-slate-400">{p.protocol}</td>
+                  <td className="text-slate-200">{p.service || "—"}</td>
+                  <td className="text-slate-400 text-[11.5px]">{[p.product, p.version].filter(Boolean).join(" ") || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {patchGroups.length > 0 && (
         <div className="border border-emerald-500/30 bg-emerald-500/5 rounded-md overflow-hidden mb-4">
           <div className="px-4 py-2 border-b border-emerald-500/20 text-[11px] uppercase tracking-wider font-mono text-emerald-300">
