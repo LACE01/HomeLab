@@ -1,26 +1,60 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtDate, fmtRel, isOverdue } from "@/lib/utils-fmt";
-import { MagnifyingGlass, ArrowLeft } from "@phosphor-icons/react";
+import { MagnifyingGlass, ArrowLeft, Stack } from "@phosphor-icons/react";
+import { toast } from "sonner";
 
 export function Assets() {
   const [items, setItems] = useState([]);
   const [q, setQ] = useState("");
   const [criticality, setCriticality] = useState("");
-  useEffect(() => {
+  const [products, setProducts] = useState([]);
+  const [selected, setSelected] = useState(new Set());
+  const [bulkProduct, setBulkProduct] = useState("");
+  const [assigning, setAssigning] = useState(false);
+
+  const load = useCallback(() => {
     const params = {};
     if (q) params.q = q; if (criticality) params.criticality = criticality;
     api.get("/v1/assets", { params }).then(r => setItems(r.data.items));
-  }, [criticality]);
+  }, [q, criticality]);
+
+  useEffect(() => { load(); }, [criticality]); // eslint-disable-line
+  useEffect(() => { api.get("/v1/products").then(r => setProducts(r.data.items)); }, []);
+
+  const toggle = (id) => setSelected(s => {
+    const next = new Set(s);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+  const toggleAll = () => setSelected(s => s.size === items.length ? new Set() : new Set(items.map(a => a.id)));
+
+  const assignSelected = async () => {
+    if (!selected.size) return;
+    setAssigning(true);
+    try {
+      await api.post("/v1/assets/bulk-assign-product", {
+        asset_ids: Array.from(selected), product_id: bulkProduct || null,
+      });
+      toast.success(`Assigned ${selected.size} asset(s) to product.`);
+      setSelected(new Set());
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to assign product");
+    } finally {
+      setAssigning(false);
+    }
+  };
+
   return (
     <Layout title="Assets" subtitle="Hosts, cloud resources, repositories, and devices under management">
-      <div className="border border-[#30363D] bg-[#0D1117] rounded-md mb-3 px-3 py-2 flex gap-2 items-center">
+      <div className="border border-[#30363D] bg-[#0D1117] rounded-md mb-3 px-3 py-2 flex gap-2 items-center flex-wrap">
         <div className="flex items-center gap-1.5 bg-[#161B22] border border-[#30363D] rounded px-2 h-8 flex-1 min-w-[200px]">
           <MagnifyingGlass size={14} className="text-slate-500" />
-          <input data-testid="assets-search" value={q} onChange={(e)=>setQ(e.target.value)} onKeyDown={(e)=>e.key==='Enter'&&api.get("/v1/assets",{params:{q,criticality}}).then(r=>setItems(r.data.items))}
+          <input data-testid="assets-search" value={q} onChange={(e)=>setQ(e.target.value)} onKeyDown={(e)=>e.key==='Enter'&&load()}
             placeholder="hostname, IP, or FQDN…" className="bg-transparent flex-1 outline-none text-[12.5px] text-slate-200"/>
         </div>
         <select data-testid="assets-criticality" value={criticality} onChange={(e)=>setCriticality(e.target.value)} className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px]">
@@ -29,18 +63,37 @@ export function Assets() {
         </select>
       </div>
 
+      {selected.size > 0 && (
+        <div data-testid="bulk-assign-bar" className="border border-blue-500/30 bg-blue-500/5 rounded-md mb-3 px-3 py-2 flex items-center gap-2">
+          <Stack size={14} className="text-blue-300"/>
+          <span className="text-[12px] text-blue-200">{selected.size} selected</span>
+          <select data-testid="bulk-assign-product-select" value={bulkProduct} onChange={(e)=>setBulkProduct(e.target.value)}
+            className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] ml-auto">
+            <option value="">Unassign product</option>
+            {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          <button data-testid="bulk-assign-apply" onClick={assignSelected} disabled={assigning}
+            className="h-8 px-3 text-[12px] bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/40 text-blue-200 rounded disabled:opacity-50">
+            {assigning ? "Applying…" : "Assign to product"}
+          </button>
+        </div>
+      )}
+
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">
         <table data-testid="assets-table" className="dense w-full">
           <thead><tr>
+            <th className="w-8"><input type="checkbox" checked={items.length>0 && selected.size===items.length} onChange={toggleAll} data-testid="select-all-assets"/></th>
             <th className="text-left">Hostname</th><th className="text-left">IP</th>
             <th className="text-left">Type</th><th className="text-left">Env</th>
             <th className="text-left">Criticality</th><th className="text-left">Exposure</th>
-            <th className="text-left">Owner Team</th><th className="text-right">Open Findings</th>
+            <th className="text-left">Owner Team</th><th className="text-left">Product</th>
+            <th className="text-right">Open Findings</th>
             <th className="text-right">Critical</th><th className="text-left">Ownership</th>
           </tr></thead>
           <tbody>
             {items.map(a => (
               <tr key={a.id} className="border-t border-[#30363D] hover:bg-slate-800/30">
+                <td><input type="checkbox" checked={selected.has(a.id)} onChange={()=>toggle(a.id)} data-testid={`select-asset-${a.id}`}/></td>
                 <td><Link to={`/assets/${a.id}`} data-testid={`asset-${a.id}`} className="text-blue-300 hover:underline font-mono text-[12px]">{a.hostname}</Link></td>
                 <td className="font-mono text-[11.5px] text-slate-400">{a.ip || "—"}</td>
                 <td className="text-slate-400 text-[11.5px]">{a.asset_type}</td>
@@ -48,6 +101,7 @@ export function Assets() {
                 <td><Chip color={a.criticality === "crown_jewel" ? "red" : a.criticality === "critical" ? "orange" : "slate"}>{a.criticality}</Chip></td>
                 <td><Chip color={a.exposure === "internet" ? "orange" : "slate"}>{a.exposure}</Chip></td>
                 <td className="text-slate-400">{a.owner_team}</td>
+                <td className="text-slate-400 text-[11.5px]">{a.product_name || "—"}</td>
                 <td className="text-right font-mono">{a.open_findings}</td>
                 <td className="text-right font-mono text-red-300">{a.critical_findings}</td>
                 <td><div className="flex items-center gap-1.5">
@@ -70,11 +124,31 @@ export function AssetDetail() {
   const [a, setA] = useState(null);
   const [findings, setFindings] = useState([]);
   const [history, setHistory] = useState({activity: [], observations: []});
+  const [products, setProducts] = useState([]);
+  const [savingProduct, setSavingProduct] = useState(false);
+
   useEffect(() => {
     api.get(`/v1/assets/${id}`).then(r => setA(r.data));
     api.get(`/v1/assets/${id}/findings`).then(r => setFindings(r.data.items));
     api.get(`/v1/assets/${id}/history`).then(r => setHistory(r.data));
+    api.get("/v1/products").then(r => setProducts(r.data.items));
   }, [id]);
+
+  const changeProduct = async (e) => {
+    const product_id = e.target.value || null;
+    setSavingProduct(true);
+    try {
+      await api.post(`/v1/assets/${id}/product`, { product_id });
+      const r = await api.get(`/v1/assets/${id}`);
+      setA(r.data);
+      toast.success("Product assignment updated.");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to update product");
+    } finally {
+      setSavingProduct(false);
+    }
+  };
+
   if (!a) return <Layout title="Asset…"><div className="text-slate-500">Loading…</div></Layout>;
 
   return (
@@ -84,13 +158,20 @@ export function AssetDetail() {
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-3 mb-4">
         <div className="lg:col-span-2 border border-[#30363D] bg-[#0D1117] rounded-md p-4">
           <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500">Asset Profile</div>
-          <div className="mt-2 grid grid-cols-2 gap-2 text-[12.5px]">
+          <div className="mt-2 grid grid-cols-2 gap-2 text-[12.5px] items-center">
             <div><span className="text-slate-500">IP:</span> <span className="font-mono">{a.ip || "—"}</span></div>
             <div><span className="text-slate-500">FQDN:</span> <span className="font-mono text-[11px]">{a.fqdn || "—"}</span></div>
             <div><span className="text-slate-500">Type:</span> {a.asset_type}</div>
             <div><span className="text-slate-500">Status:</span> {a.status}</div>
             <div><span className="text-slate-500">Owner Team:</span> {a.owner_team}</div>
-            <div><span className="text-slate-500">Product:</span> {a.product_name || "—"}</div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-500">Product:</span>
+              <select data-testid="asset-product-select" value={a.product_id || ""} onChange={changeProduct} disabled={savingProduct}
+                className="h-6 bg-[#161B22] border border-[#30363D] rounded px-1.5 text-[11.5px] text-slate-200 disabled:opacity-50">
+                <option value="">Unassigned</option>
+                {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
           </div>
           <div className="mt-3 flex flex-wrap gap-1">{(a.tags||[]).map(t => <Chip key={t}>{t}</Chip>)}</div>
         </div>

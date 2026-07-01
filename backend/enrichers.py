@@ -92,3 +92,37 @@ async def sync_epss(db) -> dict:
 
     return {"status": "success", "matched": matched, "lookups": lookups,
             "cves_with_score": len(epss_map), "synced_at": _now_iso()}
+
+
+async def flag_active_attacks(db, recency_days: int = 45) -> dict:
+    """Practical proxy for 'active exploitation' since there's no dedicated threat-intel
+    feed wired up: a finding is flagged rti=active_attacks if it's KEV-listed (confirmed
+    exploited in the wild by CISA) AND was first observed recently in our own environment
+    (still an open, fresh exposure rather than something already long remediated/stale).
+    Also honors EPSS>=0.50 (very high near-term exploitation probability) as an
+    independent trigger, since sync_epss already computes that signal."""
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=recency_days)).isoformat()
+    open_states = ['New', 'Needs triage', 'Valid', 'Reopened', 'Fixed pending validation']
+
+    kev_recent = await db.findings.update_many(
+        {'kev_flag': True, 'first_seen_at': {'$gte': cutoff}, 'status': {'$in': open_states}},
+        {'$set': {'rti': ['active_attacks']}},
+    )
+    high_epss = await db.findings.update_many(
+        {'epss_score': {'$gte': 0.50}, 'status': {'$in': open_states},
+         'rti': {'$ne': ['active_attacks']}},
+        {'$set': {'rti': ['active_attacks']}},
+    )
+    # Clear the flag for anything that no longer qualifies (KEV cleared, aged out, EPSS dropped)
+    cleared = await db.findings.update_many(
+        {'rti': ['active_attacks'], 'status': {'$in': open_states},
+         '$and': [
+             {'$or': [{'kev_flag': {'$ne': True}}, {'first_seen_at': {'$lt': cutoff}}]},
+             {'$or': [{'epss_score': None}, {'epss_score': {'$lt': 0.50}}]},
+         ]},
+        {'$set': {'rti': []}},
+    )
+    return {'status': 'success', 'flagged_kev_recent': kev_recent.modified_count,
+            'flagged_high_epss': high_epss.modified_count, 'cleared': cleared.modified_count,
+            'synced_at': _now_iso()}

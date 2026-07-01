@@ -7,9 +7,11 @@ Seeds:
   - One API ingest key
   - Connector integrations marked "not_configured" except those with explicit credentials
 
-DOES NOT seed: findings, assets, products, observations, tickets, exceptions, engagements,
+DOES NOT seed: findings, assets, observations, tickets, exceptions, engagements,
 import_jobs, score_snapshots, comments, activity_log, rescoring_runs. Real data is pulled
 live from connectors (Qualys VMDR is the first wired up; others require user-supplied keys).
+Products gets a light starter seed (a few unassigned example records) since there is no
+other way to populate that page until an admin assigns real assets to them.
 """
 import uuid
 from datetime import datetime, timezone
@@ -109,6 +111,77 @@ async def _ensure_api_key(db, now_iso_str: str):
     })
 
 
+async def _ensure_products(db, now_iso_str: str):
+    """A handful of starter Business Service / Product records so the Products page
+    isn't empty on a fresh install. These are unassigned shells -- admins attach real
+    assets to them from the Products or Assets page (POST /v1/assets/{id}/product)."""
+    if await db.products.count_documents({}) > 0:
+        return
+    starters = [
+        {"name": "Citizen Portal", "description": "Public-facing web portal for resident services.",
+         "business_owner": "Digital Services", "criticality": "crown_jewel",
+         "sla_profile": "expedited", "environments": ["production"]},
+        {"name": "Internal ERP", "description": "Finance, HR, and procurement system of record.",
+         "business_owner": "IT Ops", "criticality": "critical",
+         "sla_profile": "standard", "environments": ["production", "staging"]},
+        {"name": "Email & Collaboration", "description": "Mail, calendaring, and file sharing infrastructure.",
+         "business_owner": "IT Ops", "criticality": "critical",
+         "sla_profile": "standard", "environments": ["production"]},
+    ]
+    await db.products.insert_many([
+        {"id": _id(), **s, "created_at": now_iso_str} for s in starters
+    ])
+
+
+async def _ensure_playbooks(db, now_iso_str: str):
+    """A couple of starter remediation playbooks so the feature has real examples
+    to look at. CWE-level playbooks apply to every finding of that weakness class
+    until someone attaches a more specific CVE-level playbook."""
+    if await db.playbooks.count_documents({}) > 0:
+        return
+    starters = [
+        {
+            "title": "Remote Code Execution via unpatched OS component",
+            "description": "General playbook for critical Windows/Linux OS-level RCE findings (missing security update).",
+            "cve": None, "cwe": "CWE-787",
+            "steps": [
+                "Confirm the affected package/component and installed version against the advisory.",
+                "Snapshot or take a backup of the asset (or its config) before patching.",
+                "Apply the vendor security update via your patch management tool (WSUS/SCCM, yum/apt, etc.) in a maintenance window.",
+                "Reboot if the update requires it, and confirm the service comes back healthy.",
+                "Re-scan the asset to confirm the finding no longer reports vulnerable.",
+            ],
+            "rollback_notes": "If the patch breaks a dependent service, restore from the pre-patch snapshot/backup and re-open this finding with 'Deferred' status pending vendor guidance or a hotfix.",
+            "validation_checks": [
+                "Vulnerability scanner no longer flags the CVE on this asset.",
+                "Affected service starts cleanly and passes its health check.",
+                "No new errors in the service's logs in the 24h after patching.",
+            ],
+        },
+        {
+            "title": "SQL Injection remediation",
+            "description": "Playbook for CWE-89 findings in first-party web applications.",
+            "cve": None, "cwe": "CWE-89",
+            "steps": [
+                "Identify the vulnerable query/endpoint from the scanner's proof-of-concept request.",
+                "Replace string-concatenated SQL with parameterized queries / prepared statements.",
+                "Add input validation on the affected parameter(s) as defense in depth.",
+                "Deploy the fix through your normal CI/CD pipeline with code review.",
+                "Re-run the scanner (or the specific test case) against the patched endpoint.",
+            ],
+            "rollback_notes": "Revert the deploy via your standard rollback process if the fix breaks functionality; the finding stays open until a corrected fix ships.",
+            "validation_checks": [
+                "Automated scanner no longer reproduces the injection.",
+                "Manual test with a known payload (e.g. ' OR '1'='1) returns a safe response.",
+                "Existing unit/integration tests for the endpoint still pass.",
+            ],
+        },
+    ]
+    await db.playbooks.insert_many([
+        {"id": _id(), **s, "created_at": now_iso_str, "created_by": "system"} for s in starters
+    ])
+
+
 async def _ensure_integrations(db, now_iso_str: str):
     """Insert any missing connector cards; do NOT clobber existing config rows."""
     existing = {i["name"] async for i in db.integrations.find({}, {"_id": 0, "name": 1})}
@@ -135,6 +208,8 @@ async def seed_all(db):
     await _ensure_notification_channel(db, now_iso_str)
     await _ensure_api_key(db, now_iso_str)
     await _ensure_integrations(db, now_iso_str)
+    await _ensure_products(db, now_iso_str)
+    await _ensure_playbooks(db, now_iso_str)
 
 
 async def wipe_demo_data(db) -> dict:

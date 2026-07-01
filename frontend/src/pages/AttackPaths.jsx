@@ -4,14 +4,44 @@ import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import ReactFlow, { Background, Controls, MiniMap, MarkerType } from "reactflow";
 import "reactflow/dist/style.css";
-import { Shield, Globe, Desktop, HardDrives as HardDrivesIcon, Crown, Lightning } from "@phosphor-icons/react";
+import {
+  Shield, Globe, Desktop, HardDrives as HardDrivesIcon, Crown, Lightning,
+  WindowsLogo, LinuxLogo, AppleLogo, Cloud, Code as CodeIcon,
+  Key, ArrowsLeftRight, TrendUp, UploadSimple,
+} from "@phosphor-icons/react";
 
 const NODE_STYLES = {
-  internet: { background: "#1e3a8a", color: "#dbeafe", border: "2px solid #3b82f6", icon: Globe },
-  source: { background: "#7c2d12", color: "#fed7aa", border: "2px solid #ef4444", icon: Desktop },
-  pivot: { background: "#1f2937", color: "#e2e8f0", border: "1.5px solid #6b7280", icon: HardDrivesIcon },
-  target: { background: "#7f1d1d", color: "#fecaca", border: "2px solid #dc2626", icon: Crown },
+  internet: { background: "#1e3a8a", color: "#dbeafe", border: "2px solid #3b82f6", glow: "#3b82f6" },
+  source: { background: "#7c2d12", color: "#fed7aa", border: "2px solid #ef4444", glow: "#ef4444" },
+  pivot: { background: "#1f2937", color: "#e2e8f0", border: "1.5px solid #6b7280", glow: null },
+  target: { background: "#7f1d1d", color: "#fecaca", border: "2px solid #dc2626", glow: "#dc2626" },
 };
+
+// Real attack paths don't stay on one OS the whole way through -- show what's actually
+// being pivoted through. Matched case-insensitively against platform + OS strings.
+function platformIcon(node) {
+  const text = `${node.platform || ""} ${node.os || ""}`.toLowerCase();
+  if (node.role === "internet") return Globe;
+  if (text.includes("windows") || text.includes("win32") || text.includes("server 20")) return WindowsLogo;
+  if (text.includes("linux") || text.includes("ubuntu") || text.includes("debian") || text.includes("centos") || text.includes("rhel")) return LinuxLogo;
+  if (text.includes("mac") || text.includes("darwin") || text.includes("ios")) return AppleLogo;
+  if (text.includes("cloud") || text.includes("aws") || text.includes("azure") || text.includes("gcp") || text.includes("kubernetes") || text.includes("k8s")) return Cloud;
+  if (text.includes("code") || text.includes("repo")) return CodeIcon;
+  return HardDrivesIcon;
+}
+
+// Technique category -> color + icon. Kept inside the app's existing functional severity
+// palette (red/orange/amber) with two additions (violet, pink) reserved specifically for
+// tactics that don't map onto a severity level, so the graph stays readable rather than
+// turning into a rainbow.
+const CATEGORY_STYLE = {
+  initial_access:      { color: "#ef4444", icon: Lightning,       label: "Initial Access" },
+  credential_access:    { color: "#f59e0b", icon: Key,             label: "Credential Access" },
+  lateral_movement:     { color: "#f97316", icon: ArrowsLeftRight, label: "Lateral Movement" },
+  privilege_escalation: { color: "#a78bfa", icon: TrendUp,         label: "Privilege Escalation" },
+  exfiltration:         { color: "#ec4899", icon: UploadSimple,    label: "Exfiltration" },
+};
+const DEFAULT_CATEGORY = { color: "#ef4444", icon: Lightning, label: "" };
 
 function buildLayout(nodes, edges) {
   // Horizontal layered layout: internet → source → pivot → target
@@ -25,31 +55,66 @@ function buildLayout(nodes, edges) {
     const y = 60 + counters[layer] * 110;
     counters[layer]++;
     const style = NODE_STYLES[n.role] || NODE_STYLES.pivot;
+    const Icon = platformIcon(n);
+    const isCrownJewel = n.criticality === "crown_jewel";
     return {
       id: n.id,
       position: { x: 80 + layer * 280, y },
       data: {
         label: (
-          <div style={{ padding: 6, minWidth: 130, color: style.color }}>
-            <div style={{ fontSize: 11, fontFamily: 'JetBrains Mono', fontWeight: 600 }}>{n.label}</div>
-            <div style={{ fontSize: 9, opacity: 0.75, marginTop: 2 }}>
+          <div style={{ padding: "6px 8px", minWidth: 150, color: style.color, position: "relative" }}>
+            {isCrownJewel && (
+              <div title="Crown jewel" style={{
+                position: "absolute", top: -10, right: -8, background: "#7f1d1d",
+                border: "1px solid #dc2626", borderRadius: 999, padding: 3,
+                display: "flex", boxShadow: "0 0 6px rgba(220,38,38,0.6)",
+              }}>
+                <Crown size={9} weight="fill" color="#fca5a5" />
+              </div>
+            )}
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <Icon size={14} weight="bold" style={{ flexShrink: 0, opacity: 0.9 }} />
+              <div style={{ fontSize: 11, fontFamily: "JetBrains Mono", fontWeight: 600 }}>{n.label}</div>
+            </div>
+            <div style={{ fontSize: 9, opacity: 0.75, marginTop: 3, paddingLeft: 20 }}>
               {n.platform || n.role} {n.criticality ? `· ${n.criticality}` : ""}
             </div>
-            <div style={{ fontSize: 9, opacity: 0.6, marginTop: 2 }}>{n.owner_team || ""}</div>
+            <div style={{ fontSize: 9, opacity: 0.6, marginTop: 1, paddingLeft: 20 }}>{n.owner_team || ""}</div>
           </div>
         ),
       },
-      style: { background: style.background, border: style.border, borderRadius: 8, padding: 0 },
+      style: {
+        background: style.background,
+        border: style.border,
+        borderRadius: 8,
+        padding: 0,
+        boxShadow: style.glow ? `0 0 10px ${style.glow}66` : "none",
+      },
+      className: style.glow ? "attack-node-pulse" : undefined,
     };
   });
-  const rfEdges = edges.map(e => ({
-    id: e.id, source: e.source, target: e.target, label: e.label,
-    labelStyle: { fill: "#fca5a5", fontSize: 10, fontWeight: 600 },
-    labelBgStyle: { fill: "#0D1117", fillOpacity: 0.9 },
-    style: { stroke: "#ef4444", strokeWidth: 2, strokeDasharray: "5 4" },
-    animated: true,
-    markerEnd: { type: MarkerType.ArrowClosed, color: "#ef4444" },
-  }));
+  const rfEdges = edges.map(e => {
+    const cat = CATEGORY_STYLE[e.category] || DEFAULT_CATEGORY;
+    const CatIcon = cat.icon;
+    return {
+      id: e.id, source: e.source, target: e.target,
+      label: (
+        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <CatIcon size={10} weight="bold" color={cat.color} />
+          <span>{e.label}</span>
+          {e.technique && <span style={{ opacity: 0.55, fontSize: 9 }}>· {e.technique}</span>}
+        </div>
+      ),
+      labelStyle: { fill: cat.color, fontSize: 10, fontWeight: 600 },
+      labelBgStyle: { fill: "#0D1117", fillOpacity: 0.92 },
+      style: {
+        stroke: cat.color, strokeWidth: 2,
+        strokeDasharray: e.category === "exfiltration" ? "2 3" : e.category === "initial_access" ? "5 4" : "0",
+      },
+      animated: e.category !== "privilege_escalation",
+      markerEnd: { type: MarkerType.ArrowClosed, color: cat.color },
+    };
+  });
   return { rfNodes, rfEdges };
 }
 
@@ -81,6 +146,13 @@ export default function AttackPaths() {
 
   return (
     <Layout title="Attack Path Analysis" subtitle="Real-time CVE-driven lateral-movement visualization">
+      <style>{`
+        @keyframes attackNodePulse {
+          0%, 100% { filter: brightness(1); }
+          50% { filter: brightness(1.25); }
+        }
+        .attack-node-pulse { animation: attackNodePulse 2.2s ease-in-out infinite; }
+      `}</style>
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
         {/* Left: CVE picker */}
         <div className="lg:col-span-1 border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">
@@ -135,6 +207,22 @@ export default function AttackPaths() {
               </ReactFlow>
             )}
           </div>
+
+          {graph?.edges?.length > 0 && (
+            <div className="border border-[#30363D] bg-[#0D1117] rounded-md px-3 py-2 flex items-center gap-4 flex-wrap">
+              <span className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Tactics used</span>
+              {Object.entries(CATEGORY_STYLE).map(([key, cat]) => {
+                const used = graph.edges.some(e => e.category === key);
+                if (!used) return null;
+                const CatIcon = cat.icon;
+                return (
+                  <span key={key} className="flex items-center gap-1.5 text-[11px]" style={{ color: cat.color }}>
+                    <CatIcon size={12} weight="bold" /> {cat.label}
+                  </span>
+                );
+              })}
+            </div>
+          )}
 
           {graph?.remediation_options?.length > 0 && (
             <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">

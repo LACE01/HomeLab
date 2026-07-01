@@ -37,18 +37,22 @@ export default function Findings() {
   const [searchParams] = useSearchParams();
   const cweParam = searchParams.get("cwe");
   const cveParam = searchParams.get("cve");
+  // Deep-link support: dashboard/operational tiles link here with filters pre-applied,
+  // e.g. /findings?view=kev&owner_team=IT%20Ops -- these seed initial state below and
+  // are otherwise ordinary filters the user can then change.
+  const ownerTeamParam = searchParams.get("owner_team");
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   const [q, setQ] = useState("");
-  const [view, setView] = useState("");
-  const [severity, setSeverity] = useState("");
-  const [status, setStatus] = useState("");
+  const [view, setView] = useState(searchParams.get("view") || "");
+  const [severity, setSeverity] = useState(searchParams.get("severity") || "");
+  const [status, setStatus] = useState(searchParams.get("status") || "");
   const [selected, setSelected] = useState(new Set());
   const [bulkStatus, setBulkStatus] = useState("Valid");
   const [bulkAssignee, setBulkAssignee] = useState("");
   const [bulkOwnerTeam, setBulkOwnerTeam] = useState("");
   const [loading, setLoading] = useState(false);
-  const [myQueue, setMyQueue] = useState(!!user?.team);
+  const [myQueue, setMyQueue] = useState(!!user?.team && !ownerTeamParam);
   const [groups, setGroups] = useState([]);
   const [expanded, setExpanded] = useState(new Set());
   const [groupChildren, setGroupChildren] = useState({}); // key → finding[]
@@ -78,6 +82,7 @@ export default function Findings() {
     if (cweParam) params.cwe = cweParam;
     if (cveParam) params.cve = cveParam;
     if (myQueue && user?.team) params.owner_team = user.team;
+    else if (ownerTeamParam) params.owner_team = ownerTeamParam;
     const r = await api.get("/v1/findings", { params });
     setItems(r.data.items || []); setTotal(r.data.total);
     setLoading(false); setSelected(new Set());

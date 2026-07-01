@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import "@/index.css";
 
 import Login from "@/pages/Login";
@@ -21,6 +22,7 @@ import AttackPaths from "@/pages/AttackPaths";
 import SlaPolicies from "@/pages/SlaPolicies";
 import WebScansUpload from "@/pages/WebScansUpload";
 import Teams from "@/pages/Teams";
+import Playbooks from "@/pages/Playbooks";
 
 const Protected = ({ children }) => {
   const { user, loading } = useAuth();
@@ -56,6 +58,7 @@ const AppRouter = () => {
       <Route path="/admin/assignment-rules" element={<Protected><AssignmentRules/></Protected>}/>
       <Route path="/admin/ownership" element={<Protected><OwnershipMappings/></Protected>}/>
       <Route path="/admin/sla-policies" element={<Protected><SlaPolicies/></Protected>}/>
+      <Route path="/admin/playbooks" element={<Protected><Playbooks/></Protected>}/>
       <Route path="/admin/web-scans" element={<Protected><WebScansUpload/></Protected>}/>
       <Route path="/admin/users" element={<Protected><Users/></Protected>}/>
       <Route path="/admin/teams" element={<Protected><Teams/></Protected>}/>
@@ -67,10 +70,12 @@ const AppRouter = () => {
 export default function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <AppRouter/>
-      </BrowserRouter>
-      <Toaster richColors position="top-right" />
+      <TooltipProvider delayDuration={200}>
+        <BrowserRouter>
+          <AppRouter/>
+        </BrowserRouter>
+        <Toaster richColors position="top-right" />
+      </TooltipProvider>
     </AuthProvider>
   );
 }

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
-import { Trash, Plus, Lightning } from "@phosphor-icons/react";
+import { Trash, Plus, Lightning, Gear } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const FIELDS = ["tags", "environment", "platform", "criticality", "exposure", "department", "cve", "operating_system", "hostname"];
@@ -11,8 +11,23 @@ export function AssignmentRules() {
   const [items, setItems] = useState([]);
   const [draft, setDraft] = useState({ name:"", priority:100, field:"tags", operator:"equals", value:"", assign_team:"", active:true });
   const [preview, setPreview] = useState(null);
+  const [defaultTeam, setDefaultTeam] = useState("");
+  const [savingDefault, setSavingDefault] = useState(false);
   const load = () => api.get("/v1/admin/assignment-rules").then(r => setItems(r.data.items));
   useEffect(() => { load(); }, []);
+  useEffect(() => { api.get("/v1/admin/assignment-rules/settings").then(r => setDefaultTeam(r.data.default_team || "")); }, []);
+
+  const saveDefaultTeam = async () => {
+    setSavingDefault(true);
+    try {
+      await api.put("/v1/admin/assignment-rules/settings", { default_team: defaultTeam || null });
+      toast.success(defaultTeam ? `Default team set to "${defaultTeam}".` : "Default team cleared.");
+    } catch (e) {
+      toast.error("Failed to save default team");
+    } finally {
+      setSavingDefault(false);
+    }
+  };
 
   const add = async () => {
     if (!draft.name || !draft.value || !draft.assign_team) { toast.error("Name, value, assign_team are required"); return; }
@@ -24,8 +39,12 @@ export function AssignmentRules() {
   const toggle = async (r) => { await api.patch(`/v1/admin/assignment-rules/${r.id}`, {...r, active: !r.active}); await load(); };
   const apply = async () => {
     const r = await api.post("/v1/admin/assignment-rules/apply");
-    toast.success(`Applied — ${r.data.updated_assets} assets, ${r.data.updated_findings} findings updated`);
+    const extra = r.data.still_unassigned > 0
+      ? ` · ${r.data.still_unassigned} still unassigned (no rule and no default team) — set a default team below, or add a rule.`
+      : r.data.defaulted_to_fallback > 0 ? ` · ${r.data.defaulted_to_fallback} fell back to the default team.` : "";
+    toast.success(`Applied — ${r.data.updated_assets} assets, ${r.data.updated_findings} findings updated${extra}`, { duration: 6000 });
     setPreview(null);
+    load();
   };
   const doPreview = async () => {
     const r = await api.post("/v1/admin/assignment-rules/preview");
@@ -48,7 +67,10 @@ export function AssignmentRules() {
       {preview && (
         <div data-testid="rules-preview" className="border border-blue-500/30 bg-blue-500/5 rounded-md p-3 mb-3">
           <div className="flex items-center justify-between mb-2">
-            <div className="text-[12px] uppercase tracking-wider font-mono text-blue-300">Preview · {preview.total_assets} assets · {preview.no_match_assets} unmatched</div>
+            <div className="text-[12px] uppercase tracking-wider font-mono text-blue-300">
+              Preview · {preview.total_assets} assets · {preview.no_match_assets} unmatched
+              {preview.default_team ? ` (would fall back to "${preview.default_team}")` : preview.no_match_assets > 0 ? " — no default team set" : ""}
+            </div>
             <button onClick={()=>setPreview(null)} className="text-[11px] text-slate-400 hover:text-slate-200">Dismiss</button>
           </div>
           <div className="space-y-1.5">
@@ -64,6 +86,18 @@ export function AssignmentRules() {
           </div>
         </div>
       )}
+
+      <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-3 mb-3 flex items-center gap-2">
+        <Gear size={14} className="text-slate-500 shrink-0"/>
+        <div className="text-[12px] text-slate-400 shrink-0">Default team for assets that match no rule:</div>
+        <input data-testid="default-team-input" placeholder="e.g. IT Ops (leave blank to leave unmatched assets unassigned)"
+          value={defaultTeam} onChange={(e)=>setDefaultTeam(e.target.value)}
+          className="flex-1 h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px]"/>
+        <button data-testid="default-team-save" onClick={saveDefaultTeam} disabled={savingDefault}
+          className="h-8 px-3 text-[12px] bg-blue-500/20 border border-blue-500/40 text-blue-300 rounded disabled:opacity-50 shrink-0">
+          {savingDefault ? "Saving…" : "Save"}
+        </button>
+      </div>
 
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-3 mb-3 grid grid-cols-7 gap-2">
         <input placeholder="Rule name" data-testid="rule-name" value={draft.name} onChange={(e)=>setDraft({...draft, name:e.target.value})} className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px]"/>

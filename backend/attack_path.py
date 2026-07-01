@@ -1,7 +1,57 @@
 """Attack Path Analysis — given a CVE or finding, synthesize a plausible lateral movement
 path through the asset inventory. Heuristic-based: starts from internet-exposed assets and
-walks through assets that share the same CVE, ending at crown-jewel/critical hosts."""
+walks through assets that share the same CVE, ending at crown-jewel/critical hosts.
+
+Techniques are chosen per-hop based on the target asset's platform/OS and its position in
+the chain (credential access right after initial compromise, then lateral movement, then
+privilege escalation, then exfiltration) so a path doesn't just repeat "Lateral movement"
+for every hop — it mirrors how a real intrusion diversifies techniques as it progresses.
+"""
 from typing import Optional
+
+# MITRE ATT&CK technique pools, keyed by target platform. Rotated by hop index within a
+# path so consecutive hops don't repeat the same technique even on long chains.
+CREDENTIAL_ACCESS = {
+    "windows": [("LSASS Memory Dump", "T1003.001"), ("DCSync", "T1003.006"), ("Cached Credentials", "T1003.005")],
+    "linux": [("/etc/shadow Dump", "T1003.008"), ("SSH Private Key Theft", "T1552.004")],
+    "cloud": [("Cloud Instance Metadata API", "T1552.005"), ("Access Key Theft", "T1528")],
+    "default": [("Unsecured Credentials", "T1552"), ("Credential Dumping", "T1003")],
+}
+
+LATERAL_MOVEMENT = {
+    "windows": [("Pass-the-Hash", "T1550.002"), ("RDP Hijacking", "T1021.001"),
+                ("SMB Admin Shares", "T1021.002"), ("Kerberoasting", "T1558.003"),
+                ("WMI Lateral Movement", "T1047")],
+    "linux": [("SSH Key Reuse", "T1021.004"), ("Sudo Session Reuse", "T1548.003")],
+    "cloud": [("Valid Cloud Account", "T1078.004"), ("IAM Role Assumption", "T1550.001")],
+    "default": [("Remote Services", "T1021"), ("Valid Accounts", "T1078")],
+}
+
+PRIV_ESCALATION = {
+    "windows": [("Token Impersonation", "T1134"), ("UAC Bypass", "T1548.002"), ("DLL Hijacking", "T1574.001")],
+    "linux": [("SUID Binary Abuse", "T1548.001"), ("Kernel Exploit", "T1068")],
+    "cloud": [("IAM Policy Escalation", "T1078.004")],
+    "default": [("Exploitation for Privilege Escalation", "T1068")],
+}
+
+EXFILTRATION = [("Exfiltration Over C2 Channel", "T1041"), ("Exfiltration to Cloud Storage", "T1567.002"),
+                ("Data Staged then Exfiltrated", "T1074")]
+
+
+def _platform_key(asset: dict) -> str:
+    text = f"{asset.get('platform') or ''} {asset.get('operating_system') or ''}".lower()
+    if any(k in text for k in ("windows", "win32", "win10", "win11", "server 20")):
+        return "windows"
+    if any(k in text for k in ("linux", "ubuntu", "debian", "centos", "rhel", "amazon linux")):
+        return "linux"
+    if any(k in text for k in ("aws", "azure", "gcp", "cloud", "kubernetes", "k8s", "container")):
+        return "cloud"
+    return "default"
+
+
+def _pick(pool_by_platform: dict, asset: dict, index: int) -> tuple:
+    pool = pool_by_platform.get(_platform_key(asset)) or pool_by_platform["default"]
+    return pool[index % len(pool)]
 
 
 def _node(asset: dict, role: str, sev_or_risk: str = "") -> dict:
@@ -18,8 +68,9 @@ def _node(asset: dict, role: str, sev_or_risk: str = "") -> dict:
     }
 
 
-def _edge(src: str, dst: str, label: str, technique: str = "") -> dict:
-    return {"id": f"{src}->{dst}", "source": src, "target": dst, "label": label, "technique": technique}
+def _edge(src: str, dst: str, label: str, technique: str = "", category: str = "lateral_movement") -> dict:
+    return {"id": f"{src}->{dst}", "source": src, "target": dst, "label": label,
+            "technique": technique, "category": category}
 
 
 async def build_attack_path(db, cve: Optional[str] = None, finding_id: Optional[str] = None) -> dict:
@@ -63,28 +114,35 @@ async def build_attack_path(db, cve: Optional[str] = None, finding_id: Optional[
     sources = internet[:3] if internet else (assets[:1] if assets else [])
     for src in sources:
         nodes.append(_node(src, "source", "exploited"))
-        edges.append(_edge(inet_id, src["id"],
-                           f"Exploit {cve}",
-                           "T1190 Exploit Public-Facing Application"))
+        edges.append(_edge(inet_id, src["id"], f"Exploit {cve}",
+                            "T1190 Exploit Public-Facing Application", "initial_access"))
 
-    # Pivots
-    for p in pivots[:4]:
+    # Pivots: first hop after compromise is credential access, subsequent hops are lateral
+    # movement -- each using a technique picked for that specific asset's platform, rotated
+    # by index so a long chain doesn't repeat the same technique twice in a row.
+    for i, p in enumerate(pivots[:4]):
         nodes.append(_node(p, "pivot"))
-        # Connect from a source if any, else from internet
         parent = sources[0]["id"] if sources else inet_id
-        edges.append(_edge(parent, p["id"], "Lateral movement", "T1021 Remote Services"))
+        if i == 0:
+            name, mitre = _pick(CREDENTIAL_ACCESS, p, i)
+            edges.append(_edge(parent, p["id"], name, mitre, "credential_access"))
+        else:
+            name, mitre = _pick(LATERAL_MOVEMENT, p, i)
+            edges.append(_edge(parent, p["id"], name, mitre, "lateral_movement"))
 
-    # Critical assets in path
-    for c in critical[:3]:
+    # Critical assets in path — privilege escalation, technique varies by that asset's platform
+    for i, c in enumerate(critical[:3]):
         nodes.append(_node(c, "pivot"))
         parent = pivots[0]["id"] if pivots else (sources[0]["id"] if sources else inet_id)
-        edges.append(_edge(parent, c["id"], "Privilege escalation", "T1068 Exploitation for Privilege Escalation"))
+        name, mitre = _pick(PRIV_ESCALATION, c, i)
+        edges.append(_edge(parent, c["id"], name, mitre, "privilege_escalation"))
 
-    # Target: crown jewels
-    for t in crown[:3]:
+    # Target: crown jewels — exfiltration technique rotates too
+    for i, t in enumerate(crown[:3]):
         nodes.append(_node(t, "target", "objective"))
         parent = critical[0]["id"] if critical else (pivots[0]["id"] if pivots else (sources[0]["id"] if sources else inet_id))
-        edges.append(_edge(parent, t["id"], "Data exfiltration", "T1041 Exfiltration Over C2 Channel"))
+        name, mitre = EXFILTRATION[i % len(EXFILTRATION)]
+        edges.append(_edge(parent, t["id"], name, mitre, "exfiltration"))
 
     # Remediation options
     remediation_options = []

@@ -81,6 +81,12 @@ async def list_findings(
         flt["patch_available"] = False
     elif view == "highest_risk":
         flt["status"] = {"$in": ["New", "Needs triage", "Valid", "Reopened"]}
+    elif view == "active_attacks":
+        flt["rti"] = "active_attacks"
+        flt["status"] = {"$in": ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]}
+    elif view == "unassigned":
+        flt["assigned_to"] = None
+        flt["status"] = {"$in": ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]}
 
     sort_dir = -1 if order == "desc" else 1
     cursor = db.findings.find(flt, {"_id": 0}).sort(sort, sort_dir).skip(offset).limit(limit)

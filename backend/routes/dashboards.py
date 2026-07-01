@@ -199,6 +199,11 @@ async def dashboard_operational(user: dict = Depends(get_current_user), team: Op
     total_assets = await db.assets.count_documents({})
     coverage = round((len(scanned) / max(total_assets, 1)) * 100, 1)
 
+    kev_open = await db.findings.count_documents({**base_flt, "kev_flag": True, "status": {"$in": open_states}})
+    active_attacks_open = await db.findings.count_documents({**base_flt, "rti": "active_attacks", "status": {"$in": open_states}})
+    critical_open = await db.findings.count_documents({**base_flt, "severity": "Critical", "status": {"$in": open_states}})
+    unassigned_open = await db.findings.count_documents({**base_flt, "assigned_to": None, "status": {"$in": open_states}})
+
     return {
         "total_open": total_open, "aging_buckets": buckets,
         "by_assignee": [{"assignee": k, "count": v} for k, v in sorted(by_assignee.items(), key=lambda x: -x[1])][:15],
@@ -206,5 +211,7 @@ async def dashboard_operational(user: dict = Depends(get_current_user), team: Op
         "throughput": throughput, "mttr_days": mttr, "reopen_rate": reopen_rate,
         "scan_coverage_pct": coverage, "reopened_open": reopened_total,
         "active_exceptions": await db.exceptions.count_documents({"status": "active"}),
+        "kev_open": kev_open, "active_attacks_open": active_attacks_open,
+        "critical_open": critical_open, "unassigned_open": unassigned_open,
         "team_scope": team or "All teams",
     }

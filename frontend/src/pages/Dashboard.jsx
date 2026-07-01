@@ -7,7 +7,7 @@ import TimeRangeSelector from "@/components/TimeRangeSelector";
 import TilePicker from "@/components/TilePicker";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtRel, isOverdue } from "@/lib/utils-fmt";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid,
   BarChart, Bar, Cell, PieChart, Pie, Legend,
@@ -15,13 +15,14 @@ import {
 import { Lightning, Fire, Clock, ArrowsClockwise, Warning, UserCircle, ChartLineUp, FileArrowDown, Sparkle } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
-const Stat = ({ label, value, icon: Icon, tone = "slate", testid }) => {
+const Stat = ({ label, value, icon: Icon, tone = "slate", testid, onClick }) => {
   const tones = {
     red: "text-red-300", orange: "text-orange-300", amber: "text-amber-300",
     blue: "text-blue-300", green: "text-emerald-300", slate: "text-slate-200",
   };
   return (
-    <div data-testid={testid} className="border border-[#30363D] bg-[#0D1117] rounded-md p-3.5 hover:border-[#484F58] transition-colors duration-150">
+    <div data-testid={testid} onClick={onClick}
+      className={`border border-[#30363D] bg-[#0D1117] rounded-md p-3.5 hover:border-[#484F58] transition-colors duration-150 ${onClick ? "cursor-pointer hover:bg-slate-800/20" : ""}`}>
       <div className="flex items-center justify-between mb-1.5">
         <div className="text-[10px] uppercase tracking-wider text-slate-500 font-mono">{label}</div>
         {Icon && <Icon size={14} className="text-slate-600" />}
@@ -60,6 +61,7 @@ const TILE_CATALOG = [
 ];
 
 export default function Dashboard() {
+  const navigate = useNavigate();
   const { user } = useAuth();
   const role = user?.role || "analyst";
   const { prefs, setSection } = usePreferences();
@@ -129,9 +131,12 @@ export default function Dashboard() {
     const t = toast.loading("Applying assignment rules to all assets…");
     try {
       const r = await api.post("/v1/admin/assignment-rules/apply");
+      const extra = r.data.still_unassigned > 0
+        ? ` ${r.data.still_unassigned} asset(s) matched no rule and have no default team -- set one on the Assignment Rules page to fully clear this.`
+        : "";
       toast.success(
-        `Applied. ${r.data.updated_assets ?? 0} assets · ${r.data.updated_findings ?? 0} findings re-routed.`,
-        { id: t },
+        `Applied. ${r.data.updated_assets ?? 0} assets · ${r.data.updated_findings ?? 0} findings re-routed.${extra}`,
+        { id: t, duration: extra ? 8000 : 4000 },
       );
       // Refresh analyst stats so the Unassigned tile drops
       const a = await api.get("/v1/dashboards/analyst", { params: rangeParams });
@@ -189,6 +194,8 @@ export default function Dashboard() {
                   </div>
                   <div className="text-[11px] text-amber-300/70 mt-0.5">
                     Run the assignment-rules engine to auto-route by hostname / OS / tags. Findings under an active SLA exception are skipped.
+                    If assets still don't match any rule after applying, set a{" "}
+                    <a href="/admin/assignment-rules" className="underline hover:text-amber-200">default fallback team</a>.
                   </div>
                 </div>
               </div>
@@ -203,16 +210,16 @@ export default function Dashboard() {
             </div>
           )}
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
-            {tileOn("stat-open") && <Stat label="Open Findings" value={analyst.open_findings} icon={ChartLineUp} testid="stat-open" />}
-            {tileOn("stat-triage") && <Stat label="Needs Triage" value={analyst.needs_triage} tone="amber" icon={Warning} testid="stat-triage" />}
-            {tileOn("stat-kev") && <Stat label="KEV (Exploited)" value={analyst.kev_findings} tone="red" icon={Fire} testid="stat-kev" />}
-            {tileOn("stat-rti") && <Stat label="Active Attacks" value={analyst.rti_findings} tone="orange" icon={Lightning} testid="stat-rti" />}
-            {tileOn("stat-overdue") && <Stat label="Overdue" value={analyst.overdue} tone="red" icon={Clock} testid="stat-overdue" />}
-            {tileOn("stat-reopened") && <Stat label="Reopened" value={analyst.reopened} tone="amber" icon={ArrowsClockwise} testid="stat-reopened" />}
-            {tileOn("stat-unassigned") && <Stat label="Unassigned" value={analyst.unassigned} tone="blue" icon={UserCircle} testid="stat-unassigned" />}
-            {tileOn("stat-lowconf") && <Stat label="Low-Confidence Owner" value={analyst.low_confidence_ownership} tone="amber" testid="stat-lowconf" />}
-            {tileOn("stat-failedimports") && <Stat label="Failed Imports" value={analyst.failed_imports} tone={analyst.failed_imports > 0 ? "red" : "slate"} testid="stat-failedimports" />}
-            {tileOn("stat-new") && <Stat label={`New (${analyst.range || range})`} value={analyst.new_findings} tone="blue" testid="stat-new" />}
+            {tileOn("stat-open") && <Stat label="Open Findings" value={analyst.open_findings} icon={ChartLineUp} testid="stat-open" onClick={()=>navigate("/findings")} />}
+            {tileOn("stat-triage") && <Stat label="Needs Triage" value={analyst.needs_triage} tone="amber" icon={Warning} testid="stat-triage" onClick={()=>navigate("/findings?status=Needs%20triage")} />}
+            {tileOn("stat-kev") && <Stat label="KEV (Exploited)" value={analyst.kev_findings} tone="red" icon={Fire} testid="stat-kev" onClick={()=>navigate("/findings?view=kev")} />}
+            {tileOn("stat-rti") && <Stat label="Active Attacks" value={analyst.rti_findings} tone="orange" icon={Lightning} testid="stat-rti" onClick={()=>navigate("/findings?view=active_attacks")} />}
+            {tileOn("stat-overdue") && <Stat label="Overdue" value={analyst.overdue} tone="red" icon={Clock} testid="stat-overdue" onClick={()=>navigate("/findings?view=overdue")} />}
+            {tileOn("stat-reopened") && <Stat label="Reopened" value={analyst.reopened} tone="amber" icon={ArrowsClockwise} testid="stat-reopened" onClick={()=>navigate("/findings?view=reopened")} />}
+            {tileOn("stat-unassigned") && <Stat label="Unassigned" value={analyst.unassigned} tone="blue" icon={UserCircle} testid="stat-unassigned" onClick={()=>navigate("/findings?view=unassigned")} />}
+            {tileOn("stat-lowconf") && <Stat label="Low-Confidence Owner" value={analyst.low_confidence_ownership} tone="amber" testid="stat-lowconf" onClick={()=>navigate("/admin/ownership")} />}
+            {tileOn("stat-failedimports") && <Stat label="Failed Imports" value={analyst.failed_imports} tone={analyst.failed_imports > 0 ? "red" : "slate"} testid="stat-failedimports" onClick={()=>navigate("/imports")} />}
+            {tileOn("stat-new") && <Stat label={`New (${analyst.range || range})`} value={analyst.new_findings} tone="blue" testid="stat-new" onClick={()=>navigate("/findings?status=New")} />}
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 min-w-0">

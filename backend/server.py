@@ -29,6 +29,7 @@ from routes.dashboards import router as dashboards_router
 from routes.reports_routes import router as reports_router
 from routes.admin import router as admin_router
 from routes.preferences import router as preferences_router
+from routes.playbooks import router as playbooks_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("vulnops")
@@ -48,6 +49,7 @@ api.include_router(dashboards_router)
 api.include_router(reports_router)
 api.include_router(admin_router)
 api.include_router(preferences_router)
+api.include_router(playbooks_router)
 
 
 @api.get("/")
@@ -87,10 +89,22 @@ async def on_startup():
         logger.info("Seed completed.")
     except Exception as e:
         logger.exception(f"Seed failed: {e}")
+    # Backfill score_snapshots on first boot so Manager/Executive trend charts
+    # aren't blank before the first nightly run completes.
+    try:
+        from nightly import backfill_score_snapshots
+        n = await backfill_score_snapshots(db)
+        if n:
+            logger.info(f"Backfilled {n} score snapshot(s).")
+    except Exception as e:
+        logger.exception(f"Score snapshot backfill failed: {e}")
+
     # Nightly rescore loop (24h)
     import asyncio as _a
-    from nightly import nightly_loop
+    from nightly import nightly_loop, threat_intel_loop
     from qualys_sync import qualys_poll_loop
     _a.create_task(nightly_loop(db, interval_hours=24))
+    # KEV / EPSS / active-attacks sync loop (12h) — was previously manual-trigger only
+    _a.create_task(threat_intel_loop(db, interval_hours=12))
     # Qualys live sync loop (60min) — skips when integration is not configured
     _a.create_task(qualys_poll_loop(db, interval_minutes=60))

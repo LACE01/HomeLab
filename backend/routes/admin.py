@@ -194,6 +194,23 @@ class AssignmentRule(BaseModel):
     active: bool = True
 
 
+@router.get("/v1/admin/assignment-rules/settings")
+async def get_assignment_settings(user: dict = Depends(get_current_user)):
+    doc = await db.settings.find_one({"id": "assignment_rules"}, {"_id": 0})
+    return {"default_team": (doc or {}).get("default_team")}
+
+
+class AssignmentSettingsBody(BaseModel):
+    default_team: Optional[str] = None
+
+
+@router.put("/v1/admin/assignment-rules/settings")
+async def set_assignment_settings(body: AssignmentSettingsBody, user: dict = Depends(require_role("admin"))):
+    await db.settings.update_one({"id": "assignment_rules"},
+        {"$set": {"id": "assignment_rules", "default_team": body.default_team}}, upsert=True)
+    return {"default_team": body.default_team}
+
+
 @router.get("/v1/admin/assignment-rules")
 async def list_rules(user: dict = Depends(get_current_user)):
     items = await db.assignment_rules.find({}, {"_id": 0}).sort("priority", 1).to_list(200)
@@ -257,8 +274,12 @@ async def apply_rules(user: dict = Depends(require_role("admin"))):
     asset_rules = [r for r in rules if r["field"] not in ("cve", "title", "cwe")]
     finding_rules = [r for r in rules if r["field"] in ("cve", "title", "cwe")]
     assets = await db.assets.find({}, {"_id": 0}).to_list(50000)
+    settings_doc = await db.settings.find_one({"id": "assignment_rules"}, {"_id": 0})
+    default_team = (settings_doc or {}).get("default_team")
     updated_assets = 0
     updated_findings = 0
+    defaulted = 0
+    still_unassigned = 0
     for asset in assets:
         matched_rule = next((r for r in asset_rules if _rule_matches(r, asset)), None)
         if matched_rule:
@@ -266,9 +287,22 @@ async def apply_rules(user: dict = Depends(require_role("admin"))):
             rationale = f"Matched rule '{matched_rule['name']}': {matched_rule['field']} {matched_rule['operator']} '{matched_rule['value']}'"
             confidence = 0.95
         else:
-            new_team = asset.get("owner_team", "Unassigned")
-            rationale = "No assignment rule matched — preserved existing owner"
-            confidence = 0.3
+            existing = asset.get("owner_team")
+            has_real_owner = existing and existing != "Unassigned"
+            if has_real_owner:
+                new_team = existing
+                rationale = "No assignment rule matched — preserved existing owner"
+                confidence = 0.3
+            elif default_team:
+                new_team = default_team
+                rationale = f"No assignment rule matched — fell back to default team '{default_team}'"
+                confidence = 0.5
+                defaulted += 1
+            else:
+                new_team = existing or "Unassigned"
+                rationale = "No assignment rule matched and no default team is configured"
+                confidence = 0.3
+                still_unassigned += 1
         await db.assets.update_one({"id": asset["id"]}, {"$set": {
             "owner_team": new_team, "ownership_rationale": rationale, "ownership_confidence": confidence,
         }})
@@ -290,7 +324,8 @@ async def apply_rules(user: dict = Depends(require_role("admin"))):
                     "ownership_rationale": f"Matched CVE/title rule '{matched['name']}'",
                 }})
                 updated_findings += 1
-    return {"updated_assets": updated_assets, "updated_findings": updated_findings, "rules_evaluated": len(rules)}
+    return {"updated_assets": updated_assets, "updated_findings": updated_findings, "rules_evaluated": len(rules),
+            "defaulted_to_fallback": defaulted, "still_unassigned": still_unassigned}
 
 
 @router.get("/v1/ownership-mappings")
@@ -508,6 +543,8 @@ async def preview_rules(user: dict = Depends(get_current_user)):
     """Show what apply_rules would do WITHOUT modifying anything."""
     rules = await db.assignment_rules.find({"active": True}, {"_id": 0}).sort("priority", 1).to_list(500)
     assets = await db.assets.find({}, {"_id": 0}).to_list(5000)
+    settings_doc = await db.settings.find_one({"id": "assignment_rules"}, {"_id": 0})
+    default_team = (settings_doc or {}).get("default_team")
     preview: dict = {}  # rule_name → {team, count, sample_hosts}
     no_match_count = 0
     for asset in assets:
@@ -522,7 +559,9 @@ async def preview_rules(user: dict = Depends(get_current_user)):
                 entry["sample_hosts"].append(asset.get("hostname"))
         else:
             no_match_count += 1
-    return {"groups": list(preview.values()), "no_match_assets": no_match_count, "total_assets": len(assets)}
+    return {"groups": list(preview.values()), "no_match_assets": no_match_count, "total_assets": len(assets),
+            "default_team": default_team,
+            "will_still_be_unassigned": 0 if default_team else no_match_count}
 
 
 # --------------------------- BULK ASSIGN OWNER TEAM (FINDINGS) ---------------------------
