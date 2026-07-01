@@ -131,7 +131,7 @@ async def test_channel(channel_id: str, user: dict = Depends(require_role("admin
         "severity": "Critical", "title": "Test notification — Log4Shell RCE",
         "cve": "CVE-2021-44228", "asset": "web-prod-01", "owner_team": "Platform Eng",
         "risk_score": 96, "due_at": "2026-03-01",
-        "url": "https://remediationhub.preview.emergentagent.com/findings/demo",
+        "url": "{APP_BASE_URL}/findings/demo (example)",
     }
     rec = await deliver(channel, "new_assignment", ctx, db)
     return {"delivered": rec["delivered"], "status_code": rec["status_code"], "response": rec["response"]}

@@ -56,10 +56,23 @@ _DEMO_COLLECTIONS = (
 async def _ensure_user(db, now_iso_str: str):
     if await db.users.count_documents({}) > 0:
         return
+    import os
+    import secrets
+    import logging
+    admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com")
+    admin_password = os.environ.get("ADMIN_PASSWORD")
+    if not admin_password:
+        admin_password = secrets.token_urlsafe(16)
+        logging.getLogger("vulnops.seed").warning(
+            "ADMIN_PASSWORD not set - generated a random initial admin password. "
+            "Set ADMIN_EMAIL / ADMIN_PASSWORD env vars for a predictable login. "
+            "Generated password (save this now, it will not be shown again): %s",
+            admin_password,
+        )
     await db.users.insert_many([
-        {"id": _id(), "email": "luisarce731@outlook.com", "name": "Luis Arce",
+        {"id": _id(), "email": admin_email, "name": "Admin",
          "role": "admin", "team": None, "department": "Security",
-         "password_hash": hash_password("vz7NOHcP64WRBEOg3C2I"),
+         "password_hash": hash_password(admin_password),
          "created_at": now_iso_str, "active": True},
     ])
 

@@ -43,20 +43,29 @@ export default function Login() {
             <h2 className="text-[14px] font-medium text-slate-200">Sign in</h2>
           </div>
 
-          <button
-            data-testid="google-signin"
-            type="button"
-            onClick={signInWithGoogle}
-            className="w-full h-9 bg-white hover:bg-slate-100 text-slate-900 text-[13px] font-medium rounded transition-colors flex items-center justify-center gap-2"
-          >
-            <FcGoogle size={18}/> Continue with Google
-          </button>
+          {/* Google sign-in disabled for self-hosted deployments: it originally
+              redirected to Emergent's own hosted OAuth page (auth.emergentagent.com),
+              which this instance no longer depends on. Email/password below is the
+              primary login path. Set REACT_APP_ENABLE_GOOGLE_SIGNIN=true and wire a
+              real Google OAuth client to bring this back. */}
+          {process.env.REACT_APP_ENABLE_GOOGLE_SIGNIN === "true" && (
+            <>
+              <button
+                data-testid="google-signin"
+                type="button"
+                onClick={signInWithGoogle}
+                className="w-full h-9 bg-white hover:bg-slate-100 text-slate-900 text-[13px] font-medium rounded transition-colors flex items-center justify-center gap-2"
+              >
+                <FcGoogle size={18}/> Continue with Google
+              </button>
 
-          <div className="flex items-center gap-3 my-4">
-            <div className="flex-1 h-px bg-[#30363D]"/>
-            <span className="text-[10px] font-mono text-slate-600 uppercase tracking-wider">or email</span>
-            <div className="flex-1 h-px bg-[#30363D]"/>
-          </div>
+              <div className="flex items-center gap-3 my-4">
+                <div className="flex-1 h-px bg-[#30363D]"/>
+                <span className="text-[10px] font-mono text-slate-600 uppercase tracking-wider">or email</span>
+                <div className="flex-1 h-px bg-[#30363D]"/>
+              </div>
+            </>
+          )}
 
           <form onSubmit={onSubmit} className="space-y-3">
             <div>

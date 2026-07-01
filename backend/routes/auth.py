@@ -1,4 +1,5 @@
 """Authentication routes: login, logout, /me, Google OAuth session exchange."""
+import os
 import uuid
 from datetime import datetime, timezone, timedelta
 
@@ -56,10 +57,23 @@ class GoogleSessionBody(BaseModel):
 
 @router.post("/auth/google/session")
 async def google_session(body: GoogleSessionBody, response: Response):
+    # Disabled by default in self-hosted deployments: this originally proxied through
+    # Emergent's hosted OAuth relay (demobackend.emergentagent.com), which is not
+    # something a self-hosted instance controls or can rely on staying available.
+    # Set GOOGLE_OAUTH_RELAY_URL to your own OAuth relay/endpoint to re-enable, or
+    # wire up real Google OAuth (google-auth) here instead. Email/password login
+    # (see /auth/login above) works fully independently and is the default path.
+    relay_url = os.environ.get("GOOGLE_OAUTH_RELAY_URL")
+    if not relay_url:
+        raise HTTPException(
+            status_code=501,
+            detail="Google sign-in is not configured on this deployment. Use email/password login, "
+                   "or set GOOGLE_OAUTH_RELAY_URL to enable it.",
+        )
     import requests as _requests
     try:
         r = _requests.get(
-            "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+            relay_url,
             headers={"X-Session-ID": body.session_id},
             timeout=10,
         )
