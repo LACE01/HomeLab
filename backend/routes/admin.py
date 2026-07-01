@@ -565,20 +565,12 @@ async def preview_rules(user: dict = Depends(get_current_user)):
 
 
 # --------------------------- BULK ASSIGN OWNER TEAM (FINDINGS) ---------------------------
-class BulkOwnerBody(BaseModel):
-    ids: list[str]
-    owner_team: str
+# NOTE: a duplicate of this endpoint used to live here (dead code -- findings.py's
+# version registers first in server.py and was the one actually serving requests).
+# Removed; see routes/findings.py:bulk_owner for the live implementation, which is
+# role-gated to admin/manager and writes an activity_log entry, unlike this old copy.
 
 
-@router.post("/v1/findings/bulk-owner")
-async def bulk_owner(body: BulkOwnerBody, user: dict = Depends(get_current_user)):
-    res = await db.findings.update_many(
-        {"id": {"$in": body.ids}},
-        {"$set": {"owner_team": body.owner_team, "ownership_confidence": 0.95,
-                  "ownership_rationale": f"Manually set by {user['email']}",
-                  "last_changed_at": now_iso()}},
-    )
-    return {"updated": res.modified_count}
 @router.post("/v1/admin/wipe-demo-data")
 async def wipe_demo(user: dict = Depends(require_role("admin"))):
     """Delete every operational data collection (findings, assets, products, tickets, etc.).
