@@ -5,6 +5,7 @@ WORKDIR /app
 # Build deps for packages with native extensions (bcrypt, fastuuid, etc.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    nmap \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

@@ -17,6 +17,13 @@ services:
     depends_on:
       mongo:
         condition: service_healthy
+    # NET_RAW + NET_ADMIN let nmap run real SYN scans (-sS) and OS fingerprinting (-O)
+    # instead of falling back to slow TCP-connect scans. Only grant this if you intend
+    # to use the active Nmap scanning feature and only ever point it at ranges you're
+    # authorized to scan -- see Admin > Nmap Scans for the target/authorization gate.
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
     environment:
       MONGO_URL: mongodb://mongo:27017
       DB_NAME: ${DB_NAME:-vulnops}

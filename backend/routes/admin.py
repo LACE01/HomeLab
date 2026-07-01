@@ -585,6 +585,21 @@ async def trigger_epss(user: dict = Depends(require_role("admin"))):
     return await sync_epss(db)
 
 
+@router.post("/v1/admin/enrich/exploitdb")
+async def trigger_exploitdb(user: dict = Depends(require_role("admin"))):
+    from enrichers import sync_exploitdb
+    return await sync_exploitdb(db)
+
+
+@router.get("/v1/admin/exploitdb/status")
+async def exploitdb_status(user: dict = Depends(require_role("admin"))):
+    catalog_size = await db.exploitdb_catalog.count_documents({})
+    with_exploits = await db.findings.count_documents({"exploit_references": {"$exists": True, "$ne": []}})
+    latest = await db.exploitdb_catalog.find_one({}, {"_id": 0, "synced_at": 1}, sort=[("synced_at", -1)])
+    return {"catalog_cves": catalog_size, "findings_with_exploits": with_exploits,
+            "last_synced_at": (latest or {}).get("synced_at")}
+
+
 # --------------------------- CISA WEB SCAN UPLOAD ---------------------------
 from fastapi import UploadFile, File, Form
 

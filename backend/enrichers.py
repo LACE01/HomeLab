@@ -1,8 +1,12 @@
-"""Threat-intel enrichers — pull KEV (CISA) and EPSS (FIRST.org) and stamp on findings.
+"""Threat-intel enrichers — pull KEV (CISA), EPSS (FIRST.org), and Exploit-DB
+(community-maintained public exploit index) and stamp results on findings.
 
 These are called from the admin endpoints and the nightly rescore loop.
 """
+import csv
+import io
 import logging
+import re
 from datetime import datetime, timezone
 
 import httpx
@@ -11,6 +15,11 @@ logger = logging.getLogger("vulnops.enrichers")
 
 CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 EPSS_URL = "https://api.first.org/data/v1/epss"
+# Community-maintained CSV index (no API key required). Same project that runs
+# exploit-db.com / searchsploit -- "codes" column carries CVE/OSVDB/etc references.
+EXPLOITDB_CSV_URL = "https://gitlab.com/exploit-database/exploitdb/-/raw/main/files_exploits.csv"
+CVE_IN_CODES_RE = re.compile(r"CVE-\d{4}-\d{4,7}", re.IGNORECASE)
+OPEN_STATES = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
 
 
 def _now_iso() -> str:
@@ -105,24 +114,98 @@ async def flag_active_attacks(db, recency_days: int = 45) -> dict:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=recency_days)).isoformat()
     open_states = ['New', 'Needs triage', 'Valid', 'Reopened', 'Fixed pending validation']
 
+    # rti is a multi-membership flag array (scoring.py checks several flags independently --
+    # active_attacks, public_exploit, zero_day, etc.) so these use $addToSet/$pull on the
+    # single 'active_attacks' member rather than overwriting the whole array, which would
+    # wipe out unrelated flags like public_exploit set by sync_exploitdb.
     kev_recent = await db.findings.update_many(
         {'kev_flag': True, 'first_seen_at': {'$gte': cutoff}, 'status': {'$in': open_states}},
-        {'$set': {'rti': ['active_attacks']}},
+        {'$addToSet': {'rti': 'active_attacks'}},
     )
     high_epss = await db.findings.update_many(
-        {'epss_score': {'$gte': 0.50}, 'status': {'$in': open_states},
-         'rti': {'$ne': ['active_attacks']}},
-        {'$set': {'rti': ['active_attacks']}},
+        {'epss_score': {'$gte': 0.50}, 'status': {'$in': open_states}},
+        {'$addToSet': {'rti': 'active_attacks'}},
     )
     # Clear the flag for anything that no longer qualifies (KEV cleared, aged out, EPSS dropped)
     cleared = await db.findings.update_many(
-        {'rti': ['active_attacks'], 'status': {'$in': open_states},
+        {'rti': 'active_attacks', 'status': {'$in': open_states},
          '$and': [
              {'$or': [{'kev_flag': {'$ne': True}}, {'first_seen_at': {'$lt': cutoff}}]},
              {'$or': [{'epss_score': None}, {'epss_score': {'$lt': 0.50}}]},
          ]},
-        {'$set': {'rti': []}},
+        {'$pull': {'rti': 'active_attacks'}},
     )
     return {'status': 'success', 'flagged_kev_recent': kev_recent.modified_count,
             'flagged_high_epss': high_epss.modified_count, 'cleared': cleared.modified_count,
             'synced_at': _now_iso()}
+
+
+async def sync_exploitdb(db) -> dict:
+    """Download the Exploit-DB CSV index (community-maintained, no API key needed --
+    the same source that powers exploit-db.com / searchsploit) and match entries to
+    findings by CVE. Adds exploit_references (concrete public PoC/exploit links) and
+    flags rti += public_exploit, then recomputes risk_score for matched findings so
+    the extra context is visible immediately instead of waiting for the next nightly
+    rescore. Findings whose CVE drops out of the catalog (rare -- exploit-db only
+    grows, but a finding's CVE could get corrected) have their references cleared."""
+    try:
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as c:
+            r = await c.get(EXPLOITDB_CSV_URL)
+            r.raise_for_status()
+            text = r.text
+    except Exception as e:
+        return {"status": "failed", "error": str(e), "matched": 0}
+
+    cve_map: dict = {}
+    try:
+        reader = csv.DictReader(io.StringIO(text))
+        for row in reader:
+            codes = row.get("codes") or row.get("Codes") or ""
+            cves = set(m.upper() for m in CVE_IN_CODES_RE.findall(codes))
+            if not cves:
+                continue
+            edb_id = row.get("id") or row.get("ID")
+            entry = {
+                "edb_id": edb_id,
+                "title": (row.get("description") or row.get("Description") or "").strip()[:200],
+                "url": f"https://www.exploit-db.com/exploits/{edb_id}" if edb_id else None,
+                "date_published": row.get("date_published") or row.get("Date Published"),
+                "verified": (row.get("verified") or row.get("Verified") or "").strip() in ("1", "True", "true"),
+                "type": row.get("type") or row.get("Type"),
+                "platform": row.get("platform") or row.get("Platform"),
+            }
+            for cve in cves:
+                cve_map.setdefault(cve, []).append(entry)
+    except Exception as e:
+        return {"status": "failed", "error": f"CSV parse error: {e}", "matched": 0}
+
+    if not cve_map:
+        return {"status": "failed", "error": "No CVE-tagged entries parsed from the Exploit-DB CSV", "matched": 0}
+
+    await db.exploitdb_catalog.delete_many({})
+    await db.exploitdb_catalog.insert_many(
+        [{"cve_id": cve, "exploits": entries[:10], "synced_at": _now_iso()} for cve, entries in cve_map.items()]
+    )
+
+    from scoring import compute_risk
+    matched = 0
+    cursor = db.findings.find({"cve": {"$in": list(cve_map.keys())}, "status": {"$in": OPEN_STATES}}, {"_id": 0})
+    async for f in cursor:
+        entries = cve_map.get(f.get("cve"), [])[:5]
+        asset = await db.assets.find_one({"id": f.get("asset_id")}, {"_id": 0}) or {}
+        new_rti = list(dict.fromkeys((f.get("rti") or []) + ["public_exploit"]))
+        f_tmp = {**f, "exploit_references": entries, "rti": new_rti}
+        risk = compute_risk(f_tmp, asset)
+        await db.findings.update_one({"id": f["id"]}, {"$set": {
+            "exploit_references": entries, "risk_score": risk["score"], "risk_breakdown": risk["breakdown"],
+            "exploitdb_synced_at": _now_iso(),
+        }, "$addToSet": {"rti": "public_exploit"}})
+        matched += 1
+
+    stale = await db.findings.update_many(
+        {"exploit_references": {"$exists": True, "$ne": []}, "cve": {"$nin": list(cve_map.keys())}},
+        {"$set": {"exploit_references": []}, "$pull": {"rti": "public_exploit"}},
+    )
+
+    return {"status": "success", "catalog_cves": len(cve_map), "matched": matched,
+            "cleared": stale.modified_count, "synced_at": _now_iso()}

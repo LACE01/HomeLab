@@ -28,11 +28,66 @@ What it does with the data:
      accepts "the port this finding was about is confirmed closed by a scan run after
      the fix" as proof a fix landed, for any finding that has a `port` recorded.
 """
+import asyncio
+import re
+import shlex
 import uuid
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 from scoring import compute_risk, compute_sla_days
+
+# Flags per intensity preset. -T4 is "aggressive" timing (fine on a LAN/VPN, still
+# reasonable over the internet); -sV/-O need raw sockets (NET_RAW/NET_ADMIN, granted to
+# the backend container in docker-compose.yml) to do real SYN scans + OS fingerprinting
+# instead of silently falling back to slow, easily-noticed full TCP connects.
+SCAN_PRESETS = {
+    "quick": ["-T4", "-F"],                              # top 100 ports, no service/OS probing
+    "standard": ["-T4", "-sV", "-O", "--top-ports", "1000"],
+    "thorough": ["-T4", "-sV", "-O", "-p-"],              # all 65535 ports -- slow
+}
+
+TARGET_RE = re.compile(
+    r"^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?|[a-zA-Z0-9.\-]+)$"
+)
+
+
+def validate_targets(targets: str) -> list:
+    """Splits a comma/whitespace-separated target string and sanity-checks each token
+    looks like an IP, CIDR block, or hostname. This is a syntax check, not an
+    authorization check -- it can't know what you're allowed to scan, that's still on
+    you. Raises ValueError with a clear message if something looks wrong."""
+    tokens = [t.strip() for t in re.split(r"[,\s]+", targets.strip()) if t.strip()]
+    if not tokens:
+        raise ValueError("No targets provided")
+    if len(tokens) > 64:
+        raise ValueError("Too many targets in one scan config (max 64) -- split into multiple configs")
+    for t in tokens:
+        if not TARGET_RE.match(t):
+            raise ValueError(f"'{t}' doesn't look like a valid IP, CIDR block, or hostname")
+    return tokens
+
+
+async def run_active_scan(targets: str, scan_type: str = "standard", timeout_sec: int = 900) -> bytes:
+    """Shells out to the nmap binary and returns the raw XML output. Never touches the
+    network except via nmap itself, and only against the exact targets passed in."""
+    tokens = validate_targets(targets)
+    args = SCAN_PRESETS.get(scan_type, SCAN_PRESETS["standard"])
+    cmd = ["nmap", *args, "-oX", "-", *tokens]
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise TimeoutError(f"nmap scan exceeded {timeout_sec}s and was killed: {' '.join(shlex.quote(c) for c in cmd)}")
+
+    if proc.returncode != 0:
+        raise RuntimeError(f"nmap exited {proc.returncode}: {stderr.decode(errors='replace')[:500]}")
+    return stdout
 
 RISKY_PORTS = {
     23: ("Telnet", "Critical", "Cleartext remote administration protocol -- credentials and traffic are unencrypted."),

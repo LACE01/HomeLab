@@ -31,6 +31,7 @@ from routes.admin import router as admin_router
 from routes.preferences import router as preferences_router
 from routes.playbooks import router as playbooks_router
 from routes.automation import router as automation_router
+from routes.nmap import router as nmap_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("vulnops")
@@ -52,6 +53,7 @@ api.include_router(admin_router)
 api.include_router(preferences_router)
 api.include_router(playbooks_router)
 api.include_router(automation_router)
+api.include_router(nmap_router)
 
 
 @api.get("/")
@@ -105,9 +107,12 @@ async def on_startup():
     import asyncio as _a
     from nightly import nightly_loop, threat_intel_loop, digest_dispatch_loop
     from qualys_sync import qualys_poll_loop
+    from routes.nmap import nmap_scan_loop
     _a.create_task(nightly_loop(db, interval_hours=24))
     # KEV / EPSS / active-attacks sync loop (12h) — was previously manual-trigger only
     _a.create_task(threat_intel_loop(db, interval_hours=12))
     _a.create_task(digest_dispatch_loop(db, interval_hours=1))
     # Qualys live sync loop (60min) — skips when integration is not configured
     _a.create_task(qualys_poll_loop(db, interval_minutes=60))
+    # Scheduled Nmap scan loop (15min poll) — runs at most one config's scan at a time
+    _a.create_task(nmap_scan_loop(db, interval_minutes=15))

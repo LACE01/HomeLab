@@ -4,7 +4,7 @@ import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtDate, fmtRel, isOverdue } from "@/lib/utils-fmt";
-import { ArrowLeft, ChatCircle, ClockCounterClockwise, Ticket, Shield, BookOpen, CheckCircle, ArrowCounterClockwise, Plus, ShieldCheck, X, Trash } from "@phosphor-icons/react";
+import { ArrowLeft, ChatCircle, ClockCounterClockwise, Ticket, Shield, BookOpen, CheckCircle, ArrowCounterClockwise, Plus, ShieldCheck, X, Trash, SealWarning, SealCheck } from "@phosphor-icons/react";
 import InfoTip from "@/components/InfoTip";
 import { toast } from "sonner";
 
@@ -613,6 +613,36 @@ export default function FindingDetail() {
             <KV k="EPSS %ile" v={f.epss_percentile?.toFixed?.(1)} mono/>
           </Section>
 
+          {(f.exploit_references || []).length > 0 && (
+            <Section title="Public Exploits" testid="public-exploits-section">
+              <div className="border border-orange-500/30 bg-orange-500/5 rounded-md px-3 py-2 mb-3 text-[11.5px] text-orange-200 leading-relaxed">
+                {f.exploit_references.length} public exploit{f.exploit_references.length === 1 ? "" : "s"} indexed for this CVE — a working
+                proof-of-concept exists in the wild, which materially lowers the bar for exploitation.
+              </div>
+              <div className="space-y-2">
+                {f.exploit_references.map((ex, i) => (
+                  <a key={ex.edb_id || i} href={ex.url} target="_blank" rel="noopener noreferrer"
+                    className="block border border-[#30363D] hover:border-orange-500/40 rounded-md px-3 py-2 transition-colors">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="text-[12px] text-slate-200 leading-snug">{ex.title || `Exploit-DB #${ex.edb_id}`}</div>
+                      {ex.verified ? (
+                        <span className="shrink-0 inline-flex items-center gap-1 text-[10px] text-emerald-400"><SealCheck size={12}/> Verified</span>
+                      ) : (
+                        <span className="shrink-0 inline-flex items-center gap-1 text-[10px] text-slate-500"><SealWarning size={12}/> Unverified</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                      {ex.edb_id && <Chip color="orange">EDB-{ex.edb_id}</Chip>}
+                      {ex.type && <Chip color="slate">{ex.type}</Chip>}
+                      {ex.platform && <Chip color="slate">{ex.platform}</Chip>}
+                      {ex.date_published && <span className="text-[10.5px] text-slate-500 font-mono">{ex.date_published}</span>}
+                    </div>
+                  </a>
+                ))}
+              </div>
+            </Section>
+          )}
+
           <Section title="Asset">
             <Link to={`/assets/${f.asset_id}`} className="text-blue-300 hover:underline font-mono text-[12.5px]">{f.asset_hostname}</Link>
             <KV k="IP" v={f.asset_ip} mono/>
@@ -656,11 +686,6 @@ export default function FindingDetail() {
               const url = typeof l === "string" ? l : l?.url;
               const label = typeof l === "string" ? l : (l?.source || l?.url || "Reference");
               return url ? <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="block text-[12px] text-blue-300 hover:underline truncate">{label}</a> : null;
-            })}
-            {(f.exploit_references || []).map((l, i) => {
-              const url = typeof l === "string" ? l : l?.url;
-              const label = typeof l === "string" ? l : (l?.source || l?.url || "Exploit");
-              return url ? <a key={`x-${i}`} href={url} target="_blank" rel="noopener noreferrer" className="block text-[12px] text-orange-300 hover:underline truncate">{label}</a> : null;
             })}
             {(f.external_references || []).slice(0, 12).map((r, i) => {
               const url = Array.isArray(r) ? r[0] : (r?.url || (typeof r === "string" ? r : null));

@@ -351,7 +351,7 @@ async def threat_intel_loop(db, interval_hours: int = 12):
     """Automatically keep KEV / EPSS / active-attacks flags fresh. Previously these
     only ran when an admin manually hit the sync buttons, so KEV and Active Attacks
     stayed at 0 on the dashboard until someone remembered to trigger them by hand."""
-    from enrichers import sync_kev, sync_epss, flag_active_attacks
+    from enrichers import sync_kev, sync_epss, flag_active_attacks, sync_exploitdb
     await asyncio.sleep(30)  # let the app finish booting first
     while True:
         try:
@@ -369,6 +369,11 @@ async def threat_intel_loop(db, interval_hours: int = 12):
             logger.info(f"Active-attacks flag: {active_result}")
         except Exception as e:
             logger.exception(f"Active-attacks flag failed: {e}")
+        try:
+            exploitdb_result = await sync_exploitdb(db)
+            logger.info(f"Exploit-DB sync: {exploitdb_result}")
+        except Exception as e:
+            logger.exception(f"Exploit-DB sync failed: {e}")
         await asyncio.sleep(interval_hours * 3600)
 
 
