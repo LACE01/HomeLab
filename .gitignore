@@ -100,3 +100,4 @@ frontend/node_modules/.cache/default-development/5.pack
 
 # Explicit exception: this is a template, not a real secrets file
 !.env.example
+self-hosted-updates*.bundle
