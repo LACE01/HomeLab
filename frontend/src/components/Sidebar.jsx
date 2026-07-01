@@ -3,7 +3,7 @@ import { useAuth } from "@/lib/auth";
 import {
   ChartLineUp, ListChecks, HardDrives, Stack, Lightning, Ticket,
   ShieldCheck, PlugsConnected, FileArrowDown, GearSix, SignOut, Database, Bug,
-  UsersThree, Bell, ShareNetwork, BookOpen, Robot,
+  UsersThree, Bell, ShareNetwork, BookOpen, Robot, Globe,
 } from "@phosphor-icons/react";
 
 const NavItem = ({ to, icon: Icon, label, testid }) => (
@@ -50,6 +50,7 @@ export default function Sidebar() {
           <NavItem to="/operational" icon={Lightning} label="Operational" testid="nav-operational" />
           <NavItem to="/findings" icon={ListChecks} label="Findings" testid="nav-findings" />
           <NavItem to="/attack-paths" icon={ShareNetwork} label="Attack Paths" testid="nav-attack-paths" />
+          <NavItem to="/exposure" icon={Globe} label="Exposure" testid="nav-exposure" />
           <NavItem to="/tickets" icon={Ticket} label="Tickets" testid="nav-tickets" />
           <NavItem to="/exceptions" icon={ShieldCheck} label="Exceptions" testid="nav-exceptions" />
           <NavItem to="/admin/playbooks" icon={BookOpen} label="Playbooks" testid="nav-playbooks" />

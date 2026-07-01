@@ -7,7 +7,7 @@ import Layout from "@/components/Layout";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtRel, isOverdue } from "@/lib/utils-fmt";
 import { Link } from "react-router-dom";
-import { MagnifyingGlass, FileArrowDown, FunnelSimple, CaretDown, CaretRight, StackSimple, ListBullets, GridFour } from "@phosphor-icons/react";
+import { MagnifyingGlass, FileArrowDown, FunnelSimple, CaretDown, CaretRight, StackSimple, ListBullets, GridFour, Sparkle, X } from "@phosphor-icons/react";
 import TeamCombobox from "@/components/TeamCombobox";
 
 const VIEWS = [
@@ -56,6 +56,9 @@ export default function Findings() {
   const [groups, setGroups] = useState([]);
   const [expanded, setExpanded] = useState(new Set());
   const [groupChildren, setGroupChildren] = useState({}); // key → finding[]
+  const [nlMode, setNlMode] = useState(false);
+  const [nlInterpreted, setNlInterpreted] = useState(null);
+  const [nlLoading, setNlLoading] = useState(false);
 
   const groupBy = prefs?.findings?.group_by || "none";
   const viewMode = prefs?.findings?.view_mode || "by_asset";
@@ -88,6 +91,25 @@ export default function Findings() {
     setLoading(false); setSelected(new Set());
   };
   useEffect(() => { if (prefs) load(); /* eslint-disable-next-line */ }, [prefs, view, severity, status, myQueue, groupBy, viewMode, cweParam, cveParam]);
+
+  const runNlSearch = async () => {
+    if (!q.trim()) return;
+    setNlLoading(true);
+    try {
+      const r = await api.get("/v1/findings/nl-search", { params: { q } });
+      setItems(r.data.items || []); setTotal(r.data.total);
+      setNlInterpreted(r.data.interpreted || []);
+      setGroups([]); setSelected(new Set());
+    } finally {
+      setNlLoading(false);
+    }
+  };
+
+  const clearNlSearch = () => {
+    setNlInterpreted(null);
+    setQ("");
+    load();
+  };
 
   const setGroupBy = (id) => setSection("findings", { group_by: id });
   const setViewMode = (id) => setSection("findings", { view_mode: id });
@@ -157,15 +179,31 @@ export default function Findings() {
         </button>
       </>}>
 
+      {nlInterpreted && (
+        <div className="border border-blue-500/30 bg-blue-500/5 rounded-md px-3 py-2 mb-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-1.5 flex-wrap text-[11.5px]">
+            <span className="text-blue-300 font-medium inline-flex items-center gap-1"><Sparkle size={12}/> Interpreted as:</span>
+            {nlInterpreted.map((i, idx) => <Chip key={idx} color="blue">{i}</Chip>)}
+          </div>
+          <button onClick={clearNlSearch} className="text-slate-500 hover:text-slate-300 shrink-0"><X size={14}/></button>
+        </div>
+      )}
+
       {/* Filters bar */}
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md mb-3">
         <div className="px-3 py-2 flex flex-wrap gap-2 items-center border-b border-[#30363D]">
-          <div className="flex items-center gap-1.5 bg-[#161B22] border border-[#30363D] rounded px-2 h-8 flex-1 min-w-[260px]">
-            <MagnifyingGlass size={14} className="text-slate-500" />
-            <input data-testid="search-input" value={q} onChange={(e)=>setQ(e.target.value)} onKeyDown={(e)=>e.key==='Enter'&&load()}
-              placeholder="Search title, CVE, hostname, QID…"
+          <div className={`flex items-center gap-1.5 border rounded px-2 h-8 flex-1 min-w-[260px] ${nlMode ? "bg-blue-500/5 border-blue-500/40" : "bg-[#161B22] border-[#30363D]"}`}>
+            {nlMode ? <Sparkle size={14} className="text-blue-300"/> : <MagnifyingGlass size={14} className="text-slate-500" />}
+            <input data-testid="search-input" value={q} onChange={(e)=>setQ(e.target.value)}
+              onKeyDown={(e)=>e.key==='Enter'&&(nlMode ? runNlSearch() : load())}
+              placeholder={nlMode ? 'Try "critical kev findings on windows owned by AppSec"…' : "Search title, CVE, hostname, QID…"}
               className="bg-transparent flex-1 outline-none text-[12.5px] text-slate-200 placeholder:text-slate-600" />
           </div>
+          <button data-testid="nl-toggle" onClick={()=>{ if (nlMode) clearNlSearch(); setNlMode(!nlMode); }}
+            title="Natural language search — no AI tokens, just pattern matching"
+            className={`h-8 px-2.5 text-[12px] rounded border inline-flex items-center gap-1.5 ${nlMode ? "bg-blue-500/15 border-blue-500/40 text-blue-300" : "border-[#30363D] text-slate-400 hover:border-[#484F58]"}`}>
+            <Sparkle size={13}/> Ask
+          </button>
           <select data-testid="filter-severity" value={severity} onChange={(e)=>setSeverity(e.target.value)} className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200">
             <option value="">All severities</option>
             {["Critical","High","Medium","Low","Info"].map(s=> <option key={s}>{s}</option>)}
@@ -174,8 +212,9 @@ export default function Findings() {
             <option value="">All statuses</option>
             {STATUSES.map(s=> <option key={s}>{s}</option>)}
           </select>
-          <button data-testid="search-go" onClick={load} className="h-8 px-3 text-[12px] bg-blue-500/15 text-blue-300 border border-blue-500/30 rounded hover:bg-blue-500/25">
-            <FunnelSimple size={14} className="inline mr-1"/> Apply
+          <button data-testid="search-go" onClick={()=> nlMode ? runNlSearch() : load()} disabled={nlLoading}
+            className="h-8 px-3 text-[12px] bg-blue-500/15 text-blue-300 border border-blue-500/30 rounded hover:bg-blue-500/25 disabled:opacity-50">
+            <FunnelSimple size={14} className="inline mr-1"/> {nlMode ? (nlLoading ? "Thinking…" : "Ask") : "Apply"}
           </button>
         </div>
         <div className="px-3 py-1.5 flex flex-wrap gap-1.5 items-center">

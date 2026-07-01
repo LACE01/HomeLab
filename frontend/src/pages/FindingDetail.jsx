@@ -126,6 +126,7 @@ export default function FindingDetail() {
   const [intel, setIntel] = useState(null);
   const [playbook, setPlaybook] = useState(undefined); // undefined = loading, null = none found
   const [playbookBasis, setPlaybookBasis] = useState(null);
+  const [patchGroup, setPatchGroup] = useState(null);
   const [mitigations, setMitigations] = useState([]);
   const [mitigationTypes, setMitigationTypes] = useState([]);
   const [showAddMitigation, setShowAddMitigation] = useState(false);
@@ -143,6 +144,7 @@ export default function FindingDetail() {
     api.get(`/v1/findings/${id}/comments`).then(r => setComments(r.data.items));
     api.get(`/v1/findings/${id}/kri`).then(r => setKri(r.data));
     api.get(`/v1/findings/${id}/playbook`).then(r => { setPlaybook(r.data.playbook); setPlaybookBasis(r.data.match_basis); });
+    api.get(`/v1/findings/${id}/patch-group`).then(r => setPatchGroup(r.data));
     loadMitigations();
     loadExceptions();
   }, [id]); // eslint-disable-line
@@ -155,6 +157,22 @@ export default function FindingDetail() {
     await api.patch(`/v1/findings/${id}/status`, { status: s });
     setStatusVal(s);
     const r = await api.get(`/v1/findings/${id}/timeline`); setActivity(r.data.items);
+    const fr = await api.get(`/v1/findings/${id}`); setF(fr.data);
+  };
+
+  const [verifying, setVerifying] = useState(false);
+  const verifyNow = async () => {
+    setVerifying(true);
+    try {
+      const r = await api.post(`/v1/findings/${id}/verify`);
+      if (r.data.verified) toast.success(r.data.note);
+      else toast(r.data.note, { icon: "⏳" });
+      const fr = await api.get(`/v1/findings/${id}`); setF(fr.data);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Verification check failed");
+    } finally {
+      setVerifying(false);
+    }
   };
 
   const addComment = async () => {
@@ -193,6 +211,13 @@ export default function FindingDetail() {
         {(f.rti || []).map(r => <Chip key={r} color="red">{r.replace(/_/g," ").toUpperCase()}</Chip>)}
         {(f.compliance_scope || []).map(c => <Chip key={c} color="blue">{c}</Chip>)}
       </div>
+
+      {patchGroup?.siblings?.length > 0 && (
+        <div className="border border-emerald-500/30 bg-emerald-500/5 rounded-md px-3 py-2 mb-4 text-[12px] text-emerald-200 flex items-center justify-between gap-3">
+          <span>Shares the same patch/update with {patchGroup.siblings.length} other open finding{patchGroup.siblings.length===1?"":"s"} on this asset — one fix clears all of them.</span>
+          <Link to={`/assets/${f.asset_id}`} className="text-emerald-300 hover:underline shrink-0">View asset →</Link>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 space-y-4">
@@ -531,6 +556,23 @@ export default function FindingDetail() {
               <KV k="Validation" v={f.validation_status}/>
               <KV k="Reopened" v={f.reopened_count} mono/>
             </div>
+            {f.verification_status && (
+              <div className="mt-3 border-t border-[#30363D] pt-2.5">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Verification</div>
+                  <Chip color={f.verification_status === "passed" ? "green" : f.verification_status === "failed" ? "red" : "amber"}>
+                    {f.verification_status}
+                  </Chip>
+                </div>
+                {f.verification_note && <div className="text-[11.5px] text-slate-400 leading-relaxed">{f.verification_note}</div>}
+                {statusVal === "Fixed pending validation" && (
+                  <button data-testid="verify-now" onClick={verifyNow} disabled={verifying}
+                    className="mt-2 h-7 px-2.5 text-[11px] bg-blue-500/15 border border-blue-500/40 hover:bg-blue-500/25 text-blue-300 rounded disabled:opacity-50">
+                    {verifying ? "Checking…" : "Verify now"}
+                  </button>
+                )}
+              </div>
+            )}
           </Section>
 
           <Section title="Risk Exception" testid="section-exception">

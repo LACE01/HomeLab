@@ -5,6 +5,7 @@ Manager/Executive dashboards (score_snapshots collection)."""
 import asyncio
 import logging
 import statistics
+import uuid
 from datetime import datetime, timezone, timedelta
 
 import httpx
@@ -197,6 +198,78 @@ async def compute_org_snapshot(db, for_date: str = None) -> dict:
     return doc
 
 
+async def check_single_verification(db, finding: dict) -> dict:
+    """Shared by the manual 'Verify now' endpoint and the nightly sweep. Only promotes to
+    Fixed validated when there's real evidence the host was rescanned since the fix was
+    marked -- a successful import from the same source_tool with a started_at after
+    fixed_marked_at -- rather than just letting a timer expire. If no rescan evidence
+    exists yet, it reports that honestly instead of guessing."""
+    source = finding.get("source_tool")
+    fixed_at = finding.get("fixed_marked_at") or finding.get("last_changed_at")
+    rescanned = False
+    if source and fixed_at:
+        rescanned = await db.import_jobs.count_documents({
+            "source_name": source, "status": "success", "started_at": {"$gt": fixed_at},
+        }) > 0
+
+    if rescanned:
+        note = f"Auto-verified: a {source} sync ran after the fix and this finding did not reappear."
+        await db.findings.update_one({"id": finding["id"]}, {"$set": {
+            "status": "Fixed validated", "last_changed_at": now_iso_(),
+            "verification_status": "passed", "verification_note": note,
+        }})
+        await db.activity_log.insert_one({
+            "id": str(uuid.uuid4()), "entity_type": "finding", "entity_id": finding["id"],
+            "action": "status_changed", "actor": "verification_sweep", "timestamp": now_iso_(),
+            "details": note,
+        })
+        return {"verified": True, "status": "Fixed validated", "note": note}
+
+    note = (f"Still waiting on a fresh {source} sync since this was marked fixed."
+            if source else "No source tool recorded for this finding -- can't confirm a rescan happened.")
+    return {"verified": False, "status": finding.get("status"), "note": note}
+
+
+def now_iso_():
+    return datetime.now(timezone.utc).isoformat()
+
+
+async def decay_stale_ownership(db, stale_days: int = 90, decay_to: float = 0.6) -> dict:
+    """Ownership confidence of 1.0 means a human confirmed it at some point -- but trust
+    should erode if nobody's looked at it since. Assets that were confidently assigned
+    (>=0.9) and haven't been reconfirmed within stale_days get stepped down to decay_to
+    and flagged in their rationale, surfacing them on the Ownership Mappings 'stale' view
+    instead of silently looking just as trustworthy as a same-day confirmation forever."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=stale_days)).isoformat()
+    now = now_iso_()
+    stale_assets = await db.assets.find({
+        "ownership_confidence": {"$gte": 0.9},
+        "$or": [{"ownership_confirmed_at": {"$lt": cutoff}}, {"ownership_confirmed_at": None}],
+    }, {"_id": 0, "id": 1}).to_list(5000)
+    decayed = 0
+    for a in stale_assets:
+        await db.assets.update_one({"id": a["id"]}, {"$set": {
+            "ownership_confidence": decay_to,
+            "ownership_rationale": f"Confidence decayed -- not reconfirmed in {stale_days}+ days.",
+        }})
+        decayed += 1
+    return {"checked": len(stale_assets), "decayed": decayed}
+
+
+async def run_verification_sweep(db) -> dict:
+    """Nightly: check every finding whose verification grace window has elapsed."""
+    now = now_iso_()
+    pending = await db.findings.find({
+        "status": "Fixed pending validation", "verification_due_at": {"$lte": now},
+    }, {"_id": 0}).to_list(2000)
+    promoted = 0
+    for f in pending:
+        result = await check_single_verification(db, f)
+        if result["verified"]:
+            promoted += 1
+    return {"checked": len(pending), "promoted": promoted}
+
+
 async def backfill_score_snapshots(db, days: int = 30) -> int:
     """If score_snapshots is empty (fresh install), backfill a short synthetic history
     leading up to today's real computed score, so the Manager/Executive trend charts
@@ -231,6 +304,21 @@ async def backfill_score_snapshots(db, days: int = 30) -> int:
         await db.score_snapshots.update_one({"date": d}, {"$set": snap}, upsert=True)
         inserted += 1
     return inserted
+
+
+async def digest_dispatch_loop(db, interval_hours: int = 1):
+    """Checks hourly whether any daily/weekly notification rule's window has elapsed and
+    flushes its queued events as a single digest. Hourly gives daily/weekly cadences
+    reasonable precision without needing a dedicated scheduler."""
+    from notifier import run_digest_dispatch
+    await asyncio.sleep(45)
+    while True:
+        try:
+            r = await run_digest_dispatch(db)
+            logger.info(f"Digest dispatch: {r}")
+        except Exception as e:
+            logger.exception(f"Digest dispatch failed: {e}")
+        await asyncio.sleep(interval_hours * 3600)
 
 
 async def threat_intel_loop(db, interval_hours: int = 12):
@@ -285,4 +373,14 @@ async def nightly_loop(db, interval_hours: int = 24):
             logger.info(f"Automation sweep: {auto_result}")
         except Exception as e:
             logger.exception(f"Automation sweep failed: {e}")
+        try:
+            verify_result = await run_verification_sweep(db)
+            logger.info(f"Verification sweep: {verify_result}")
+        except Exception as e:
+            logger.exception(f"Verification sweep failed: {e}")
+        try:
+            decay_result = await decay_stale_ownership(db)
+            logger.info(f"Ownership decay: {decay_result}")
+        except Exception as e:
+            logger.exception(f"Ownership decay failed: {e}")
         await asyncio.sleep(interval_hours * 3600)

@@ -146,6 +146,55 @@ async def dashboard_executive(
     }
 
 
+@router.get("/v1/dashboards/exposure")
+async def dashboard_exposure(user: dict = Depends(get_current_user)):
+    """Attack-surface-centric view: what's actually reachable from the internet, and how
+    exposed is it -- rather than severity counts across the whole portfolio regardless of
+    reachability."""
+    open_states = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+
+    total_assets = await db.assets.count_documents({})
+    exposed_assets = await db.assets.count_documents({"exposure": {"$in": ["internet", "external"]}})
+
+    exposed_open_flt = {"internet_facing": True, "status": {"$in": open_states}}
+    exposed_open = await db.findings.count_documents(exposed_open_flt)
+    exposed_crit_high = await db.findings.count_documents({
+        **exposed_open_flt, "severity": {"$in": ["Critical", "High"]}})
+    exposed_kev = await db.findings.count_documents({**exposed_open_flt, "kev_flag": True})
+    exposed_unassigned = await db.findings.count_documents({**exposed_open_flt, "owner_team": None})
+
+    by_env: dict = {}
+    async for f in db.findings.find(exposed_open_flt, {"_id": 0, "asset_environment": 1}):
+        env = f.get("asset_environment") or "unknown"
+        by_env[env] = by_env.get(env, 0) + 1
+
+    # Top exposed assets by open risk -- the "fix these first" list for attack surface.
+    pipeline = [
+        {"$match": exposed_open_flt},
+        {"$group": {"_id": {"asset_id": "$asset_id", "hostname": "$asset_hostname"},
+                    "total_risk": {"$sum": "$risk_score"}, "count": {"$sum": 1},
+                    "critical": {"$sum": {"$cond": [{"$eq": ["$severity", "Critical"]}, 1, 0]}},
+                    "kev": {"$sum": {"$cond": ["$kev_flag", 1, 0]}},
+                    "owner_team": {"$first": "$owner_team"}}},
+        {"$sort": {"total_risk": -1}}, {"$limit": 15},
+    ]
+    top_exposed = []
+    async for r in db.findings.aggregate(pipeline):
+        top_exposed.append({
+            "asset_id": r["_id"]["asset_id"], "hostname": r["_id"]["hostname"],
+            "open_findings": r["count"], "critical": r["critical"], "kev": r["kev"],
+            "risk_sum": round(r["total_risk"], 1), "owner_team": r.get("owner_team"),
+        })
+
+    return {
+        "total_assets": total_assets, "exposed_assets": exposed_assets,
+        "exposed_open": exposed_open, "exposed_crit_high": exposed_crit_high,
+        "exposed_kev": exposed_kev, "exposed_unassigned": exposed_unassigned,
+        "by_environment": [{"environment": k, "count": v} for k, v in sorted(by_env.items(), key=lambda x: -x[1])],
+        "top_exposed_assets": top_exposed,
+    }
+
+
 @router.get("/v1/dashboards/operational")
 async def dashboard_operational(user: dict = Depends(get_current_user), team: Optional[str] = None):
     base_flt: dict = {}

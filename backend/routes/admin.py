@@ -1,6 +1,7 @@
 """Admin routes: users, notifications (channels + rules + outbox + meta),
 assignment-rules, ownership-mappings, sla-policies, api-keys, nightly-rescore."""
 import uuid
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -151,7 +152,23 @@ class RuleIn(BaseModel):
 @router.get("/v1/admin/notification-rules")
 async def list_rules_notif(user: dict = Depends(get_current_user)):
     items = await db.notification_rules.find({}, {"_id": 0}).to_list(200)
+    for r in items:
+        if r.get("frequency", "immediate") != "immediate":
+            r["queued_count"] = await db.notification_queue.count_documents({"rule_id": r["id"]})
     return {"items": items}
+
+
+@router.post("/v1/admin/notification-rules/{rule_id}/send-digest-now")
+async def send_digest_now(rule_id: str, user: dict = Depends(require_role("admin"))):
+    rule = await db.notification_rules.find_one({"id": rule_id}, {"_id": 0})
+    if not rule:
+        raise HTTPException(404, "Rule not found")
+    if rule.get("frequency", "immediate") == "immediate":
+        raise HTTPException(400, "This rule is immediate -- nothing is queued for it")
+    await db.notification_rules.update_one({"id": rule_id}, {"$set": {"last_digest_sent_at": None}})
+    from notifier import run_digest_dispatch
+    result = await run_digest_dispatch(db)
+    return result
 
 
 @router.post("/v1/admin/notification-rules")
@@ -159,9 +176,30 @@ async def create_rule_notif(body: RuleIn, user: dict = Depends(require_role("adm
     from notifier import TRIGGERS
     if body.trigger not in TRIGGERS:
         raise HTTPException(400, f"trigger must be one of {TRIGGERS}")
-    doc = {**body.model_dump(), "id": str(uuid.uuid4()), "created_at": now_iso()}
+    if body.frequency not in ("immediate", "hourly", "daily", "weekly"):
+        raise HTTPException(400, "frequency must be one of: immediate, hourly, daily, weekly")
+    doc = {**body.model_dump(), "id": str(uuid.uuid4()), "created_at": now_iso(), "last_digest_sent_at": None}
     await db.notification_rules.insert_one(doc)
     return {"id": doc["id"]}
+
+
+@router.patch("/v1/admin/notification-rules/{rule_id}")
+async def update_rule_notif(rule_id: str, body: RuleIn, user: dict = Depends(require_role("admin"))):
+    from notifier import TRIGGERS
+    if body.trigger not in TRIGGERS:
+        raise HTTPException(400, f"trigger must be one of {TRIGGERS}")
+    if body.frequency not in ("immediate", "hourly", "daily", "weekly"):
+        raise HTTPException(400, "frequency must be one of: immediate, hourly, daily, weekly")
+    existing = await db.notification_rules.find_one({"id": rule_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Rule not found")
+    update = body.model_dump()
+    if update.get("frequency") != existing.get("frequency"):
+        # Cadence changed -- reset the digest window so it doesn't immediately fire (or
+        # wait a stale amount of time) using the old cadence's clock.
+        update["last_digest_sent_at"] = None
+    await db.notification_rules.update_one({"id": rule_id}, {"$set": update})
+    return {**existing, **update}
 
 
 @router.delete("/v1/admin/notification-rules/{rule_id}")
@@ -328,15 +366,46 @@ async def apply_rules(user: dict = Depends(require_role("admin"))):
             "defaulted_to_fallback": defaulted, "still_unassigned": still_unassigned}
 
 
+STALE_OWNERSHIP_DAYS = 90
+
+
 @router.get("/v1/ownership-mappings")
-async def ownership_mappings(user: dict = Depends(get_current_user), q: Optional[str] = None):
+async def ownership_mappings(user: dict = Depends(get_current_user), q: Optional[str] = None,
+                              stale_only: bool = False, low_confidence_only: bool = False):
     flt = {}
     if q:
         flt["$or"] = [{"hostname": {"$regex": q, "$options": "i"}}, {"owner_team": {"$regex": q, "$options": "i"}}]
     items = await db.assets.find(flt, {"_id": 0, "id": 1, "hostname": 1, "owner_team": 1,
                                        "ownership_confidence": 1, "ownership_rationale": 1, "tags": 1,
+                                       "ownership_confirmed_at": 1,
                                        "environment": 1, "platform": 1, "criticality": 1, "exposure": 1}).to_list(1000)
-    return {"items": items}
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=STALE_OWNERSHIP_DAYS)).isoformat()
+    for a in items:
+        confirmed = a.get("ownership_confirmed_at")
+        a["stale"] = (not confirmed) or (confirmed < cutoff)
+    if stale_only:
+        items = [a for a in items if a["stale"]]
+    if low_confidence_only:
+        items = [a for a in items if (a.get("ownership_confidence") or 0) < 0.7]
+    return {"items": items, "stale_threshold_days": STALE_OWNERSHIP_DAYS}
+
+
+@router.post("/v1/assets/{asset_id}/confirm-ownership")
+async def confirm_ownership(asset_id: str, user: dict = Depends(require_role("admin", "manager"))):
+    """A human looked at this asset's owner team and confirmed it's correct -- resets the
+    staleness clock even if the team assignment itself doesn't change."""
+    asset = await db.assets.find_one({"id": asset_id}, {"_id": 0})
+    if not asset:
+        raise HTTPException(404, "Asset not found")
+    now = now_iso()
+    update = {"ownership_confidence": 1.0, "ownership_confirmed_at": now,
+              "ownership_rationale": f"Manually confirmed by {user['email']}"}
+    await db.assets.update_one({"id": asset_id}, {"$set": update})
+    await db.findings.update_many(
+        {"asset_id": asset_id, "status": {"$nin": ["Fixed validated", "Closed administratively"]}},
+        {"$set": {"ownership_confidence": 1.0, "ownership_confirmed_at": now}},
+    )
+    return {**asset, **update}
 
 
 @router.get("/v1/admin/sla-policies")

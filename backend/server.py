@@ -103,10 +103,11 @@ async def on_startup():
 
     # Nightly rescore loop (24h)
     import asyncio as _a
-    from nightly import nightly_loop, threat_intel_loop
+    from nightly import nightly_loop, threat_intel_loop, digest_dispatch_loop
     from qualys_sync import qualys_poll_loop
     _a.create_task(nightly_loop(db, interval_hours=24))
     # KEV / EPSS / active-attacks sync loop (12h) — was previously manual-trigger only
     _a.create_task(threat_intel_loop(db, interval_hours=12))
+    _a.create_task(digest_dispatch_loop(db, interval_hours=1))
     # Qualys live sync loop (60min) — skips when integration is not configured
     _a.create_task(qualys_poll_loop(db, interval_minutes=60))

@@ -126,12 +126,14 @@ export function AssetDetail() {
   const [history, setHistory] = useState({activity: [], observations: []});
   const [products, setProducts] = useState([]);
   const [savingProduct, setSavingProduct] = useState(false);
+  const [patchGroups, setPatchGroups] = useState([]);
 
   useEffect(() => {
     api.get(`/v1/assets/${id}`).then(r => setA(r.data));
     api.get(`/v1/assets/${id}/findings`).then(r => setFindings(r.data.items));
     api.get(`/v1/assets/${id}/history`).then(r => setHistory(r.data));
     api.get("/v1/products").then(r => setProducts(r.data.items));
+    api.get(`/v1/assets/${id}/patch-groups`).then(r => setPatchGroups(r.data.groups.filter(g => g.count > 1)));
   }, [id]);
 
   const changeProduct = async (e) => {
@@ -187,6 +189,29 @@ export function AssetDetail() {
           <div className="text-[11px] text-slate-500 mt-1">{a.ownership_rationale}</div>
         </div>
       </div>
+
+      {patchGroups.length > 0 && (
+        <div className="border border-emerald-500/30 bg-emerald-500/5 rounded-md overflow-hidden mb-4">
+          <div className="px-4 py-2 border-b border-emerald-500/20 text-[11px] uppercase tracking-wider font-mono text-emerald-300">
+            Patch Once, Fix Many — {patchGroups.length} group{patchGroups.length===1?"":"s"}
+          </div>
+          <div className="divide-y divide-emerald-500/10">
+            {patchGroups.map((g, i) => (
+              <div key={i} className="px-4 py-2.5 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[12.5px] text-slate-200 truncate">{g.title}</div>
+                  <div className="text-[10.5px] text-slate-500 mt-0.5 font-mono">{g.cves.slice(0,4).join(", ")}{g.cves.length>4?` +${g.cves.length-4} more`:""}</div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <SevBadge severity={g.top_severity}/>
+                  <Chip color="green">{g.count} findings, 1 patch</Chip>
+                  {!g.patch_available && <Chip color="amber">no patch yet</Chip>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden mb-4">
         <div className="px-4 py-2 border-b border-[#30363D]"><h3 className="text-[11px] uppercase tracking-wider font-mono text-slate-400">Vulnerabilities on this Host ({findings.length})</h3></div>

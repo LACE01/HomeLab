@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
-import { Trash, Plus, Lightning, Gear } from "@phosphor-icons/react";
+import { Trash, Plus, Lightning, Gear, CheckCircle, Clock } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const FIELDS = ["tags", "environment", "platform", "criticality", "exposure", "department", "cve", "operating_system", "hostname"];
@@ -135,17 +135,49 @@ export function AssignmentRules() {
 export function OwnershipMappings() {
   const [items, setItems] = useState([]);
   const [q, setQ] = useState("");
-  const load = () => api.get("/v1/ownership-mappings", { params: q ? { q } : {} }).then(r => setItems(r.data.items));
-  useEffect(() => { load(); }, []);
+  const [filter, setFilter] = useState("all"); // all | stale | low_confidence
+  const [staleDays, setStaleDays] = useState(90);
+
+  const load = () => api.get("/v1/ownership-mappings", { params: {
+    ...(q ? { q } : {}),
+    ...(filter === "stale" ? { stale_only: true } : {}),
+    ...(filter === "low_confidence" ? { low_confidence_only: true } : {}),
+  } }).then(r => { setItems(r.data.items); setStaleDays(r.data.stale_threshold_days); });
+  useEffect(() => { load(); }, [filter]); // eslint-disable-line
+
+  const confirmOwnership = async (a) => {
+    await api.post(`/v1/assets/${a.id}/confirm-ownership`);
+    toast.success(`Ownership confirmed for ${a.hostname}.`);
+    load();
+  };
+
+  const staleCount = items.filter(a => a.stale).length;
+  const lowConfCount = items.filter(a => (a.ownership_confidence||0) < 0.7).length;
+
   return (
-    <Layout title="Ownership Mappings" subtitle="Assets, their inferred owner team, and confidence">
+    <Layout title="Ownership Mappings" subtitle="Assets, their inferred owner team, confidence, and how fresh that assignment is">
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-2 mb-3 flex gap-2">
         <input placeholder="Search hostname or team…" data-testid="owner-search" value={q} onChange={(e)=>setQ(e.target.value)} onKeyDown={(e)=>e.key==='Enter'&&load()} className="flex-1 h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px]"/>
         <button onClick={load} className="h-8 px-3 text-[12px] bg-blue-500/20 border border-blue-500/40 text-blue-300 rounded">Search</button>
       </div>
+
+      <div className="flex gap-1.5 mb-3">
+        <button onClick={()=>setFilter("all")} className={`h-7 px-2.5 rounded-full text-[11px] border ${filter==="all"?"bg-slate-700/40 border-slate-500/50 text-slate-200":"border-[#30363D] text-slate-500"}`}>All</button>
+        <button onClick={()=>setFilter("stale")} className={`h-7 px-2.5 rounded-full text-[11px] border inline-flex items-center gap-1 ${filter==="stale"?"bg-amber-500/15 border-amber-500/50 text-amber-300":"border-[#30363D] text-slate-500"}`}>
+          <Clock size={12}/> Stale (not reconfirmed in {staleDays}d)
+        </button>
+        <button onClick={()=>setFilter("low_confidence")} className={`h-7 px-2.5 rounded-full text-[11px] border ${filter==="low_confidence"?"bg-red-500/15 border-red-500/50 text-red-300":"border-[#30363D] text-slate-500"}`}>Low confidence (&lt;70%)</button>
+      </div>
+
+      {filter === "all" && (staleCount > 0 || lowConfCount > 0) && (
+        <div className="border border-amber-500/30 bg-amber-500/5 rounded-md px-3 py-2 mb-3 text-[11.5px] text-amber-200">
+          {staleCount} asset{staleCount===1?"":"s"} haven't had ownership reconfirmed in {staleDays}+ days, {lowConfCount} are below 70% confidence. Filter above to review them.
+        </div>
+      )}
+
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">
         <table className="dense w-full">
-          <thead><tr><th className="text-left">Hostname</th><th>Env</th><th>Platform</th><th>Crit</th><th>Owner Team</th><th>Confidence</th><th className="text-left">Rationale</th></tr></thead>
+          <thead><tr><th className="text-left">Hostname</th><th>Env</th><th>Platform</th><th>Crit</th><th>Owner Team</th><th>Confidence</th><th className="text-left">Rationale</th><th></th></tr></thead>
           <tbody>
             {items.map(a => (
               <tr key={a.id} className="border-t border-[#30363D]">
@@ -157,10 +189,18 @@ export function OwnershipMappings() {
                 <td><div className="flex items-center gap-1.5">
                   <div className="h-1 w-12 bg-slate-800 rounded overflow-hidden"><div className={`h-full ${a.ownership_confidence>=0.8?"bg-emerald-500":a.ownership_confidence>=0.6?"bg-amber-500":"bg-red-500"}`} style={{width:`${(a.ownership_confidence||0)*100}%`}}/></div>
                   <span className="font-mono text-[10.5px]">{((a.ownership_confidence||0)*100).toFixed(0)}%</span>
+                  {a.stale && <Chip color="amber">stale</Chip>}
                 </div></td>
-                <td className="text-slate-500 text-[11px] max-w-[400px]">{a.ownership_rationale}</td>
+                <td className="text-slate-500 text-[11px] max-w-[360px]">{a.ownership_rationale}</td>
+                <td>
+                  <button onClick={()=>confirmOwnership(a)} title="Confirm this ownership is correct"
+                    className="h-7 px-2 text-[11px] border border-[#30363D] hover:border-emerald-500/50 hover:text-emerald-300 rounded inline-flex items-center gap-1 text-slate-400">
+                    <CheckCircle size={12}/> Confirm
+                  </button>
+                </td>
               </tr>
             ))}
+            {items.length === 0 && <tr><td colSpan="8" className="text-center text-slate-500 py-6">Nothing matches this filter.</td></tr>}
           </tbody>
         </table>
       </div>

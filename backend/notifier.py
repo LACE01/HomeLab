@@ -68,6 +68,13 @@ TEMPLATES = {
             "Decide: renew, accept the new risk, or remediate. Open: {url}"
         ),
     },
+    "digest_list": {
+        "subject": "[VulnOps] {cadence} digest — {rule_name} ({count})",
+        "body": (
+            "Rolled-up notifications for rule \"{rule_name}\" ({cadence}, {count} item(s) since the last digest):\n\n"
+            "{items_text}"
+        ),
+    },
 }
 
 
@@ -78,6 +85,7 @@ def render(template_id: str, ctx: dict) -> dict:
         "severity", "title", "cve", "asset", "owner_team", "risk_score", "due_at",
         "url", "days_left", "days_overdue", "date", "open_critical", "new_today",
         "closed_today", "overdue", "kev", "approver", "expires_at",
+        "cadence", "rule_name", "count", "items_text",
     ]}
     return {"subject": tpl["subject"].format(**safe), "body": tpl["body"].format(**safe)}
 
@@ -165,8 +173,10 @@ async def deliver(channel: dict, template_id: str, ctx: dict, db) -> dict:
 
 
 async def dispatch(trigger: str, ctx: dict, db) -> int:
-    """Find all enabled rules matching `trigger` and ctx, then deliver via each rule's channels.
-    Returns count of deliveries attempted."""
+    """Find all enabled rules matching `trigger` and ctx. Immediate-frequency rules deliver
+    right away; daily/weekly rules queue the event instead and get rolled up into a single
+    digest message by run_digest_dispatch(). Returns count of immediate deliveries attempted
+    (queued items aren't counted here since nothing was sent yet)."""
     rules = await db.notification_rules.find({"trigger": trigger, "active": True}, {"_id": 0}).to_list(200)
     sent = 0
     for rule in rules:
@@ -179,6 +189,15 @@ async def dispatch(trigger: str, ctx: dict, db) -> int:
         if team and ctx.get("owner_team") != team:
             continue
         template_id = rule.get("template_id") or "new_assignment"
+        frequency = rule.get("frequency") or "immediate"
+        if frequency != "immediate":
+            msg = render(template_id, ctx)
+            await db.notification_queue.insert_one({
+                "id": str(uuid.uuid4()), "rule_id": rule["id"], "trigger": trigger,
+                "subject": msg["subject"], "context": ctx,
+                "queued_at": datetime.now(timezone.utc).isoformat(),
+            })
+            continue
         for ch_id in rule.get("channel_ids", []):
             channel = await db.notification_channels.find_one({"id": ch_id, "enabled": {"$ne": False}}, {"_id": 0})
             if not channel:
@@ -189,3 +208,54 @@ async def dispatch(trigger: str, ctx: dict, db) -> int:
             except Exception as e:
                 logger.exception(f"Auto-dispatch failed for rule {rule.get('id')} channel {ch_id}: {e}")
     return sent
+
+
+FREQUENCY_HOURS = {"hourly": 1, "daily": 24, "weekly": 24 * 7}
+
+
+async def run_digest_dispatch(db) -> dict:
+    """Roll up queued events for daily/weekly rules into one digest message per rule per
+    channel, once the cadence window has elapsed. Called on a regular loop (hourly is
+    plenty precise for daily/weekly windows) rather than tied to any single trigger."""
+    rules = await db.notification_rules.find(
+        {"active": True, "frequency": {"$in": list(FREQUENCY_HOURS.keys())}}, {"_id": 0}
+    ).to_list(200)
+    now = datetime.now(timezone.utc)
+    digests_sent = 0
+    for rule in rules:
+        window_hours = FREQUENCY_HOURS.get(rule.get("frequency"), 24)
+        last_sent = rule.get("last_digest_sent_at")
+        due = True
+        if last_sent:
+            try:
+                last_dt = datetime.fromisoformat(last_sent.replace("Z", "+00:00"))
+                due = (now - last_dt).total_seconds() >= window_hours * 3600
+            except Exception:
+                due = True
+        if not due:
+            continue
+
+        items = await db.notification_queue.find({"rule_id": rule["id"]}, {"_id": 0}).to_list(500)
+        if items:
+            items_text = "\n".join(f"• {i['subject']}" for i in items[:50])
+            if len(items) > 50:
+                items_text += f"\n… and {len(items) - 50} more."
+            digest_ctx = {
+                "cadence": rule.get("frequency"), "rule_name": rule.get("name"),
+                "count": len(items), "items_text": items_text,
+            }
+            for ch_id in rule.get("channel_ids", []):
+                channel = await db.notification_channels.find_one({"id": ch_id, "enabled": {"$ne": False}}, {"_id": 0})
+                if not channel:
+                    continue
+                try:
+                    await deliver(channel, "digest_list", digest_ctx, db)
+                    digests_sent += 1
+                except Exception as e:
+                    logger.exception(f"Digest dispatch failed for rule {rule.get('id')} channel {ch_id}: {e}")
+            await db.notification_queue.delete_many({"rule_id": rule["id"]})
+        # Advance the window regardless of whether there was anything to send, so an
+        # empty period doesn't cause it to fire again next hour.
+        await db.notification_rules.update_one(
+            {"id": rule["id"]}, {"$set": {"last_digest_sent_at": now.isoformat()}})
+    return {"rules_checked": len(rules), "digests_sent": digests_sent}

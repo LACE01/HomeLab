@@ -54,6 +54,13 @@ export default function Notifications() {
     catch (e) { toast.error(e.response?.data?.detail || "Failed"); }
   };
   const delRule = async (id) => { if (window.confirm("Delete rule?")) { await api.delete(`/v1/admin/notification-rules/${id}`); await load(); } };
+  const sendDigestNow = async (r) => {
+    try {
+      const res = await api.post(`/v1/admin/notification-rules/${r.id}/send-digest-now`);
+      toast.success(`Digest sweep ran — ${res.data.digests_sent} sent.`);
+      await load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed"); }
+  };
 
   const Tab = ({ id, label, testid }) => (
     <button data-testid={testid} onClick={()=>setTab(id)}
@@ -142,7 +149,7 @@ export default function Notifications() {
           </div>
           <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">
             <table className="dense w-full">
-              <thead><tr><th className="text-left">Name</th><th>Trigger</th><th>Template</th><th>Channels</th><th>Severity</th><th>Freq</th><th>Active</th><th></th></tr></thead>
+              <thead><tr><th className="text-left">Name</th><th>Trigger</th><th>Template</th><th>Channels</th><th>Severity</th><th>Cadence</th><th>Active</th><th></th></tr></thead>
               <tbody>
                 {rules.map(r => (
                   <tr key={r.id} className="border-t border-[#30363D]">
@@ -151,7 +158,14 @@ export default function Notifications() {
                     <td className="text-slate-400 text-[11px]">{r.template_id}</td>
                     <td className="font-mono text-[10.5px]">{r.channel_ids?.length}</td>
                     <td className="text-[10.5px]">{(r.severity_in||[]).join(", ") || "any"}</td>
-                    <td className="text-[11px]">{r.frequency}</td>
+                    <td className="text-[11px]">
+                      {r.frequency === "immediate" ? <Chip color="slate">immediate</Chip> : (
+                        <div className="flex items-center gap-1.5">
+                          <Chip color="blue">{r.frequency} · {r.queued_count ?? 0} queued</Chip>
+                          <button onClick={()=>sendDigestNow(r)} title="Send digest now" className="text-blue-300 hover:text-blue-200"><PaperPlaneTilt size={12}/></button>
+                        </div>
+                      )}
+                    </td>
                     <td><Chip color={r.active?"green":"slate"}>{r.active?"on":"off"}</Chip></td>
                     <td><button onClick={()=>delRule(r.id)} className="text-red-400 hover:text-red-300"><Trash size={14}/></button></td>
                   </tr>

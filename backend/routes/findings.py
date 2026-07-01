@@ -1,7 +1,7 @@
 """Findings routes: list, stats, detail, KRI, comments, status updates, bulk ops,
 prioritization preview, attack-paths, CWE prevalence, threat-intel, findings-groups."""
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -30,6 +30,8 @@ async def list_findings(
     cve: Optional[str] = None,
     cwe: Optional[str] = None,
     view: Optional[str] = None,
+    platform: Optional[str] = None,
+    min_risk_score: Optional[int] = None,
     sort: str = "risk_score",
     order: str = "desc",
     limit: int = 100,
@@ -58,6 +60,10 @@ async def list_findings(
         flt["cve"] = cve
     if cwe:
         flt["cwe"] = cwe
+    if platform:
+        flt["asset_os"] = {"$regex": platform, "$options": "i"}
+    if min_risk_score is not None:
+        flt["risk_score"] = {"$gte": min_risk_score}
     if q:
         flt["$or"] = [
             {"title": {"$regex": q, "$options": "i"}},
@@ -310,6 +316,24 @@ async def threat_intel_for_cve(cve: str, user: dict = Depends(get_current_user))
 
 
 # --------------------------- ATTACK PATH ---------------------------
+@router.get("/v1/findings/nl-search")
+async def nl_search(q: str, user: dict = Depends(get_current_user)):
+    """Free-text search that understands common phrasing (severity, KEV, platform, owner
+    team, CVE/CWE, risk thresholds, overdue/unassigned/internet-facing) without calling
+    out to an LLM -- see nl_query.py for why."""
+    from nl_query import parse_nl_query
+    teams = [t for t in await db.assets.distinct("owner_team") if t and t != "Unassigned"]
+    parsed = parse_nl_query(q, teams)
+    f = parsed["filters"]
+    result = await list_findings(
+        user=user, q=f.get("q"), severity=f.get("severity"), status=f.get("status"),
+        kev=f.get("kev"), internet_facing=f.get("internet_facing"), owner_team=f.get("owner_team"),
+        cve=f.get("cve"), cwe=f.get("cwe"), view=f.get("view"), platform=f.get("platform"),
+        min_risk_score=f.get("min_risk_score"), limit=100,
+    )
+    return {**result, "interpreted": parsed["interpreted"], "query": q}
+
+
 @router.get("/v1/attack-paths/cves")
 async def attack_path_cves(user: dict = Depends(get_current_user)):
     pipeline = [
@@ -440,6 +464,9 @@ class StatusUpdate(BaseModel):
     note: Optional[str] = None
 
 
+VERIFICATION_WINDOW_DAYS = 3
+
+
 @router.patch("/v1/findings/{finding_id}/status")
 async def update_status(finding_id: str, body: StatusUpdate, user: dict = Depends(get_current_user)):
     valid = ["New", "Needs triage", "Valid", "False positive", "Duplicate", "Mitigated",
@@ -447,10 +474,26 @@ async def update_status(finding_id: str, body: StatusUpdate, user: dict = Depend
              "Reopened", "Out of scope", "Closed administratively"]
     if body.status not in valid:
         raise HTTPException(400, f"Invalid status. Allowed: {valid}")
-    res = await db.findings.update_one(
-        {"id": finding_id},
-        {"$set": {"status": body.status, "last_changed_at": now_iso()}},
-    )
+
+    existing = await db.findings.find_one({"id": finding_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Finding not found")
+
+    update = {"status": body.status, "last_changed_at": now_iso()}
+    # Verification loop bookkeeping -- see routes/findings.py:verify_finding and
+    # nightly.run_verification_sweep for how "pending" gets resolved.
+    if body.status == "Fixed pending validation":
+        due = (datetime.now(timezone.utc) + timedelta(days=VERIFICATION_WINDOW_DAYS)).isoformat()
+        update.update({"verification_status": "pending", "verification_due_at": due,
+                       "fixed_marked_at": now_iso(), "verification_note": None})
+    elif body.status == "Fixed validated":
+        update.update({"verification_status": "passed",
+                       "verification_note": f"Manually verified by {user['email']}."})
+    elif body.status == "Reopened" and existing.get("verification_status") == "pending":
+        update.update({"verification_status": "failed",
+                       "verification_note": "Regressed during the verification window."})
+
+    res = await db.findings.update_one({"id": finding_id}, {"$set": update})
     if res.matched_count == 0:
         raise HTTPException(404, "Finding not found")
     await db.activity_log.insert_one({
@@ -464,6 +507,69 @@ async def update_status(finding_id: str, body: StatusUpdate, user: dict = Depend
         if f:
             await dispatch("finding_reopened", finding_ctx(f), db)
     return {"ok": True}
+
+
+@router.get("/v1/findings/{finding_id}/patch-group")
+async def patch_group(finding_id: str, user: dict = Depends(get_current_user)):
+    """Findings sharing the same title on the same asset are, in practice, almost always
+    fixed by the same underlying vendor update (e.g. a monthly cumulative security
+    bulletin covering many CVEs at once) -- so applying one patch clears out the whole
+    group instead of remediating CVE-by-CVE."""
+    f = await db.findings.find_one({"id": finding_id}, {"_id": 0})
+    if not f:
+        raise HTTPException(404, "Finding not found")
+    siblings = []
+    if f.get("asset_id") and f.get("title"):
+        siblings = await db.findings.find({
+            "asset_id": f["asset_id"], "title": f["title"], "id": {"$ne": finding_id},
+            "status": {"$in": ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]},
+        }, {"_id": 0, "id": 1, "cve": 1, "severity": 1, "title": 1}).to_list(100)
+    return {"siblings": siblings, "patch_available": f.get("patch_available"), "shared_title": f.get("title")}
+
+
+@router.get("/v1/assets/{asset_id}/patch-groups")
+async def asset_patch_groups(asset_id: str, user: dict = Depends(get_current_user)):
+    """All open findings on this asset, grouped by shared patch title -- 'fix this one
+    update, clear N findings' view for a single host."""
+    pipeline = [
+        {"$match": {"asset_id": asset_id,
+                    "status": {"$in": ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]}}},
+        {"$group": {"_id": "$title", "count": {"$sum": 1},
+                    "cves": {"$addToSet": "$cve"}, "max_severity_rank": {"$max": {
+                        "$switch": {"branches": [
+                            {"case": {"$eq": ["$severity", "Critical"]}, "then": 5},
+                            {"case": {"$eq": ["$severity", "High"]}, "then": 4},
+                            {"case": {"$eq": ["$severity", "Medium"]}, "then": 3},
+                            {"case": {"$eq": ["$severity", "Low"]}, "then": 2},
+                        ], "default": 1}}},
+                    "patch_available": {"$max": {"$cond": ["$patch_available", 1, 0]}},
+                    "finding_ids": {"$push": "$id"}}},
+        {"$sort": {"count": -1}},
+    ]
+    groups = [g async for g in db.findings.aggregate(pipeline)]
+    sev_labels = {5: "Critical", 4: "High", 3: "Medium", 2: "Low", 1: "Info"}
+    return {"groups": [{
+        "title": g["_id"] or "(untitled)", "count": g["count"],
+        "cves": [c for c in g["cves"] if c],
+        "top_severity": sev_labels.get(g["max_severity_rank"], "Info"),
+        "patch_available": bool(g["patch_available"]),
+        "finding_ids": g["finding_ids"],
+    } for g in groups]}
+
+
+@router.post("/v1/findings/{finding_id}/verify")
+async def verify_finding(finding_id: str, user: dict = Depends(get_current_user)):
+    """Manual 'Verify now' -- same check the nightly sweep runs, on demand for one finding.
+    Promotes to Fixed validated only if a successful import from the finding's own source
+    has run since it was marked fixed (real confirmation the host was rescanned), otherwise
+    reports what it's still waiting on."""
+    from nightly import check_single_verification
+    f = await db.findings.find_one({"id": finding_id}, {"_id": 0})
+    if not f:
+        raise HTTPException(404, "Finding not found")
+    if f.get("status") != "Fixed pending validation":
+        raise HTTPException(400, "Finding is not awaiting verification")
+    return await check_single_verification(db, f)
 
 
 class BulkStatus(BaseModel):
@@ -510,6 +616,7 @@ async def bulk_owner(body: OwnerTeamBody, user: dict = Depends(require_role("adm
         {"$set": {
             "owner_team": body.owner_team,
             "ownership_confidence": 1.0,
+            "ownership_confirmed_at": now_iso(),
             "ownership_rationale": f"Manually assigned to {body.owner_team} by {user['email']}",
             "last_changed_at": now_iso(),
         }},
