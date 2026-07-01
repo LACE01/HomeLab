@@ -57,12 +57,13 @@ function buildLayout(nodes, edges) {
     const style = NODE_STYLES[n.role] || NODE_STYLES.pivot;
     const Icon = platformIcon(n);
     const isCrownJewel = n.criticality === "crown_jewel";
+    const speculative = !!n.speculative;
     return {
       id: n.id,
       position: { x: 80 + layer * 280, y },
       data: {
         label: (
-          <div style={{ padding: "6px 8px", minWidth: 150, color: style.color, position: "relative" }}>
+          <div style={{ padding: "6px 8px", minWidth: 170, color: style.color, position: "relative", opacity: speculative ? 0.62 : 1 }}>
             {isCrownJewel && (
               <div title="Crown jewel" style={{
                 position: "absolute", top: -10, right: -8, background: "#7f1d1d",
@@ -70,6 +71,15 @@ function buildLayout(nodes, edges) {
                 display: "flex", boxShadow: "0 0 6px rgba(220,38,38,0.6)",
               }}>
                 <Crown size={9} weight="fill" color="#fca5a5" />
+              </div>
+            )}
+            {n.findings_count > 0 && (
+              <div title={`${n.findings_count} open finding(s) on this host`} style={{
+                position: "absolute", top: -9, left: -8, background: "#1f2937",
+                border: "1px solid #6b7280", borderRadius: 999, padding: "1px 5px",
+                fontSize: 8, fontFamily: "JetBrains Mono", color: "#e2e8f0",
+              }}>
+                {n.findings_count}
               </div>
             )}
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -80,39 +90,43 @@ function buildLayout(nodes, edges) {
               {n.platform || n.role} {n.criticality ? `· ${n.criticality}` : ""}
             </div>
             <div style={{ fontSize: 9, opacity: 0.6, marginTop: 1, paddingLeft: 20 }}>{n.owner_team || ""}</div>
+            {speculative && (
+              <div style={{ fontSize: 8, opacity: 0.8, marginTop: 2, paddingLeft: 20, fontStyle: "italic" }}>possible pivot — unconfirmed</div>
+            )}
           </div>
         ),
       },
       style: {
         background: style.background,
-        border: style.border,
+        border: speculative ? `1.5px dashed ${style.border.split(" ").pop()}` : style.border,
         borderRadius: 8,
         padding: 0,
-        boxShadow: style.glow ? `0 0 10px ${style.glow}66` : "none",
+        boxShadow: style.glow && !speculative ? `0 0 10px ${style.glow}66` : "none",
       },
-      className: style.glow ? "attack-node-pulse" : undefined,
+      className: style.glow && !speculative ? "attack-node-pulse" : undefined,
     };
   });
   const rfEdges = edges.map(e => {
     const cat = CATEGORY_STYLE[e.category] || DEFAULT_CATEGORY;
     const CatIcon = cat.icon;
+    const color = e.speculative ? "#6b7280" : cat.color;
     return {
       id: e.id, source: e.source, target: e.target,
       label: (
-        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          <CatIcon size={10} weight="bold" color={cat.color} />
+        <div style={{ display: "flex", alignItems: "center", gap: 4, opacity: e.speculative ? 0.75 : 1 }}>
+          <CatIcon size={10} weight="bold" color={color} />
           <span>{e.label}</span>
           {e.technique && <span style={{ opacity: 0.55, fontSize: 9 }}>· {e.technique}</span>}
         </div>
       ),
-      labelStyle: { fill: cat.color, fontSize: 10, fontWeight: 600 },
+      labelStyle: { fill: color, fontSize: 10, fontWeight: 600 },
       labelBgStyle: { fill: "#0D1117", fillOpacity: 0.92 },
       style: {
-        stroke: cat.color, strokeWidth: 2,
-        strokeDasharray: e.category === "exfiltration" ? "2 3" : e.category === "initial_access" ? "5 4" : "0",
+        stroke: color, strokeWidth: e.speculative ? 1.5 : 2,
+        strokeDasharray: e.speculative ? "3 3" : (e.category === "exfiltration" ? "2 3" : e.category === "initial_access" ? "5 4" : "0"),
       },
-      animated: e.category !== "privilege_escalation",
-      markerEnd: { type: MarkerType.ArrowClosed, color: cat.color },
+      animated: !e.speculative && e.category !== "privilege_escalation",
+      markerEnd: { type: MarkerType.ArrowClosed, color },
     };
   });
   return { rfNodes, rfEdges };
@@ -153,6 +167,28 @@ export default function AttackPaths() {
         }
         .attack-node-pulse { animation: attackNodePulse 2.2s ease-in-out infinite; }
       `}</style>
+
+      {cves.length > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+          <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-3">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-mono">CVEs w/ Open Findings</div>
+            <div className="text-[20px] font-semibold font-mono text-blue-300 mt-1">{cves.length}</div>
+          </div>
+          <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-3">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-mono">Exploited (KEV)</div>
+            <div className="text-[20px] font-semibold font-mono text-red-300 mt-1">{cves.filter(c=>c.kev).length}</div>
+          </div>
+          <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-3">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-mono">Multi-Host Chains</div>
+            <div className="text-[20px] font-semibold font-mono text-orange-300 mt-1">{cves.filter(c=>c.affected_assets > 1).length}</div>
+          </div>
+          <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-3">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-mono">Widest Blast Radius</div>
+            <div className="text-[20px] font-semibold font-mono text-amber-300 mt-1">{Math.max(...cves.map(c=>c.affected_assets))} hosts</div>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
         {/* Left: CVE picker */}
         <div className="lg:col-span-1 border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">
@@ -196,17 +232,25 @@ export default function AttackPaths() {
             </div>
           )}
 
-          <div className="border border-[#30363D] bg-[#0D1117] rounded-md" style={{ height: 480 }}>
+          <div className="border border-[#30363D] bg-[#0D1117] rounded-md" style={{ height: Math.min(640, Math.max(320, (rfNodes.length ? Math.max(...rfNodes.map(n=>n.position.y)) : 0) + 160)) }}>
             {loading && <div className="flex items-center justify-center h-full text-slate-500">Computing path…</div>}
             {!loading && rfNodes.length > 0 && (
-              <ReactFlow nodes={rfNodes} edges={rfEdges} fitView fitViewOptions={{ padding: 0.2 }}
-                proOptions={{ hideAttribution: true }} nodesDraggable={true}>
+              <ReactFlow nodes={rfNodes} edges={rfEdges} fitView fitViewOptions={{ padding: 0.25, maxZoom: 1.1 }}
+                proOptions={{ hideAttribution: true }} nodesDraggable={true} minZoom={0.4}>
                 <Background color="#30363D" gap={20} />
                 <Controls className="!bg-[#0D1117] !border-[#30363D]"/>
                 <MiniMap className="!bg-[#0D1117]" nodeColor={(n)=>n.style?.background || "#30363D"} maskColor="rgba(13,17,23,0.7)" />
               </ReactFlow>
             )}
+            {!loading && rfNodes.length === 0 && (
+              <div className="flex items-center justify-center h-full text-slate-500 text-[12.5px]">Select a CVE on the left to render its attack path.</div>
+            )}
           </div>
+          {graph?.edges?.some(e => e.speculative) && (
+            <div className="text-[10.5px] text-slate-600 px-1 -mt-1.5">
+              Dashed grey hops are unconfirmed — same network segment as the source, not a verified compromise.
+            </div>
+          )}
 
           {graph?.edges?.length > 0 && (
             <div className="border border-[#30363D] bg-[#0D1117] rounded-md px-3 py-2 flex items-center gap-4 flex-wrap">

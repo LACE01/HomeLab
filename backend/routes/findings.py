@@ -324,7 +324,10 @@ async def attack_path_cves(user: dict = Depends(get_current_user)):
         {"$project": {"_id": 0, "cve": "$_id", "title": 1, "severity": 1, "kev": 1,
                       "max_risk": 1, "affected_assets": {"$size": "$asset_count"}}},
         {"$match": {"affected_assets": {"$gte": 1}}},
-        {"$sort": {"max_risk": -1}},
+        # Multi-asset CVEs make for a much more legible attack-path story (an actual
+        # lateral-movement chain instead of a single floating node), so surface those
+        # first; risk is the tiebreaker within that.
+        {"$sort": {"affected_assets": -1, "max_risk": -1}},
         {"$limit": 100},
     ]
     items = [r async for r in db.findings.aggregate(pipeline)]

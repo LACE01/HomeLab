@@ -93,7 +93,7 @@ async def dashboard_executive(
     snapshots = await db.score_snapshots.find(snap_q, {"_id": 0}).sort("date", 1).to_list(400)
     if not snapshots:
         snapshots = await db.score_snapshots.find({}, {"_id": 0}).sort("date", 1).to_list(60)
-    current = snapshots[-1] if snapshots else {"org_score": 0, "sla_compliance": 0, "mttr_days": 0}
+    current = snapshots[-1] if snapshots else {"org_score": None, "no_data": True, "sla_compliance": None, "mttr_days": None}
 
     products = await db.products.find({}, {"_id": 0}).to_list(50)
     for p in products:
@@ -107,27 +107,41 @@ async def dashboard_executive(
         env = f.get("asset_environment", "unknown")
         by_env[env] = by_env.get(env, 0) + 1
 
-    score = current["org_score"]
-    if score >= 85:
+    score = current.get("org_score")
+    no_data = bool(current.get("no_data")) or score is None
+    if no_data:
+        narrative = "No findings tracked yet. Sync an integration or import scan data to start scoring."
+    elif score >= 85:
         narrative = "Strong security posture. Risk well-managed with low SLA breach rate."
     elif score >= 70:
         narrative = "Moderate security posture. A few high-risk findings need attention to push the score higher."
     else:
         narrative = "Elevated risk. Critical findings on internet-facing assets are pulling the score down."
 
+    score_factors = []
+    if not no_data:
+        open_q = {"status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]}}
+        kev_open = await db.findings.count_documents({**open_q, "kev_flag": True})
+        internet_crit = await db.findings.count_documents({**open_q, "internet_facing": True, "severity": "Critical"})
+        total_assets = await db.assets.count_documents({})
+        assets_with_findings = len(await db.findings.distinct("asset_id", open_q)) if total_assets else 0
+        coverage_pct = round((assets_with_findings / total_assets) * 100) if total_assets else 0
+        sla = current.get("sla_compliance")
+        score_factors = [
+            {"factor": "Open KEV findings", "impact": f"-{kev_open}" if kev_open else "0", "reason": f"{kev_open} actively exploited (CISA KEV) finding(s) still open"},
+            {"factor": "Internet-facing critical", "impact": f"-{internet_crit}" if internet_crit else "0", "reason": f"{internet_crit} open critical finding(s) on internet-exposed assets"},
+            {"factor": "SLA adherence", "impact": (f"{sla}%" if sla is not None else "No data"), "reason": (f"{sla}% of the last 90 days' fixes landed on time" if sla is not None else "Nothing resolved in the last 90 days yet")},
+            {"factor": "Asset coverage", "impact": f"{coverage_pct}%", "reason": f"{assets_with_findings} of {total_assets} inventoried assets have at least one tracked finding"},
+        ]
+
     return {
-        "current_score": score, "narrative": narrative,
+        "current_score": score, "narrative": narrative, "no_data": no_data,
         "sla_compliance": current.get("sla_compliance"),
         "mttr_days": current.get("mttr_days"),
         "snapshots": snapshots,
         "by_product": products,
         "by_environment": [{"environment": k, "count": v} for k, v in by_env.items()],
-        "score_factors": [
-            {"factor": "Open KEV findings", "impact": "-8", "reason": f"{await db.findings.count_documents({'kev_flag': True, 'status': {'$in': ['New', 'Needs triage', 'Valid', 'Reopened']}})} active"},
-            {"factor": "Internet-facing critical", "impact": "-6", "reason": "Exposed services with critical CVEs"},
-            {"factor": "SLA adherence", "impact": "+4", "reason": f"{current.get('sla_compliance', 0)}% on-time remediation"},
-            {"factor": "Scan coverage", "impact": "+3", "reason": "94% of inventory under active scanning"},
-        ],
+        "score_factors": score_factors,
         "range": range, "range_days": days,
     }
 

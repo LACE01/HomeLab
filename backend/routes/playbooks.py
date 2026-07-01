@@ -14,9 +14,14 @@ from routes.common import now_iso, _clean
 router = APIRouter()
 
 
+# Visual grouping for the Playbooks board -- each maps to an icon/color on the frontend.
+PLAYBOOK_CATEGORIES = ["patching", "appsec", "identity", "cloud", "crypto", "network", "other"]
+
+
 class PlaybookBody(BaseModel):
     title: str
     description: Optional[str] = ""
+    category: Optional[str] = "other"  # one of PLAYBOOK_CATEGORIES, drives icon/color
     cve: Optional[str] = None          # exact-match, takes priority over cwe
     cwe: Optional[str] = None          # fallback match for the whole weakness class
     steps: List[str] = []
@@ -25,13 +30,15 @@ class PlaybookBody(BaseModel):
 
 
 @router.get("/v1/playbooks")
-async def list_playbooks(user: dict = Depends(get_current_user), q: Optional[str] = None):
+async def list_playbooks(user: dict = Depends(get_current_user), q: Optional[str] = None, category: Optional[str] = None):
     flt = {}
     if q:
         flt["$or"] = [{"title": {"$regex": q, "$options": "i"}}, {"cve": {"$regex": q, "$options": "i"}},
                       {"cwe": {"$regex": q, "$options": "i"}}]
+    if category:
+        flt["category"] = category
     items = await db.playbooks.find(flt, {"_id": 0}).sort("title", 1).to_list(500)
-    return {"items": items}
+    return {"items": items, "categories": PLAYBOOK_CATEGORIES}
 
 
 @router.get("/v1/playbooks/{playbook_id}")

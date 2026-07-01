@@ -252,8 +252,9 @@ export default function FindingDetail() {
                 <div>
                   <div className="flex items-center gap-2 mb-1">
                     <BookOpen size={15} className="text-blue-300"/>
-                    <div className="text-[13px] text-slate-100 font-medium">{playbook.title}</div>
+                    <Link to={`/admin/playbooks/${playbook.id}`} className="text-[13px] text-slate-100 font-medium hover:underline hover:text-blue-200">{playbook.title}</Link>
                     <Chip color="blue">{playbookBasis === "cve" ? `Exact CVE match` : `CWE match: ${playbook.cwe}`}</Chip>
+                    <Link to={`/admin/playbooks/${playbook.id}`} className="ml-auto text-[10.5px] text-blue-300 hover:underline shrink-0">Open interactive flow →</Link>
                   </div>
                   {playbook.description && <div className="text-[11.5px] text-slate-500 mb-3">{playbook.description}</div>}
 

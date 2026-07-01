@@ -4,6 +4,8 @@ import csv
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
+from pdf_charts import severity_pie_chart, trend_line_chart, bar_chart, multi_series_bar_chart
+
 
 REPORT_CATALOG = [
     {"id": "open_by_severity", "name": "Open Findings by Severity",
@@ -83,6 +85,9 @@ def _pdf_response(title: str, sections: list, filename: str):
             elements.append(Spacer(1, 6))
         elif sec["type"] == "heading":
             elements.append(Paragraph(f"<b>{sec['value']}</b>", styles["Heading3"]))
+        elif sec["type"] == "drawing":
+            elements.append(sec["value"])
+            elements.append(Spacer(1, 10))
         elif sec["type"] == "table":
             data = [sec["headers"]] + sec["rows"]
             t = Table(data, hAlign="LEFT")
@@ -112,7 +117,8 @@ async def run_prebuilt(db, report_id: str, fmt: str):
         if fmt == "csv":
             return _csv_response([{"severity": r[0], "count": r[1]} for r in rows], ["severity", "count"], "open-by-severity")
         return _pdf_response("Open Findings by Severity",
-                             [{"type": "table", "headers": ["Severity", "Open Count"], "rows": rows}],
+                             [{"type": "drawing", "value": severity_pie_chart({r[0]: r[1] for r in rows})},
+                              {"type": "table", "headers": ["Severity", "Open Count"], "rows": rows}],
                              "open-by-severity")
 
     if report_id == "top_risk_assets":
@@ -149,8 +155,12 @@ async def run_prebuilt(db, report_id: str, fmt: str):
         if fmt == "csv":
             return _csv_response(
                 [dict(zip(["bucket"] + severities, r)) for r in rows], ["bucket"] + severities, "aging-report")
+        chart_series = [{"label": s, "color": {"Critical": "#ef4444", "High": "#f97316", "Medium": "#f59e0b",
+                                                "Low": "#3b82f6", "Info": "#64748b"}[s],
+                         "values": [row[1 + severities.index(s)] for row in rows]} for s in severities]
         return _pdf_response("Aging Report by Severity",
-                             [{"type": "table", "headers": ["Age (days)"] + severities, "rows": rows}],
+                             [{"type": "drawing", "value": multi_series_bar_chart(list(buckets.keys()), chart_series)},
+                              {"type": "table", "headers": ["Age (days)"] + severities, "rows": rows}],
                              "aging-report")
 
     if report_id == "throughput":
@@ -166,8 +176,12 @@ async def run_prebuilt(db, report_id: str, fmt: str):
         if fmt == "csv":
             return _csv_response([dict(zip(["date", "opened", "closed", "net"], r)) for r in rows],
                                  ["date", "opened", "closed", "net"], "throughput")
+        chart_rows = [{"date": r[0], "opened": r[1], "closed": r[2]} for r in rows]
         return _pdf_response("Throughput — Opened vs Closed (30d)",
-                             [{"type": "table", "headers": ["Date", "Opened", "Closed", "Net"], "rows": rows}],
+                             [{"type": "drawing", "value": trend_line_chart(
+                                 chart_rows, [{"key": "opened", "label": "Opened", "color": "#ef4444"},
+                                              {"key": "closed", "label": "Closed", "color": "#22c55e"}])},
+                              {"type": "table", "headers": ["Date", "Opened", "Closed", "Net"], "rows": rows}],
                              "throughput")
 
     if report_id == "critical_by_bu":
@@ -181,8 +195,12 @@ async def run_prebuilt(db, report_id: str, fmt: str):
         if fmt == "csv":
             return _csv_response([dict(zip(["business_unit", "critical", "high", "total"], r)) for r in rows],
                                  ["business_unit", "critical", "high", "total"], "critical-by-bu")
+        top_rows = rows[:12]
+        chart_series = [{"label": "Critical", "color": "#ef4444", "values": [r[1] for r in top_rows]},
+                        {"label": "High", "color": "#f97316", "values": [r[2] for r in top_rows]}]
         return _pdf_response("Critical / High by Business Unit",
-                             [{"type": "table", "headers": ["Business Unit", "Critical", "High", "Total"], "rows": rows}],
+                             [{"type": "drawing", "value": multi_series_bar_chart([r[0] for r in top_rows], chart_series)},
+                              {"type": "table", "headers": ["Business Unit", "Critical", "High", "Total"], "rows": rows}],
                              "critical-by-bu")
 
     if report_id == "kev_exposure":
@@ -253,10 +271,19 @@ async def run_prebuilt(db, report_id: str, fmt: str):
                  "mttr_days": s.get("mttr_days"), "org_score": s.get("org_score")} for s in snaps]
         if fmt == "csv":
             return _csv_response(rows, ["date", "sla_compliance", "mttr_days", "org_score"], "sla-trend")
-        table_rows = [[r["date"], f"{r['sla_compliance']}%", r["mttr_days"], r["org_score"]] for r in rows]
-        return _pdf_response("SLA Compliance Trend",
-                             [{"type": "table", "headers": ["Date", "SLA %", "MTTR (d)", "Score"], "rows": table_rows}],
-                             "sla-trend")
+        table_rows = [[r["date"],
+                       f"{r['sla_compliance']}%" if r["sla_compliance"] is not None else "—",
+                       r["mttr_days"] if r["mttr_days"] is not None else "—",
+                       r["org_score"] if r["org_score"] is not None else "—"] for r in rows]
+        sections = []
+        if rows:
+            sections.append({"type": "drawing", "value": trend_line_chart(
+                rows, [{"key": "org_score", "label": "Score", "color": "#2F81F7"},
+                       {"key": "sla_compliance", "label": "SLA %", "color": "#f59e0b"}])})
+        else:
+            sections.append({"type": "text", "value": "No score history yet."})
+        sections.append({"type": "table", "headers": ["Date", "SLA %", "MTTR (d)", "Score"], "rows": table_rows})
+        return _pdf_response("SLA Compliance Trend", sections, "sla-trend")
 
     return None
 

@@ -114,15 +114,54 @@ async def compute_org_snapshot(db, for_date: str = None) -> dict:
     date_str = for_date or datetime.now(timezone.utc).date().isoformat()
 
     open_findings = await db.findings.find(
-        {"status": {"$in": OPEN_STATES}}, {"_id": 0, "risk_score": 1, "due_at": 1, "kev_flag": 1}
+        {"status": {"$in": OPEN_STATES}},
+        {"_id": 0, "risk_score": 1, "due_at": 1, "kev_flag": 1, "severity": 1},
     ).to_list(50000)
     n_open = len(open_findings)
-    avg_risk = statistics.mean([f.get("risk_score") or 0 for f in open_findings]) if n_open else 0
+
+    # No findings have ever been ingested at all (fresh install, nothing synced yet) --
+    # that's a genuinely different state than "we scanned everything and it's all clean",
+    # and showing a confident "100/100 Strong security posture" in that case is misleading.
+    # Distinguish "nothing to score" from "scored and healthy" so the dashboard can render
+    # a neutral empty-state instead of a false-positive green score.
+    total_findings_ever = await db.findings.estimated_document_count()
+    if total_findings_ever == 0:
+        doc = {
+            "date": date_str, "org_score": None, "no_data": True,
+            "sla_compliance": None, "mttr_days": None, "open_findings": 0,
+            "computed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.score_snapshots.update_one({"date": date_str}, {"$set": doc}, upsert=True)
+        return doc
+
     now = datetime.now(timezone.utc).isoformat()
+    avg_risk = statistics.mean([f.get("risk_score") or 0 for f in open_findings]) if n_open else 0
     overdue_ratio = (sum(1 for f in open_findings if f.get("due_at") and f["due_at"] < now) / n_open) if n_open else 0
     kev_ratio = (sum(1 for f in open_findings if f.get("kev_flag")) / n_open) if n_open else 0
+    critical_open = sum(1 for f in open_findings if (f.get("severity") or "").lower() == "critical")
+    high_open = sum(1 for f in open_findings if (f.get("severity") or "").lower() == "high")
+    kev_critical_open = sum(
+        1 for f in open_findings
+        if f.get("kev_flag") and (f.get("severity") or "").lower() == "critical"
+    )
 
-    org_score = round(max(0, min(100, 100 - avg_risk * 0.5 - overdue_ratio * 25 - kev_ratio * 25)))
+    # Blend exploitation-likelihood (EPSS-weighted avg_risk) with raw severity load and
+    # overdue/KEV ratios. avg_risk alone made the score nearly always land near 100,
+    # since most CVEs have very low EPSS even when CVSS-critical -- a portfolio can have
+    # thousands of open critical findings and still average out to "low predicted
+    # exploitation probability". That's methodologically defensible for EPSS but reads as
+    # obviously wrong on a dashboard, so severity volume now has its own, larger say.
+    exploit_penalty = avg_risk * 0.35
+    severity_penalty = min(45, critical_open * 0.6 + high_open * 0.15)
+    overdue_penalty = overdue_ratio * 20
+    kev_penalty = kev_ratio * 30
+
+    org_score = round(max(0, min(100, 100 - exploit_penalty - severity_penalty - overdue_penalty - kev_penalty)))
+
+    # Hard ceiling: an actively-exploited (KEV-listed) critical finding sitting open means
+    # "strong posture" can't be true no matter how the weighted average nets out.
+    if kev_critical_open > 0:
+        org_score = min(org_score, 70)
 
     cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
     resolved = await db.findings.find(
@@ -143,12 +182,16 @@ async def compute_org_snapshot(db, for_date: str = None) -> dict:
                 continue
         mttr_days = round(statistics.mean(ttr_days), 1) if ttr_days else 0
     else:
-        sla_compliance = 100.0  # nothing overdue yet is not the same as "0% compliant"
-        mttr_days = 0
+        # Nothing resolved in the last 90 days -- that's "not enough data to grade SLA
+        # performance yet", not "100% compliant". A brand-new import where nothing has
+        # been fixed yet should not claim a perfect on-time-fix rate.
+        sla_compliance = None
+        mttr_days = None
 
     doc = {
         "date": date_str, "org_score": org_score, "sla_compliance": sla_compliance,
-        "mttr_days": mttr_days, "open_findings": n_open, "computed_at": datetime.now(timezone.utc).isoformat(),
+        "mttr_days": mttr_days, "open_findings": n_open, "critical_open": critical_open,
+        "high_open": high_open, "computed_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.score_snapshots.update_one({"date": date_str}, {"$set": doc}, upsert=True)
     return doc
@@ -165,19 +208,27 @@ async def backfill_score_snapshots(db, days: int = 30) -> int:
     today_snapshot = await compute_org_snapshot(db)
     base_score = today_snapshot["org_score"]
     base_sla = today_snapshot["sla_compliance"]
+    if today_snapshot.get("no_data") or base_score is None:
+        # Nothing has ever been ingested -- there's no "real score" to wobble a fake
+        # history around, so don't fabricate 30 days of trend line. Leave the collection
+        # empty; the dashboard renders an explicit empty state instead.
+        return 0
     inserted = 0
     for i in range(days, 0, -1):
         d = (datetime.now(timezone.utc) - timedelta(days=i)).date().isoformat()
         wobble = ((i * 37) % 11) - 5  # deterministic +/-5 wobble, no randomness dependency
-        await db.score_snapshots.update_one({"date": d}, {"$set": {
+        snap = {
             "date": d,
             "org_score": max(0, min(100, base_score + wobble)),
-            "sla_compliance": max(0, min(100, round(base_sla + wobble, 1))),
+            "sla_compliance": (max(0, min(100, round(base_sla + wobble, 1))) if base_sla is not None else None),
             "mttr_days": today_snapshot["mttr_days"],
             "open_findings": today_snapshot["open_findings"],
             "computed_at": datetime.now(timezone.utc).isoformat(),
-            "backfilled": True,
-        }}, upsert=True)
+            "backfilled": True,  # marks this as estimated placeholder history, not a real
+                                  # historical measurement -- surfaced in the UI as a dashed
+                                  # line so it isn't mistaken for real trend data.
+        }
+        await db.score_snapshots.update_one({"date": d}, {"$set": snap}, upsert=True)
         inserted += 1
     return inserted
 
@@ -228,4 +279,10 @@ async def nightly_loop(db, interval_hours: int = 24):
             logger.info(f"Exception expirations: {exc_result}")
         except Exception as e:
             logger.exception(f"Exception expiration check failed: {e}")
+        try:
+            from routes.automation import run_all_automation_rules
+            auto_result = await run_all_automation_rules(db)
+            logger.info(f"Automation sweep: {auto_result}")
+        except Exception as e:
+            logger.exception(f"Automation sweep failed: {e}")
         await asyncio.sleep(interval_hours * 3600)

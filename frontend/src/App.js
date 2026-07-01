@@ -23,6 +23,8 @@ import SlaPolicies from "@/pages/SlaPolicies";
 import WebScansUpload from "@/pages/WebScansUpload";
 import Teams from "@/pages/Teams";
 import Playbooks from "@/pages/Playbooks";
+import PlaybookDetail from "@/pages/PlaybookDetail";
+import Automation from "@/pages/Automation";
 
 const Protected = ({ children }) => {
   const { user, loading } = useAuth();
@@ -59,6 +61,8 @@ const AppRouter = () => {
       <Route path="/admin/ownership" element={<Protected><OwnershipMappings/></Protected>}/>
       <Route path="/admin/sla-policies" element={<Protected><SlaPolicies/></Protected>}/>
       <Route path="/admin/playbooks" element={<Protected><Playbooks/></Protected>}/>
+      <Route path="/admin/playbooks/:id" element={<Protected><PlaybookDetail/></Protected>}/>
+      <Route path="/automation" element={<Protected><Automation/></Protected>}/>
       <Route path="/admin/web-scans" element={<Protected><WebScansUpload/></Protected>}/>
       <Route path="/admin/users" element={<Protected><Users/></Protected>}/>
       <Route path="/admin/teams" element={<Protected><Teams/></Protected>}/>

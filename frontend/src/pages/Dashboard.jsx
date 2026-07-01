@@ -364,6 +364,11 @@ export default function Dashboard() {
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
+              {manager.snapshots?.some(s => s.backfilled) && (
+                <div className="px-4 pb-2.5 text-[10.5px] text-slate-600">
+                  Dashed portion is estimated placeholder history until enough real daily snapshots accumulate.
+                </div>
+              )}
             </Panel>
             <Panel title="Findings by Team">
               <table className="dense w-full">
@@ -389,42 +394,64 @@ export default function Dashboard() {
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4 md:col-span-2">
               <div className="text-[10px] uppercase tracking-wider text-slate-500 font-mono mb-1">Security Score</div>
-              <div className="flex items-baseline gap-2"><span data-testid="exec-score" className="text-[44px] font-semibold font-mono text-blue-300">{exec.current_score}</span><span className="text-slate-500 text-[14px]">/ 100</span></div>
+              <div className="flex items-baseline gap-2">
+                <span data-testid="exec-score" className={`text-[44px] font-semibold font-mono ${exec.no_data ? "text-slate-600" : "text-blue-300"}`}>
+                  {exec.no_data ? "—" : exec.current_score}
+                </span>
+                {!exec.no_data && <span className="text-slate-500 text-[14px]">/ 100</span>}
+              </div>
               <p className="text-[12.5px] text-slate-400 mt-2 leading-relaxed">{exec.narrative}</p>
             </div>
-            <Stat label="SLA Compliance" value={`${exec.sla_compliance}%`} tone="green" testid="exec-sla" />
-            <Stat label="MTTR (days)" value={exec.mttr_days} tone="amber" testid="exec-mttr" />
+            <Stat label="SLA Compliance" value={exec.sla_compliance != null ? `${exec.sla_compliance}%` : "—"} tone={exec.sla_compliance != null ? "green" : "slate"} testid="exec-sla" />
+            <Stat label="MTTR (days)" value={exec.mttr_days != null ? exec.mttr_days : "—"} tone={exec.mttr_days != null ? "amber" : "slate"} testid="exec-mttr" />
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="lg:col-span-2">
               <Panel title={`Risk Score / SLA Trend (${exec.range || range})`}>
-                <div className="p-3 h-[280px]">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={exec.snapshots}>
-                      <CartesianGrid stroke="#30363D" strokeDasharray="2 2"/>
-                      <XAxis dataKey="date" stroke="#8B949E" fontSize={10} tickFormatter={(d)=>d?.slice(5,10)}/>
-                      <YAxis stroke="#8B949E" fontSize={10}/>
-                      <Tooltip contentStyle={{ background:"#0D1117", border:"1px solid #30363D", fontSize:12 }}/>
-                      <Area dataKey="org_score" stroke="#2F81F7" fill="#2F81F722" name="Score"/>
-                      <Area dataKey="sla_compliance" stroke="#f59e0b" fill="#f59e0b22" name="SLA %"/>
-                    </AreaChart>
-                  </ResponsiveContainer>
-                </div>
+                {exec.no_data ? (
+                  <div className="p-8 text-center text-[12.5px] text-slate-500">
+                    No history yet — this fills in once findings are tracked and the nightly scoring job has run at least once.
+                  </div>
+                ) : (
+                  <>
+                    <div className="p-3 h-[280px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={exec.snapshots}>
+                          <CartesianGrid stroke="#30363D" strokeDasharray="2 2"/>
+                          <XAxis dataKey="date" stroke="#8B949E" fontSize={10} tickFormatter={(d)=>d?.slice(5,10)}/>
+                          <YAxis stroke="#8B949E" fontSize={10}/>
+                          <Tooltip contentStyle={{ background:"#0D1117", border:"1px solid #30363D", fontSize:12 }}/>
+                          <Area dataKey="org_score" stroke="#2F81F7" fill="#2F81F722" name="Score"/>
+                          <Area dataKey="sla_compliance" stroke="#f59e0b" fill="#f59e0b22" name="SLA %"/>
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                    {exec.snapshots?.some(s => s.backfilled) && (
+                      <div className="px-4 pb-2.5 text-[10.5px] text-slate-600">
+                        Early portion of this trend is estimated placeholder history until enough real daily snapshots accumulate.
+                      </div>
+                    )}
+                  </>
+                )}
               </Panel>
             </div>
             <Panel title="Score Drivers">
-              <div className="divide-y divide-[#30363D]">
-                {exec.score_factors.map((f, i) => (
-                  <div key={i} className="px-4 py-2.5">
-                    <div className="flex items-center justify-between">
-                      <div className="text-[12.5px] text-slate-200">{f.factor}</div>
-                      <Chip color={f.impact?.startsWith("-") ? "red" : "green"}>{f.impact}</Chip>
+              {exec.score_factors?.length ? (
+                <div className="divide-y divide-[#30363D]">
+                  {exec.score_factors.map((f, i) => (
+                    <div key={i} className="px-4 py-2.5">
+                      <div className="flex items-center justify-between">
+                        <div className="text-[12.5px] text-slate-200">{f.factor}</div>
+                        <Chip color={f.impact?.startsWith("-") ? "red" : "green"}>{f.impact}</Chip>
+                      </div>
+                      <div className="text-[11px] text-slate-500 mt-0.5">{f.reason}</div>
                     </div>
-                    <div className="text-[11px] text-slate-500 mt-0.5">{f.reason}</div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="p-4 text-[12px] text-slate-500">Nothing scored yet.</div>
+              )}
             </Panel>
           </div>
 

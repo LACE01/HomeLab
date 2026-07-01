@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
-import { Plus, X, Trash, PencilSimple, BookOpen } from "@phosphor-icons/react";
+import { categoryMeta, PLAYBOOK_CATEGORY_META } from "@/lib/playbookCategories";
+import { Plus, X, Trash, PencilSimple, CaretRight } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 function StepListInput({ label, items, onChange, placeholder }) {
@@ -30,7 +31,7 @@ function StepListInput({ label, items, onChange, placeholder }) {
 
 function PlaybookFormModal({ initial, onClose, onSaved }) {
   const [form, setForm] = useState(initial || {
-    title: "", description: "", cve: "", cwe: "", steps: [""], rollback_notes: "", validation_checks: [""],
+    title: "", description: "", category: "other", cve: "", cwe: "", steps: [""], rollback_notes: "", validation_checks: [""],
   });
   const [saving, setSaving] = useState(false);
   const isEdit = !!initial?.id;
@@ -41,7 +42,7 @@ function PlaybookFormModal({ initial, onClose, onSaved }) {
     setSaving(true);
     try {
       const body = {
-        title: form.title, description: form.description,
+        title: form.title, description: form.description, category: form.category || "other",
         cve: form.cve || null, cwe: form.cwe || null,
         steps: form.steps.filter(s => s.trim()),
         rollback_notes: form.rollback_notes,
@@ -75,6 +76,22 @@ function PlaybookFormModal({ initial, onClose, onSaved }) {
             <label className="text-[11px] uppercase font-mono text-slate-500">Description</label>
             <textarea value={form.description} onChange={e=>setForm({...form, description:e.target.value})}
               rows={2} className="w-full mt-1 bg-[#161B22] border border-[#30363D] rounded px-2 py-1.5 text-[12.5px] text-slate-200"/>
+          </div>
+          <div>
+            <label className="text-[11px] uppercase font-mono text-slate-500">Category</label>
+            <div className="flex flex-wrap gap-1.5 mt-1.5">
+              {Object.entries(PLAYBOOK_CATEGORY_META).map(([key, meta]) => {
+                const Icon = meta.icon;
+                const active = (form.category || "other") === key;
+                return (
+                  <button key={key} type="button" onClick={()=>setForm({...form, category: key})}
+                    style={active ? { background: `${meta.color}22`, borderColor: `${meta.color}88`, color: meta.color } : {}}
+                    className={`h-7 px-2.5 rounded-full text-[11px] border inline-flex items-center gap-1.5 ${active ? "" : "border-[#30363D] text-slate-400 hover:border-[#484F58]"}`}>
+                    <Icon size={12}/> {meta.label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -110,18 +127,27 @@ function PlaybookFormModal({ initial, onClose, onSaved }) {
 }
 
 export default function Playbooks() {
+  const navigate = useNavigate();
   const [items, setItems] = useState([]);
   const [q, setQ] = useState("");
+  const [category, setCategory] = useState(null);
   const [searchParams] = useSearchParams();
   const [showForm, setShowForm] = useState(searchParams.get("new") === "1");
   const [editing, setEditing] = useState(searchParams.get("new") === "1" ? {
-    title: "", description: "",
+    title: "", description: "", category: "other",
     cve: searchParams.get("cve") || "", cwe: searchParams.get("cwe") || "",
     steps: [""], rollback_notes: "", validation_checks: [""],
   } : null);
 
-  const load = () => api.get("/v1/playbooks", { params: q ? {q} : {} }).then(r => setItems(r.data.items));
-  useEffect(() => { load(); }, []); // eslint-disable-line
+  const load = () => api.get("/v1/playbooks", { params: { ...(q ? {q} : {}), ...(category ? {category} : {}) } }).then(r => setItems(r.data.items));
+  useEffect(() => { load(); }, [category]); // eslint-disable-line
+
+  useEffect(() => {
+    const editId = searchParams.get("edit");
+    if (editId) {
+      api.get(`/v1/playbooks/${editId}`).then(r => { setEditing(r.data); setShowForm(true); });
+    }
+  }, []); // eslint-disable-line
 
   const remove = async (p) => {
     if (!window.confirm(`Delete playbook "${p.title}"?`)) return;
@@ -132,7 +158,7 @@ export default function Playbooks() {
 
   return (
     <Layout title="Remediation Playbooks" subtitle="Step-by-step fix guidance, rollback notes, and validation checks by CVE or CWE"
-      actions={<button data-testid="new-playbook-btn" onClick={()=>setShowForm(true)}
+      actions={<button data-testid="new-playbook-btn" onClick={()=>{setEditing(null); setShowForm(true);}}
         className="h-8 px-3 text-[12px] bg-blue-500/15 border border-blue-500/40 hover:bg-blue-500/25 text-blue-300 rounded inline-flex items-center gap-1.5">
         <Plus size={14}/> New playbook
       </button>}>
@@ -142,33 +168,63 @@ export default function Playbooks() {
         <button onClick={load} className="h-8 px-3 text-[12px] bg-blue-500/20 border border-blue-500/40 text-blue-300 rounded">Search</button>
       </div>
 
+      <div className="flex flex-wrap gap-1.5 mb-3">
+        <button onClick={()=>setCategory(null)}
+          className={`h-7 px-2.5 rounded-full text-[11px] border inline-flex items-center gap-1.5 ${!category ? "bg-slate-700/40 border-slate-500/50 text-slate-200" : "border-[#30363D] text-slate-500 hover:border-[#484F58]"}`}>
+          All
+        </button>
+        {Object.entries(PLAYBOOK_CATEGORY_META).map(([key, meta]) => {
+          const Icon = meta.icon;
+          const active = category === key;
+          return (
+            <button key={key} onClick={()=>setCategory(active ? null : key)}
+              style={active ? { background: `${meta.color}22`, borderColor: `${meta.color}88`, color: meta.color } : {}}
+              className={`h-7 px-2.5 rounded-full text-[11px] border inline-flex items-center gap-1.5 ${active ? "" : "border-[#30363D] text-slate-500 hover:border-[#484F58]"}`}>
+              <Icon size={12}/> {meta.label}
+            </button>
+          );
+        })}
+      </div>
+
       {items.length === 0 && (
         <div className="text-[12.5px] text-slate-500 border border-[#30363D] bg-[#0D1117] rounded-md p-6 text-center">
-          No playbooks yet. Create one and attach it to a CVE or a CWE class.
+          No playbooks match. Create one and attach it to a CVE or a CWE class.
         </div>
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {items.map(p => (
-          <div key={p.id} className="border border-[#30363D] bg-[#0D1117] rounded-md p-4" data-testid={`playbook-${p.id}`}>
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <BookOpen size={16} className="text-blue-300 shrink-0"/>
-                <div className="text-[13.5px] font-medium text-slate-100 truncate">{p.title}</div>
+        {items.map(p => {
+          const meta = categoryMeta(p.category);
+          const Icon = meta.icon;
+          return (
+            <div key={p.id} onClick={()=>navigate(`/admin/playbooks/${p.id}`)}
+              className="border border-[#30363D] bg-[#0D1117] rounded-md p-4 cursor-pointer hover:border-[#484F58] transition-colors group"
+              data-testid={`playbook-${p.id}`}>
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div style={{ background: `${meta.color}1a`, border: `1px solid ${meta.color}55` }} className="rounded-md p-1.5 shrink-0">
+                    <Icon size={15} style={{ color: meta.color }} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-[13.5px] font-medium text-slate-100 truncate">{p.title}</div>
+                    <div className="text-[10.5px] font-mono" style={{ color: meta.color }}>{meta.label}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button onClick={(e)=>{e.stopPropagation(); setEditing(p); setShowForm(true);}} className="text-slate-500 hover:text-slate-200"><PencilSimple size={14}/></button>
+                  <button onClick={(e)=>{e.stopPropagation(); remove(p);}} className="text-slate-500 hover:text-red-400"><Trash size={14}/></button>
+                  <CaretRight size={14} className="text-slate-600 group-hover:text-slate-400 ml-0.5"/>
+                </div>
               </div>
-              <div className="flex items-center gap-1 shrink-0">
-                <button onClick={()=>{setEditing(p); setShowForm(true);}} className="text-slate-500 hover:text-slate-200"><PencilSimple size={14}/></button>
-                <button onClick={()=>remove(p)} className="text-slate-500 hover:text-red-400"><Trash size={14}/></button>
+              <div className="text-[12px] text-slate-500 mt-1.5 ml-[34px]">{p.description}</div>
+              <div className="flex gap-1.5 mt-2 ml-[34px]">
+                {p.cve && <Chip color="blue">{p.cve}</Chip>}
+                {p.cwe && <Chip>{p.cwe}</Chip>}
+                <Chip color="slate">{p.steps?.length || 0} step{p.steps?.length===1?"":"s"}</Chip>
               </div>
             </div>
-            <div className="text-[12px] text-slate-500 mt-1">{p.description}</div>
-            <div className="flex gap-1.5 mt-2">
-              {p.cve && <Chip color="blue">{p.cve}</Chip>}
-              {p.cwe && <Chip>{p.cwe}</Chip>}
-              <Chip color="slate">{p.steps?.length || 0} step{p.steps?.length===1?"":"s"}</Chip>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {showForm && (

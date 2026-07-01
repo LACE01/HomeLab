@@ -54,7 +54,7 @@ def _pick(pool_by_platform: dict, asset: dict, index: int) -> tuple:
     return pool[index % len(pool)]
 
 
-def _node(asset: dict, role: str, sev_or_risk: str = "") -> dict:
+def _node(asset: dict, role: str, sev_or_risk: str = "", findings_count: int = 0, speculative: bool = False) -> dict:
     return {
         "id": asset["id"],
         "label": asset["hostname"],
@@ -64,13 +64,16 @@ def _node(asset: dict, role: str, sev_or_risk: str = "") -> dict:
         "platform": asset.get("platform"),
         "os": asset.get("operating_system"),
         "owner_team": asset.get("owner_team"),
+        "tags": asset.get("tags") or [],
         "risk": sev_or_risk,
+        "findings_count": findings_count,
+        "speculative": speculative,
     }
 
 
-def _edge(src: str, dst: str, label: str, technique: str = "", category: str = "lateral_movement") -> dict:
+def _edge(src: str, dst: str, label: str, technique: str = "", category: str = "lateral_movement", speculative: bool = False) -> dict:
     return {"id": f"{src}->{dst}", "source": src, "target": dst, "label": label,
-            "technique": technique, "category": category}
+            "technique": technique, "category": category, "speculative": speculative}
 
 
 async def build_attack_path(db, cve: Optional[str] = None, finding_id: Optional[str] = None) -> dict:
@@ -100,6 +103,18 @@ async def build_attack_path(db, cve: Optional[str] = None, finding_id: Optional[
     if not crown:
         crown = await db.assets.find({"criticality": "crown_jewel"}, {"_id": 0}).limit(3).to_list(3)
 
+    # Total open-finding count per asset in this path, for a "blast radius" figure on each
+    # node card -- how much else is wrong on this box, not just this one CVE.
+    all_node_asset_ids = list({a["id"] for a in (internet + crown + critical + pivots)})
+    findings_count_by_asset: dict = {}
+    if all_node_asset_ids:
+        async for row in db.findings.aggregate([
+            {"$match": {"asset_id": {"$in": all_node_asset_ids},
+                        "status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]}}},
+            {"$group": {"_id": "$asset_id", "n": {"$sum": 1}}},
+        ]):
+            findings_count_by_asset[row["_id"]] = row["n"]
+
     # Build a simple chain: Internet -> exposed asset -> pivot -> critical -> crown_jewel
     nodes: list = []
     edges: list = []
@@ -108,12 +123,12 @@ async def build_attack_path(db, cve: Optional[str] = None, finding_id: Optional[
     inet_id = "_internet"
     nodes.append({"id": inet_id, "label": "Internet Exposure", "role": "internet",
                   "criticality": None, "exposure": "internet", "platform": "—", "os": "—",
-                  "owner_team": "—", "risk": "high"})
+                  "owner_team": "—", "risk": "high", "tags": [], "findings_count": 0, "speculative": False})
 
     # Source: pick the most exposed internet asset, or any from the list
     sources = internet[:3] if internet else (assets[:1] if assets else [])
     for src in sources:
-        nodes.append(_node(src, "source", "exploited"))
+        nodes.append(_node(src, "source", "exploited", findings_count_by_asset.get(src["id"], 0)))
         edges.append(_edge(inet_id, src["id"], f"Exploit {cve}",
                             "T1190 Exploit Public-Facing Application", "initial_access"))
 
@@ -121,7 +136,7 @@ async def build_attack_path(db, cve: Optional[str] = None, finding_id: Optional[
     # movement -- each using a technique picked for that specific asset's platform, rotated
     # by index so a long chain doesn't repeat the same technique twice in a row.
     for i, p in enumerate(pivots[:4]):
-        nodes.append(_node(p, "pivot"))
+        nodes.append(_node(p, "pivot", findings_count=findings_count_by_asset.get(p["id"], 0)))
         parent = sources[0]["id"] if sources else inet_id
         if i == 0:
             name, mitre = _pick(CREDENTIAL_ACCESS, p, i)
@@ -132,17 +147,38 @@ async def build_attack_path(db, cve: Optional[str] = None, finding_id: Optional[
 
     # Critical assets in path — privilege escalation, technique varies by that asset's platform
     for i, c in enumerate(critical[:3]):
-        nodes.append(_node(c, "pivot"))
+        nodes.append(_node(c, "pivot", findings_count=findings_count_by_asset.get(c["id"], 0)))
         parent = pivots[0]["id"] if pivots else (sources[0]["id"] if sources else inet_id)
         name, mitre = _pick(PRIV_ESCALATION, c, i)
         edges.append(_edge(parent, c["id"], name, mitre, "privilege_escalation"))
 
     # Target: crown jewels — exfiltration technique rotates too
     for i, t in enumerate(crown[:3]):
-        nodes.append(_node(t, "target", "objective"))
+        nodes.append(_node(t, "target", "objective", findings_count_by_asset.get(t["id"], 0)))
         parent = critical[0]["id"] if critical else (pivots[0]["id"] if pivots else (sources[0]["id"] if sources else inet_id))
         name, mitre = EXFILTRATION[i % len(EXFILTRATION)]
         edges.append(_edge(parent, t["id"], name, mitre, "exfiltration"))
+
+    # When the chain is thin (a single vulnerable host and nothing else sharing this CVE),
+    # the graph would otherwise be just Internet -> one box, which tells you nothing about
+    # actual exposure. Pull in real neighbors -- other assets in the same environment/tags --
+    # as clearly-labeled *potential* lateral movement targets (not confirmed compromise,
+    # just "what's on the same segment"), so the picture reflects real inventory instead of
+    # staying empty.
+    if sources and not pivots and not critical:
+        seed = sources[0]
+        neighbor_flt = {
+            "id": {"$nin": [a["id"] for a in assets]},
+            "$or": [
+                {"environment": seed.get("environment")} if seed.get("environment") else {"id": None},
+                {"tags": {"$in": seed.get("tags") or ["__none__"]}},
+            ],
+        }
+        neighbors = await db.assets.find(neighbor_flt, {"_id": 0}).limit(4).to_list(4)
+        for n in neighbors:
+            nodes.append(_node(n, "pivot", findings_count=findings_count_by_asset.get(n["id"], 0), speculative=True))
+            edges.append(_edge(sources[0]["id"], n["id"], "Same network segment",
+                                "T1021 Remote Services (unconfirmed)", "lateral_movement", speculative=True))
 
     # Remediation options
     remediation_options = []

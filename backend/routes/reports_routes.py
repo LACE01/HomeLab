@@ -53,6 +53,7 @@ async def export_executive_pdf(user: dict = Depends(get_current_user)):
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
     from reportlab.lib import colors
+    from pdf_charts import trend_line_chart, bar_chart
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=36, bottomMargin=36)
@@ -65,15 +66,31 @@ async def export_executive_pdf(user: dict = Depends(get_current_user)):
     elements.append(Spacer(1, 12))
 
     dash = await dashboard_executive(user)
-    elements.append(Paragraph(f"<b>Security Score:</b> {dash['current_score']} / 100", styles["Heading2"]))
+    score_str = f"{dash['current_score']} / 100" if dash.get("current_score") is not None else "No data yet"
+    elements.append(Paragraph(f"<b>Security Score:</b> {score_str}", styles["Heading2"]))
     elements.append(Paragraph(dash["narrative"], styles["Normal"]))
     elements.append(Spacer(1, 12))
 
-    elements.append(Paragraph(f"<b>SLA Compliance:</b> {dash['sla_compliance']}%", styles["Normal"]))
-    elements.append(Paragraph(f"<b>MTTR:</b> {dash['mttr_days']} days", styles["Normal"]))
+    sla_str = f"{dash['sla_compliance']}%" if dash.get("sla_compliance") is not None else "No data yet"
+    mttr_str = f"{dash['mttr_days']} days" if dash.get("mttr_days") is not None else "No data yet"
+    elements.append(Paragraph(f"<b>SLA Compliance:</b> {sla_str}", styles["Normal"]))
+    elements.append(Paragraph(f"<b>MTTR:</b> {mttr_str}", styles["Normal"]))
     elements.append(Spacer(1, 12))
 
+    if dash.get("snapshots"):
+        elements.append(Paragraph("<b>Score / SLA Trend</b>", styles["Heading3"]))
+        elements.append(trend_line_chart(
+            dash["snapshots"], [{"key": "org_score", "label": "Score", "color": "#2F81F7"},
+                                 {"key": "sla_compliance", "label": "SLA %", "color": "#f59e0b"}]))
+        elements.append(Spacer(1, 12))
+
     elements.append(Paragraph("<b>Critical Open Findings by Product</b>", styles["Heading3"]))
+    if dash["by_product"]:
+        elements.append(bar_chart(
+            [p["name"] for p in dash["by_product"]],
+            [p.get("critical_open", 0) for p in dash["by_product"]],
+            bar_color="#ef4444"))
+        elements.append(Spacer(1, 6))
     rows = [["Product", "Critical/High Open"]]
     for p in dash["by_product"]:
         rows.append([p["name"], str(p.get("critical_open", 0))])
@@ -87,9 +104,10 @@ async def export_executive_pdf(user: dict = Depends(get_current_user)):
     elements.append(t)
     elements.append(Spacer(1, 12))
 
-    elements.append(Paragraph("<b>Key Score Factors</b>", styles["Heading3"]))
-    for sf in dash["score_factors"]:
-        elements.append(Paragraph(f"• {sf['factor']} ({sf['impact']}) — {sf['reason']}", styles["Normal"]))
+    if dash["score_factors"]:
+        elements.append(Paragraph("<b>Key Score Factors</b>", styles["Heading3"]))
+        for sf in dash["score_factors"]:
+            elements.append(Paragraph(f"• {sf['factor']} ({sf['impact']}) — {sf['reason']}", styles["Normal"]))
 
     doc.build(elements)
     buffer.seek(0)

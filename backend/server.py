@@ -30,6 +30,7 @@ from routes.reports_routes import router as reports_router
 from routes.admin import router as admin_router
 from routes.preferences import router as preferences_router
 from routes.playbooks import router as playbooks_router
+from routes.automation import router as automation_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("vulnops")
@@ -50,6 +51,7 @@ api.include_router(reports_router)
 api.include_router(admin_router)
 api.include_router(preferences_router)
 api.include_router(playbooks_router)
+api.include_router(automation_router)
 
 
 @api.get("/")
