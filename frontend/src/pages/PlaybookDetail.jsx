@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
+import { useParams, useSearchParams, Link } from "react-router-dom";
+import { toast } from "sonner";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
@@ -132,21 +133,69 @@ function buildFlow(playbook, doneSteps, toggleStep) {
 
 export default function PlaybookDetail() {
   const { id } = useParams();
-  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const findingId = searchParams.get("finding");
   const [playbook, setPlaybook] = useState(null);
+  const [finding, setFinding] = useState(null);
   const [doneSteps, setDoneSteps] = useState(new Set());
+  const [doneChecks, setDoneChecks] = useState(new Set());
+  const [validated, setValidated] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     api.get(`/v1/playbooks/${id}`).then(r => setPlaybook(r.data));
   }, [id]);
 
+  useEffect(() => {
+    if (!findingId) return;
+    api.get(`/v1/findings/${findingId}`).then(r => setFinding(r.data));
+    api.get(`/v1/findings/${findingId}/playbook`).then(r => {
+      const p = r.data.progress;
+      if (p && p.playbook_id === id) {
+        setDoneSteps(new Set(p.steps_done || []));
+        setDoneChecks(new Set(p.validated_checks || []));
+        setValidated(!!p.validated);
+      }
+    });
+  }, [findingId, id]);
+
+  const persist = useCallback(async (steps, checks, isValidated) => {
+    if (!findingId) return;
+    setSaving(true);
+    try {
+      await api.put(`/v1/findings/${findingId}/playbook-progress`, {
+        playbook_id: id, steps_done: Array.from(steps), validated_checks: Array.from(checks), validated: isValidated,
+      });
+    } catch (e) {
+      toast.error("Failed to save checklist progress");
+    } finally { setSaving(false); }
+  }, [findingId, id]);
+
   const toggleStep = useCallback((i) => {
     setDoneSteps(prev => {
       const next = new Set(prev);
       if (next.has(i)) next.delete(i); else next.add(i);
+      persist(next, doneChecks, validated);
       return next;
     });
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doneChecks, validated, persist]);
+
+  const toggleCheck = useCallback((i) => {
+    setDoneChecks(prev => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i); else next.add(i);
+      persist(doneSteps, next, validated);
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doneSteps, validated, persist]);
+
+  const markValidated = () => {
+    setValidated(true);
+    persist(doneSteps, doneChecks, true);
+    toast.success("Marked as validated");
+  };
 
   const { nodes, edges, height } = useMemo(
     () => playbook ? buildFlow(playbook, doneSteps, toggleStep) : { nodes: [], edges: [], height: 400 },
@@ -160,14 +209,18 @@ export default function PlaybookDetail() {
   const meta = categoryMeta(playbook.category);
   const Icon = meta.icon;
   const progress = playbook.steps?.length ? Math.round((doneSteps.size / playbook.steps.length) * 100) : 0;
+  const allStepsDone = playbook.steps?.length > 0 && doneSteps.size === playbook.steps.length;
+  const allChecksDone = !playbook.validation_checks?.length || doneChecks.size === playbook.validation_checks.length;
 
   return (
     <Layout
       title={playbook.title}
-      subtitle={playbook.description || "Step-by-step remediation flow"}
+      subtitle={findingId
+        ? `Checklist for finding: ${finding?.title?.slice(0, 60) || "…"}${findingId ? " — progress is saved" : ""}`
+        : (playbook.description || "Step-by-step remediation flow — open from a finding to save your progress")}
       actions={<>
-        <Link to="/admin/playbooks" className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] rounded inline-flex items-center gap-1.5 text-slate-300">
-          <ArrowLeft size={14}/> All playbooks
+        <Link to={findingId ? `/findings/${findingId}` : "/admin/playbooks"} className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] rounded inline-flex items-center gap-1.5 text-slate-300">
+          <ArrowLeft size={14}/> {findingId ? "Back to finding" : "All playbooks"}
         </Link>
         <Link to={`/admin/playbooks?edit=${playbook.id}`} className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] rounded inline-flex items-center gap-1.5 text-slate-300">
           <PencilSimple size={14}/> Edit
@@ -194,8 +247,10 @@ export default function PlaybookDetail() {
             </div>
           </div>
 
-          <div className="text-[11px] text-slate-500 px-1">
-            Click a step to check it off as you go — this is just for following along on this screen, it isn't saved.
+          <div className="text-[11px] text-slate-500 px-1 flex items-center gap-1.5">
+            {findingId
+              ? <>Click a step to check it off — saved against this finding{saving ? " (saving…)" : "."}</>
+              : <>Click a step to check it off as you go — open this playbook from a specific finding to save your progress.</>}
           </div>
 
           <div style={{ height: Math.max(360, height + 60) }} className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">
@@ -233,14 +288,34 @@ export default function PlaybookDetail() {
             </div>
             {playbook.validation_checks?.length ? (
               <ul className="space-y-1.5">
-                {playbook.validation_checks.map((v, i) => (
-                  <li key={i} className="text-[12px] text-slate-300 flex items-start gap-1.5">
-                    <span className="text-emerald-400 mt-0.5">✓</span> {v}
-                  </li>
-                ))}
+                {playbook.validation_checks.map((v, i) => {
+                  const done = doneChecks.has(i);
+                  return (
+                    <li key={i}>
+                      {findingId ? (
+                        <button onClick={() => toggleCheck(i)}
+                          className="w-full flex items-start gap-1.5 text-[12px] text-left">
+                          <span className={done ? "text-emerald-400 mt-0.5" : "text-slate-600 mt-0.5"}>✓</span>
+                          <span className={done ? "text-emerald-100/80 line-through decoration-emerald-500/40" : "text-slate-300"}>{v}</span>
+                        </button>
+                      ) : (
+                        <div className="text-[12px] text-slate-300 flex items-start gap-1.5">
+                          <span className="text-emerald-400 mt-0.5">✓</span> {v}
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             ) : <div className="text-[12px] text-slate-500">None recorded.</div>}
           </div>
+
+          {findingId && allStepsDone && allChecksDone && !validated && (
+            <button onClick={markValidated}
+              className="w-full h-9 text-[12.5px] bg-emerald-500/15 border border-emerald-500/40 hover:bg-emerald-500/25 text-emerald-200 rounded inline-flex items-center justify-center gap-1.5">
+              <FlagCheckered size={14}/> Mark fix validated
+            </button>
+          )}
 
           <div className="text-[10.5px] text-slate-600 px-1">
             Created {playbook.created_by ? `by ${playbook.created_by}` : ""} {playbook.updated_at ? `· updated ${playbook.updated_at.slice(0,10)}` : ""}

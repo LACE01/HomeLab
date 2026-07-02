@@ -41,10 +41,16 @@ from scoring import compute_risk, compute_sla_days
 # reasonable over the internet); -sV/-O need raw sockets (NET_RAW/NET_ADMIN, granted to
 # the backend container in docker-compose.yml) to do real SYN scans + OS fingerprinting
 # instead of silently falling back to slow, easily-noticed full TCP connects.
+# -Pn skips Nmap's default "is this host even up" ping check and just scans it. Without
+# it, any target that silently drops ICMP echo / TCP probes (most consumer routers and
+# plenty of hardened servers do this by default) gets reported as "0 hosts up" and the
+# port scan never even runs -- which looks like the scan is broken when it's actually
+# just Nmap being (overly) polite. Since every target here already went through the
+# explicit authorization checkbox, there's no reason to skip scanning it over this.
 SCAN_PRESETS = {
-    "quick": ["-T4", "-F"],                              # top 100 ports, no service/OS probing
-    "standard": ["-T4", "-sV", "-O", "--top-ports", "1000"],
-    "thorough": ["-T4", "-sV", "-O", "-p-"],              # all 65535 ports -- slow
+    "quick": ["-T4", "-F", "-Pn"],                              # top 100 ports, no service/OS probing
+    "standard": ["-T4", "-sV", "-O", "--top-ports", "1000", "-Pn"],
+    "thorough": ["-T4", "-sV", "-O", "-p-", "-Pn"],              # all 65535 ports -- slow
 }
 
 TARGET_RE = re.compile(
@@ -138,13 +144,19 @@ def _validate_flag_value(flag: str, value: str) -> list:
 
 def build_scan_args(port_mode: str = "top1000", custom_ports: str | None = None, timing: int = 4,
                      detect_service: bool = True, detect_os: bool = True,
-                     scripts: list | None = None, scan_technique: str = "syn") -> list:
+                     scripts: list | None = None, scan_technique: str = "syn",
+                     skip_host_discovery: bool = True) -> list:
     """Assembles an nmap args list from GUI-builder options (the toggle-based form),
     reusing the same validators the raw-command parser uses."""
     args = [{"syn": "-sS", "connect": "-sT", "udp": "-sU"}.get(scan_technique, "-sS")]
     if not (isinstance(timing, int) and 0 <= timing <= 5):
         raise ValueError("Timing must be between 0 (paranoid) and 5 (insane)")
     args.append(f"-T{timing}")
+    if skip_host_discovery:
+        # See the comment on SCAN_PRESETS -- on by default because a "down" result from
+        # the discovery ping is by far the most common reason a scan silently finds
+        # nothing, and every target here is already explicitly authorized.
+        args.append("-Pn")
     if port_mode == "all":
         args.append("-p-")
     elif port_mode == "top100":
@@ -383,7 +395,7 @@ async def _dedup_finding(db, asset_id: str, port: int, title: str) -> bool:
 
 
 async def _create_port_finding(db, asset: dict, port_info: dict, severity: str, title: str,
-                                description: str, cwe: str = "CWE-284") -> bool:
+                                description: str, cwe: str = "CWE-284", internet_facing: bool = True) -> bool:
     if await _dedup_finding(db, asset["id"], port_info["port"], title):
         return False
     now = _now_iso()
@@ -401,7 +413,7 @@ async def _create_port_finding(db, asset: dict, port_info: dict, severity: str, 
         "asset_id": asset["id"], "asset_hostname": asset["hostname"], "asset_ip": asset.get("ip"),
         "asset_criticality": asset["criticality"], "asset_exposure": asset["exposure"],
         "asset_environment": asset["environment"], "asset_os": asset.get("operating_system"),
-        "internet_facing": True, "owner_team": asset.get("owner_team"),
+        "internet_facing": internet_facing, "owner_team": asset.get("owner_team"),
         "ownership_confidence": asset.get("ownership_confidence", 0.3),
         "product_id": asset.get("product_id"), "product_name": asset.get("product_name"),
         "status": "New", "validation_status": "pending", "reopened_count": 0,
@@ -435,6 +447,8 @@ async def import_nmap_xml(db, content: bytes, vantage: str = "internal", source_
     findings_created = 0
     exposure_confirmed = 0
     exposure_mismatches = 0
+    host_summaries = []  # for the UI -- so a scan result is something you can click into,
+                          # not just a count, even when it created zero findings
 
     for h in hosts:
         asset = await _find_or_create_asset(db, h["ip"], h["hostname"])
@@ -469,30 +483,47 @@ async def import_nmap_xml(db, content: bytes, vantage: str = "internal", source_
         asset = {**asset, **patch}
         assets_touched += 1
 
+        # Risky/newly-appeared port findings run for internal scans too now -- a Telnet
+        # or unauthenticated Redis instance sitting on your own LAN is still a real
+        # finding (arguably a worse one, since a foothold anywhere on the network can
+        # reach it), it's just not an "internet exposure" finding. Only the wording and
+        # internet_facing flag differ by vantage; the external-vantage exposure
+        # confirm/mismatch bookkeeping above stays external-only since that's a
+        # meaningfully different question (does this match what we *declared* as
+        # internet-facing) than "is this port worth flagging at all".
         is_internet_context = vantage == "external" or asset.get("exposure") in ("internet", "external")
-        if is_internet_context:
-            for p in h["ports"]:
-                if p["port"] in RISKY_PORTS:
-                    svc_label, severity, why = RISKY_PORTS[p["port"]]
+        for p in h["ports"]:
+            if p["port"] in RISKY_PORTS:
+                svc_label, severity, why = RISKY_PORTS[p["port"]]
+                if is_internet_context:
                     title = f"Exposed {svc_label} service (port {p['port']}) reachable from the internet"
-                    created = await _create_port_finding(
-                        db, asset, p, severity, title,
-                        description=f"{why} Detected via Nmap ({p.get('product') or p.get('service') or 'unknown service'} "
-                                    f"{p.get('version') or ''}).".strip(),
-                    )
-                    if created:
-                        findings_created += 1
-                elif p["port"] in newly_appeared:
-                    title = f"New port opened since last scan: {p['port']}/{p.get('protocol','tcp')} ({p.get('service') or 'unknown'})"
-                    created = await _create_port_finding(
-                        db, asset, p, "Low", title,
-                        description=f"This port was not open on the previous Nmap scan of this host and is now reachable "
-                                    f"{'from the internet' if vantage == 'external' else '(internal scan -- confirm intent)'}. "
-                                    f"Could be an intended change or a misconfiguration worth a quick look.",
-                        cwe="CWE-1008",
-                    )
-                    if created:
-                        findings_created += 1
+                else:
+                    title = f"Sensitive {svc_label} service (port {p['port']}) listening on the network"
+                created = await _create_port_finding(
+                    db, asset, p, severity, title,
+                    description=f"{why} Detected via Nmap ({p.get('product') or p.get('service') or 'unknown service'} "
+                                f"{p.get('version') or ''}).".strip(),
+                    internet_facing=is_internet_context,
+                )
+                if created:
+                    findings_created += 1
+            elif p["port"] in newly_appeared:
+                title = f"New port opened since last scan: {p['port']}/{p.get('protocol','tcp')} ({p.get('service') or 'unknown'})"
+                created = await _create_port_finding(
+                    db, asset, p, "Low", title,
+                    description=f"This port was not open on the previous Nmap scan of this host and is now reachable "
+                                f"{'from the internet' if vantage == 'external' else 'on the internal network'}. "
+                                f"Could be an intended change or a misconfiguration worth a quick look.",
+                    cwe="CWE-1008",
+                    internet_facing=is_internet_context,
+                )
+                if created:
+                    findings_created += 1
+
+        host_summaries.append({
+            "asset_id": asset["id"], "ip": h["ip"], "hostname": h["hostname"],
+            "open_ports_count": len(h["ports"]), "os_guess": h.get("os_guess"),
+        })
 
     await db.import_jobs.insert_one({
         "id": str(uuid.uuid4()), "source_name": "Nmap", "status": "success",
@@ -505,4 +536,5 @@ async def import_nmap_xml(db, content: bytes, vantage: str = "internal", source_
         "hosts_parsed": len(hosts), "assets_touched": assets_touched,
         "findings_created": findings_created, "vantage": vantage,
         "exposure_confirmed": exposure_confirmed, "exposure_mismatches": exposure_mismatches,
+        "hosts": host_summaries,
     }

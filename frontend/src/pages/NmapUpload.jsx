@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from "react";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
@@ -6,6 +7,7 @@ import { Chip } from "@/components/Badges";
 import {
   UploadSimple, FileCode, Globe, House, Plus, X, Trash, PencilSimple, Play,
   Clock, ShieldWarning, CheckCircle, XCircle, CircleNotch, Terminal, Sliders, ListChecks,
+  Info, ArrowSquareOut,
 } from "@phosphor-icons/react";
 
 const SCAN_TYPE_META = {
@@ -186,7 +188,7 @@ const EMPTY_FORM = {
   name: "", targets: "", mode: "preset", scan_type: "standard", vantage: "internal",
   schedule_hours: 0, enabled: true, authorized: false,
   port_mode: "top1000", custom_ports: "", timing: 4, detect_service: true, detect_os: true,
-  scripts: [], scan_technique: "syn", custom_command: "",
+  scripts: [], scan_technique: "syn", custom_command: "", skip_host_discovery: true,
 };
 
 function ScheduledScans() {
@@ -299,6 +301,7 @@ function ScheduledScans() {
 }
 
 function ScanConfigRow({ cfg, running, onRun, onEdit, onDelete, onToggle }) {
+  const [resultOpen, setResultOpen] = useState(false);
   const scheduleLabel = cfg.schedule_hours === 0
     ? "Manual only"
     : SCHEDULE_PRESETS.find(p => p.hours === cfg.schedule_hours)?.label || `Every ${cfg.schedule_hours}h`;
@@ -333,18 +336,25 @@ function ScanConfigRow({ cfg, running, onRun, onEdit, onDelete, onToggle }) {
           {result && (
             <div className="mt-2 text-[11.5px]">
               {result.ok === false ? (
-                <div className="inline-flex items-center gap-1.5 text-red-400">
+                <button onClick={() => setResultOpen(true)} className="inline-flex items-center gap-1.5 text-red-400 hover:underline">
                   <XCircle size={13}/> {result.error || "Scan failed"}
-                </div>
+                </button>
               ) : (
-                <div className="inline-flex items-center gap-1.5 text-emerald-400">
+                <button onClick={() => setResultOpen(true)} className="inline-flex items-center gap-1.5 text-emerald-400 hover:underline">
                   <CheckCircle size={13}/>
                   {result.hosts_parsed} host(s) · {result.findings_created} new finding(s)
                   {cfg.vantage === "external" ? ` · ${result.exposure_mismatches || 0} exposure mismatch(es)` : ""}
+                </button>
+              )}
+              {result.ok !== false && result.hosts_parsed === 0 && (
+                <div className="mt-1 flex items-start gap-1.5 text-[11px] text-slate-500">
+                  <Info size={13} className="shrink-0 mt-0.5"/>
+                  <span>No hosts responded — click above for troubleshooting tips.</span>
                 </div>
               )}
             </div>
           )}
+          {resultOpen && <ScanResultModal cfg={cfg} result={result} onClose={() => setResultOpen(false)}/>}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <button onClick={onRun} disabled={running}
@@ -367,6 +377,68 @@ function ScanConfigRow({ cfg, running, onRun, onEdit, onDelete, onToggle }) {
   );
 }
 
+function ScanResultModal({ cfg, result, onClose }) {
+  const hosts = result?.hosts || [];
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-[#0D1117] border border-[#30363D] rounded-md w-full max-w-lg max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#30363D]">
+          <div className="text-[14px] text-slate-100 font-medium">Scan result — {cfg.name}</div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-200"><X size={18}/></button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {cfg.resolved_command && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider font-mono text-slate-500 mb-1.5">Command that ran</div>
+              <div className="rounded-md px-3 py-2 text-[11px] font-mono break-all border border-[#30363D] bg-[#161B22] text-slate-300">
+                {cfg.resolved_command}
+              </div>
+            </div>
+          )}
+
+          {result?.ok === false ? (
+            <div className="border border-red-500/30 bg-red-500/5 rounded-md px-3 py-2.5 text-[12px] text-red-300">
+              {result.error || "Scan failed"}
+            </div>
+          ) : hosts.length === 0 ? (
+            <div className="border border-orange-500/30 bg-orange-500/5 rounded-md px-3 py-2.5 text-[12px] text-orange-200 leading-relaxed space-y-1.5">
+              <div className="font-medium">No hosts responded. A few things to check:</div>
+              <div>• If this target is behind a router/firewall, it may be silently dropping Nmap's discovery
+                probes — "Treat target as online (skip ping check)" is on by default for new configs, so if this
+                config predates that, re-save it (or switch it to Builder mode) to pick it up.</div>
+              <div>• Confirm the target IP/hostname is correct and reachable from wherever this container's Docker
+                host sits on your network.</div>
+              <div>• Some scan techniques (UDP, certain NSE scripts) are much slower and can time out on a big
+                port range before finishing — try a narrower port spec first.</div>
+            </div>
+          ) : (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider font-mono text-slate-500 mb-1.5">
+                {hosts.length} host(s) found
+              </div>
+              <div className="border border-[#30363D] rounded-md divide-y divide-[#30363D]">
+                {hosts.map(h => (
+                  <Link key={h.asset_id} to={`/assets/${h.asset_id}`}
+                    className="flex items-center justify-between gap-3 px-3 py-2.5 hover:bg-[#161B22] transition-colors">
+                    <div className="min-w-0">
+                      <div className="text-[12.5px] text-slate-200 font-mono truncate">{h.hostname || h.ip}</div>
+                      <div className="text-[10.5px] text-slate-500">
+                        {h.ip}{h.os_guess ? ` · ${h.os_guess}` : ""} · {h.open_ports_count} open port(s)
+                      </div>
+                    </div>
+                    <ArrowSquareOut size={14} className="text-slate-500 shrink-0"/>
+                  </Link>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ScanConfigModal({ initial, isEdit, onClose, onSaved }) {
   const [form, setForm] = useState({
     name: initial.name || "", targets: initial.targets || "",
@@ -377,6 +449,7 @@ function ScanConfigModal({ initial, isEdit, onClose, onSaved }) {
     timing: initial.timing ?? 4, detect_service: initial.detect_service ?? true, detect_os: initial.detect_os ?? true,
     scripts: initial.scripts || [], scan_technique: initial.scan_technique || "syn",
     custom_command: initial.custom_command || "",
+    skip_host_discovery: initial.skip_host_discovery ?? true,
   });
   const [saving, setSaving] = useState(false);
   const [preview, setPreview] = useState(null);
@@ -399,7 +472,8 @@ function ScanConfigModal({ initial, isEdit, onClose, onSaved }) {
     return () => clearTimeout(previewTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.mode, form.targets, form.port_mode, form.custom_ports, form.timing, form.detect_service,
-      form.detect_os, form.scripts, form.scan_technique, form.custom_command, form.authorized]);
+      form.detect_os, form.scripts, form.scan_technique, form.custom_command, form.authorized,
+      form.skip_host_discovery]);
 
   const toggleScript = (cat) => {
     setForm(f => ({ ...f, scripts: f.scripts.includes(cat) ? f.scripts.filter(s => s !== cat) : [...f.scripts, cat] }));
@@ -535,7 +609,7 @@ function ScanConfigModal({ initial, isEdit, onClose, onSaved }) {
                   className="w-full"/>
               </div>
 
-              <div className="flex gap-4">
+              <div className="flex gap-4 flex-wrap">
                 <label className="flex items-center gap-2 text-[12px] text-slate-300 cursor-pointer">
                   <input type="checkbox" checked={form.detect_service} onChange={e => setForm({ ...form, detect_service: e.target.checked })}/>
                   Service/version detection (-sV)
@@ -545,6 +619,19 @@ function ScanConfigModal({ initial, isEdit, onClose, onSaved }) {
                   OS detection (-O)
                 </label>
               </div>
+
+              <label className="flex items-start gap-2 text-[12px] text-slate-300 cursor-pointer border border-[#30363D] rounded-md px-2.5 py-2">
+                <input type="checkbox" checked={form.skip_host_discovery} onChange={e => setForm({ ...form, skip_host_discovery: e.target.checked })}
+                  className="mt-0.5"/>
+                <span>
+                  Treat target as online, skip the ping check (-Pn)
+                  <span className="block text-[10.5px] text-slate-500 mt-0.5">
+                    Recommended — many routers/firewalls silently drop the probes Nmap uses to check if a host is
+                    up, which makes the scan report "0 hosts" even though the target is reachable. Turn this off
+                    only if you specifically want Nmap's discovery step to skip unresponsive hosts on a big range.
+                  </span>
+                </span>
+              </label>
 
               <div>
                 <label className="block text-[10px] uppercase tracking-wider font-mono text-slate-500 mb-1.5">NSE scripts</label>

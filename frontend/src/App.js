@@ -35,6 +35,7 @@ import ChatOps from "@/pages/ChatOps";
 import OpsHealth from "@/pages/OpsHealth";
 import Backups from "@/pages/Backups";
 import AuditLog from "@/pages/AuditLog";
+import Yara from "@/pages/Yara";
 
 const Protected = ({ children }) => {
   const { user, loading } = useAuth();
@@ -69,6 +70,7 @@ const AppRouter = () => {
       <Route path="/attack-paths" element={<Protected><AttackPaths/></Protected>}/>
       <Route path="/admin/tls-certs" element={<Protected><TlsCerts/></Protected>}/>
       <Route path="/admin/sbom" element={<Protected><SbomUpload/></Protected>}/>
+      <Route path="/admin/yara" element={<Protected><Yara/></Protected>}/>
       <Route path="/easm" element={<Protected><Easm/></Protected>}/>
       <Route path="/compliance" element={<Protected><Compliance/></Protected>}/>
       <Route path="/admin/chatops" element={<Protected><ChatOps/></Protected>}/>

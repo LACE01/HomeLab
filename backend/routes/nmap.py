@@ -49,6 +49,7 @@ class ScanConfigBody(BaseModel):
     detect_os: bool = True             # -O
     scripts: list = []                 # subset of default/safe/discovery/version/vuln
     scan_technique: str = "syn"        # syn (-sS) | connect (-sT) | udp (-sU)
+    skip_host_discovery: bool = True   # -Pn -- on by default; see nmap_scan.py comment
 
     # --- "raw" mode: paste a command line ---
     custom_command: Optional[str] = None
@@ -88,6 +89,7 @@ def _validate(body: ScanConfigBody) -> dict:
                 port_mode=body.port_mode, custom_ports=body.custom_ports, timing=body.timing,
                 detect_service=body.detect_service, detect_os=body.detect_os,
                 scripts=body.scripts, scan_technique=body.scan_technique,
+                skip_host_discovery=body.skip_host_discovery,
             )
         except ValueError as e:
             raise HTTPException(400, str(e))

@@ -126,6 +126,9 @@ export default function FindingDetail() {
   const [intel, setIntel] = useState(null);
   const [playbook, setPlaybook] = useState(undefined); // undefined = loading, null = none found
   const [playbookBasis, setPlaybookBasis] = useState(null);
+  const [playbookProgress, setPlaybookProgress] = useState(null);
+  const [allPlaybooks, setAllPlaybooks] = useState([]);
+  const [attachingPlaybook, setAttachingPlaybook] = useState(false);
   const [patchGroup, setPatchGroup] = useState(null);
   const [mitigations, setMitigations] = useState([]);
   const [mitigationTypes, setMitigationTypes] = useState([]);
@@ -143,11 +146,58 @@ export default function FindingDetail() {
     api.get(`/v1/findings/${id}/timeline`).then(r => setActivity(r.data.items));
     api.get(`/v1/findings/${id}/comments`).then(r => setComments(r.data.items));
     api.get(`/v1/findings/${id}/kri`).then(r => setKri(r.data));
-    api.get(`/v1/findings/${id}/playbook`).then(r => { setPlaybook(r.data.playbook); setPlaybookBasis(r.data.match_basis); });
+    loadPlaybook();
+    api.get(`/v1/playbooks`).then(r => setAllPlaybooks(r.data.items || []));
     api.get(`/v1/findings/${id}/patch-group`).then(r => setPatchGroup(r.data));
     loadMitigations();
     loadExceptions();
   }, [id]); // eslint-disable-line
+
+  const loadPlaybook = () => api.get(`/v1/findings/${id}/playbook`).then(r => {
+    setPlaybook(r.data.playbook); setPlaybookBasis(r.data.match_basis); setPlaybookProgress(r.data.progress);
+  });
+
+  const attachPlaybook = async (playbookId) => {
+    setAttachingPlaybook(true);
+    try {
+      await api.put(`/v1/findings/${id}/playbook-attach`, { playbook_id: playbookId || null });
+      await loadPlaybook();
+      toast.success(playbookId ? "Playbook attached" : "Playbook detached — reverted to auto-match");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to update attached playbook");
+    } finally { setAttachingPlaybook(false); }
+  };
+
+  const saveProgress = async (next) => {
+    setPlaybookProgress(next); // optimistic
+    try {
+      const saved = await api.put(`/v1/findings/${id}/playbook-progress`, {
+        playbook_id: playbook.id, steps_done: next.steps_done, validated_checks: next.validated_checks,
+        validated: next.validated,
+      });
+      setPlaybookProgress(saved.data);
+    } catch (e) {
+      toast.error("Failed to save checklist progress");
+    }
+  };
+
+  const toggleStep = (i) => {
+    const done = new Set(playbookProgress?.steps_done || []);
+    done.has(i) ? done.delete(i) : done.add(i);
+    saveProgress({
+      steps_done: Array.from(done), validated_checks: playbookProgress?.validated_checks || [],
+      validated: playbookProgress?.validated || false,
+    });
+  };
+
+  const toggleCheck = (i) => {
+    const done = new Set(playbookProgress?.validated_checks || []);
+    done.has(i) ? done.delete(i) : done.add(i);
+    saveProgress({
+      steps_done: playbookProgress?.steps_done || [], validated_checks: Array.from(done),
+      validated: playbookProgress?.validated || false,
+    });
+  };
 
   useEffect(() => {
     if (f?.cve) api.get(`/v1/threat-intel/${f.cve}`).then(r => setIntel(r.data));
@@ -265,32 +315,77 @@ export default function FindingDetail() {
             <Section title="Remediation Playbook" testid="section-playbook">
               {playbook === undefined && <div className="text-[12px] text-slate-500">Loading…</div>}
               {playbook === null && (
-                <div className="text-[12.5px] text-slate-500 flex items-center justify-between gap-3">
-                  <span>No playbook yet for {f.cve || (f.cwe ? f.cwe : "this finding")}.</span>
-                  <Link to={`/admin/playbooks?new=1&cve=${encodeURIComponent(f.cve||"")}&cwe=${encodeURIComponent(f.cwe||"")}`}
-                    className="h-7 px-2.5 text-[11px] bg-blue-500/15 border border-blue-500/40 hover:bg-blue-500/25 text-blue-300 rounded inline-flex items-center gap-1 shrink-0">
-                    <Plus size={11}/> Create one
-                  </Link>
+                <div className="space-y-2.5">
+                  <div className="text-[12.5px] text-slate-500 flex items-center justify-between gap-3">
+                    <span>No playbook yet for {f.cve || (f.cwe ? f.cwe : "this finding")}.</span>
+                    <Link to={`/admin/playbooks?new=1&cve=${encodeURIComponent(f.cve||"")}&cwe=${encodeURIComponent(f.cwe||"")}`}
+                      className="h-7 px-2.5 text-[11px] bg-blue-500/15 border border-blue-500/40 hover:bg-blue-500/25 text-blue-300 rounded inline-flex items-center gap-1 shrink-0">
+                      <Plus size={11}/> Create one
+                    </Link>
+                  </div>
+                  {allPlaybooks.length > 0 && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-slate-500 shrink-0">or attach an existing one:</span>
+                      <select disabled={attachingPlaybook} defaultValue=""
+                        onChange={(e) => { if (e.target.value) attachPlaybook(e.target.value); }}
+                        className="h-8 flex-1 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200">
+                        <option value="" disabled>Choose a playbook…</option>
+                        {allPlaybooks.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
+                      </select>
+                    </div>
+                  )}
                 </div>
               )}
               {playbook && (
                 <div>
-                  <div className="flex items-center gap-2 mb-1">
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
                     <BookOpen size={15} className="text-blue-300"/>
-                    <Link to={`/admin/playbooks/${playbook.id}`} className="text-[13px] text-slate-100 font-medium hover:underline hover:text-blue-200">{playbook.title}</Link>
-                    <Chip color="blue">{playbookBasis === "cve" ? `Exact CVE match` : `CWE match: ${playbook.cwe}`}</Chip>
-                    <Link to={`/admin/playbooks/${playbook.id}`} className="ml-auto text-[10.5px] text-blue-300 hover:underline shrink-0">Open interactive flow →</Link>
+                    <Link to={`/admin/playbooks/${playbook.id}?finding=${id}`} className="text-[13px] text-slate-100 font-medium hover:underline hover:text-blue-200">{playbook.title}</Link>
+                    <Chip color="blue">
+                      {playbookBasis === "manual" ? "Manually attached" : playbookBasis === "cve" ? "Exact CVE match" : `CWE match: ${playbook.cwe}`}
+                    </Chip>
+                    {playbookProgress?.validated && <Chip color="green">Fix validated</Chip>}
+                    <Link to={`/admin/playbooks/${playbook.id}?finding=${id}`} className="ml-auto text-[10.5px] text-blue-300 hover:underline shrink-0">Open interactive flow →</Link>
                   </div>
-                  {playbook.description && <div className="text-[11.5px] text-slate-500 mb-3">{playbook.description}</div>}
+                  {playbook.description && <div className="text-[11.5px] text-slate-500 mb-2">{playbook.description}</div>}
 
-                  <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider mb-1.5">Steps</div>
-                  <ol className="space-y-1.5 mb-3">
-                    {playbook.steps.map((s, i) => (
-                      <li key={i} className="flex items-start gap-2 text-[12.5px] text-slate-200">
-                        <span className="text-blue-300 font-mono text-[11px] mt-0.5 shrink-0">{i+1}.</span>
-                        <span>{s}</span>
-                      </li>
-                    ))}
+                  {allPlaybooks.length > 0 && (
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className="text-[10.5px] text-slate-500 shrink-0">Switch playbook:</span>
+                      <select disabled={attachingPlaybook} value={playbookBasis === "manual" ? playbook.id : ""}
+                        onChange={(e) => attachPlaybook(e.target.value || null)}
+                        className="h-7 flex-1 bg-[#161B22] border border-[#30363D] rounded px-2 text-[11px] text-slate-300">
+                        {playbookBasis !== "manual" && <option value="">{playbookBasis === "cve" ? "Exact CVE match" : "CWE match"} (auto)</option>}
+                        {allPlaybooks.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
+                      </select>
+                      {playbookBasis === "manual" && (
+                        <button onClick={() => attachPlaybook(null)} disabled={attachingPlaybook}
+                          className="text-[10.5px] text-slate-400 hover:text-slate-200 shrink-0">Revert to auto-match</button>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Steps — click to check off</div>
+                    <div className="text-[10.5px] text-slate-500 font-mono">
+                      {(playbookProgress?.steps_done?.length || 0)}/{playbook.steps.length}
+                    </div>
+                  </div>
+                  <ol className="space-y-1 mb-3">
+                    {playbook.steps.map((s, i) => {
+                      const done = (playbookProgress?.steps_done || []).includes(i);
+                      return (
+                        <li key={i}>
+                          <button onClick={() => toggleStep(i)}
+                            className={`w-full flex items-start gap-2 text-[12.5px] text-left rounded px-2 py-1.5 -mx-2 transition-colors ${done ? "bg-emerald-500/5" : "hover:bg-[#161B22]"}`}>
+                            {done
+                              ? <CheckCircle size={15} weight="fill" className="text-emerald-400 mt-0.5 shrink-0"/>
+                              : <span className="w-[15px] h-[15px] rounded-full border border-slate-600 mt-0.5 shrink-0"/>}
+                            <span className={done ? "text-emerald-100/80 line-through decoration-emerald-500/40" : "text-slate-200"}>{s}</span>
+                          </button>
+                        </li>
+                      );
+                    })}
                   </ol>
 
                   {playbook.rollback_notes && (
@@ -305,14 +400,21 @@ export default function FindingDetail() {
                   {playbook.validation_checks?.length > 0 && (
                     <div>
                       <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider mb-1.5 flex items-center gap-1.5">
-                        <CheckCircle size={12}/> Validation checks
+                        <CheckCircle size={12}/> Validation checks — click to check off
                       </div>
                       <ul className="space-y-1">
-                        {playbook.validation_checks.map((v, i) => (
-                          <li key={i} className="text-[12px] text-slate-300 flex items-start gap-1.5">
-                            <span className="text-emerald-400 mt-0.5">✓</span> {v}
-                          </li>
-                        ))}
+                        {playbook.validation_checks.map((v, i) => {
+                          const done = (playbookProgress?.validated_checks || []).includes(i);
+                          return (
+                            <li key={i}>
+                              <button onClick={() => toggleCheck(i)}
+                                className={`w-full flex items-start gap-1.5 text-[12px] text-left rounded px-2 py-1 -mx-2 transition-colors ${done ? "bg-emerald-500/5" : "hover:bg-[#161B22]"}`}>
+                                <span className={done ? "text-emerald-400 mt-0.5" : "text-slate-600 mt-0.5"}>✓</span>
+                                <span className={done ? "text-emerald-100/80 line-through decoration-emerald-500/40" : "text-slate-300"}>{v}</span>
+                              </button>
+                            </li>
+                          );
+                        })}
                       </ul>
                     </div>
                   )}

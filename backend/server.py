@@ -40,6 +40,7 @@ from routes.chatops import router as chatops_router
 from routes.health import router as health_router
 from routes.backups import router as backups_router
 from routes.audit import router as audit_router
+from routes.yara import router as yara_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("vulnops")
@@ -70,6 +71,7 @@ api.include_router(chatops_router)
 api.include_router(health_router)
 api.include_router(backups_router)
 api.include_router(audit_router)
+api.include_router(yara_router)
 
 
 @api.get("/")

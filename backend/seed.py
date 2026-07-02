@@ -445,6 +445,71 @@ async def _ensure_integrations(db, now_iso_str: str):
         await db.integrations.insert_many(to_insert)
 
 
+# Two intentionally small, safe example rules so the YARA pipeline is provably working
+# the moment the Rules tab is opened -- not a real detection rule pack (see yara_scan.py
+# docstring for why one isn't bundled). EICAR is the industry-standard harmless AV test
+# string; the webshell heuristic is a generic, commonly-published pattern, not a real
+# vendor signature.
+YARA_STARTER_RULES = [
+    {
+        "name": "EICAR Test File (starter rule)",
+        "description": "Detects the standard EICAR antivirus test string. Not malware -- a harmless "
+                        "file used to verify a scanner actually fires. Upload a file containing the "
+                        "EICAR string (search 'eicar test file string' for the exact text) to confirm "
+                        "this pipeline works end to end.",
+        "source": r"""rule EICAR_Test_File
+{
+    meta:
+        description = "EICAR antivirus test string -- confirms the scan pipeline works"
+        severity = "Low"
+    strings:
+        $eicar = "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+    condition:
+        $eicar
+}
+""",
+        "enabled": True,
+    },
+    {
+        "name": "Generic PHP webshell heuristic (starter rule)",
+        "description": "Broad heuristic for a common webshell shape (eval/system/exec called on "
+                        "user-controlled input, often base64-wrapped). Meant as a starting point to "
+                        "replace or refine, not a production-grade signature -- expect some false "
+                        "positives on legitimate code that happens to combine these primitives.",
+        "source": r"""rule Generic_PHP_Webshell_Heuristic
+{
+    meta:
+        description = "Eval/system/exec on request-controlled input -- common webshell shape"
+        severity = "High"
+    strings:
+        $exec1 = "eval(" nocase
+        $exec2 = "system(" nocase
+        $exec3 = "exec(" nocase
+        $exec4 = "shell_exec(" nocase
+        $src1 = "$_REQUEST"
+        $src2 = "$_POST"
+        $src3 = "$_GET"
+        $enc = "base64_decode(" nocase
+    condition:
+        1 of ($exec*) and 1 of ($src*) and $enc
+}
+""",
+        "enabled": True,
+    },
+]
+
+
+async def _ensure_yara_rules(db, now_iso_str: str):
+    for r in YARA_STARTER_RULES:
+        exists = await db.yara_rules.find_one({"name": r["name"]})
+        if exists:
+            continue
+        await db.yara_rules.insert_one({
+            "id": _id(), **r, "valid": True, "compile_error": None,
+            "created_at": now_iso_str, "created_by": "system",
+        })
+
+
 async def seed_all(db):
     """Idempotent operational scaffolding seed. Safe to call on every startup."""
     now_iso_str = iso(datetime.now(timezone.utc))
@@ -453,6 +518,7 @@ async def seed_all(db):
     await _ensure_notification_channel(db, now_iso_str)
     await _ensure_api_key(db, now_iso_str)
     await _ensure_integrations(db, now_iso_str)
+    await _ensure_yara_rules(db, now_iso_str)
     await _ensure_products(db, now_iso_str)
     await _ensure_playbooks(db, now_iso_str)
 
