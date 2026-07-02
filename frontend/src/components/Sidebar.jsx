@@ -3,7 +3,7 @@ import { useAuth } from "@/lib/auth";
 import {
   ChartLineUp, ListChecks, HardDrives, Stack, Lightning, Ticket,
   ShieldCheck, PlugsConnected, FileArrowDown, GearSix, SignOut, Database, Bug,
-  UsersThree, Bell, ShareNetwork, BookOpen, Robot, Globe, Certificate, Package, MagnifyingGlass, ClipboardText, SlackLogo, Heartbeat, HardDrive, Notepad, Virus,
+  UsersThree, Bell, ShareNetwork, BookOpen, Robot, Globe, Certificate, Package, MagnifyingGlass, ClipboardText, SlackLogo, Heartbeat, HardDrive, Notepad, Virus, FlowArrow,
 } from "@phosphor-icons/react";
 
 const NavItem = ({ to, icon: Icon, label, testid }) => (
@@ -85,6 +85,7 @@ export default function Sidebar() {
           <NavItem to="/admin/assignment-rules" icon={GearSix} label="Assignment Rules" testid="nav-rules" />
           <NavItem to="/admin/ownership" icon={GearSix} label="Ownership Map" testid="nav-ownership" />
           <NavItem to="/admin/sla-policies" icon={ShieldCheck} label="SLA Policies" testid="nav-sla" />
+          <NavItem to="/admin/approval-routing" icon={FlowArrow} label="Approval Routing" testid="nav-approval-routing" />
         </Group>
       </nav>
 

@@ -11,7 +11,7 @@ import {
   User, EnvelopeSimple, ShieldCheck, X,
 } from "@phosphor-icons/react";
 
-const STATUS_COLOR = { pending_approval: "amber", active: "green", expired: "slate", rejected: "red" };
+const STATUS_COLOR = { pending_approval: "amber", active: "green", expired: "slate", rejected: "red", revoked: "red" };
 
 const ACTION_META = {
   exception_requested: { label: "Requested", color: "blue" },
@@ -143,13 +143,57 @@ function RenewModal({ exc, onClose, onDone }) {
   );
 }
 
+function RevokeModal({ exc, onClose, onDone }) {
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+  const submit = async () => {
+    if (!reason.trim()) { toast.error("A reason is required"); return; }
+    setSaving(true);
+    try {
+      const r = await api.post(`/v1/exceptions/${exc.id}/revoke`, { reason });
+      toast.success(`Revoked — ${r.data.findings_reopened} finding(s) reopened.`);
+      onDone();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to revoke");
+    } finally { setSaving(false); }
+  };
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4" onClick={onClose}>
+      <div className="bg-[#0D1117] border border-[#30363D] rounded-md w-full max-w-sm" onClick={e => e.stopPropagation()}>
+        <div className="px-4 py-3 border-b border-[#30363D] flex items-center justify-between">
+          <h3 className="text-[13px] font-medium text-slate-100">Revoke risk acceptance</h3>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-300"><X size={16}/></button>
+        </div>
+        <div className="p-4">
+          <div className="text-[11.5px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded p-2 mb-3">
+            This denies an already-approved risk acceptance before its normal expiry. Every attached finding reopens
+            immediately and the team is notified.
+          </div>
+          <label className="text-[11px] uppercase font-mono text-slate-500">Reason</label>
+          <textarea value={reason} onChange={e => setReason(e.target.value)} rows={3} data-testid="revoke-reason"
+            placeholder="e.g. exploitation activity has escalated since approval"
+            className="w-full mt-1 bg-[#161B22] border border-[#30363D] rounded px-2 py-1.5 text-[12.5px] text-slate-200"/>
+        </div>
+        <div className="px-4 py-3 border-t border-[#30363D] flex justify-end gap-2">
+          <button onClick={onClose} className="h-8 px-3 text-[12px] border border-[#30363D] rounded text-slate-300">Cancel</button>
+          <button onClick={submit} disabled={saving} data-testid="revoke-submit"
+            className="h-8 px-3 text-[12px] bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-300 rounded disabled:opacity-50">
+            {saving ? "Revoking…" : "Revoke"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ExceptionDetail() {
   const { id } = useParams();
   const { user } = useAuth();
   const navigate = useNavigate();
   const [exc, setExc] = useState(null);
-  const [modal, setModal] = useState(null); // "approve" | "reject" | "renew"
-  const canApprove = user?.role === "admin" || user?.role === "manager";
+  const [modal, setModal] = useState(null); // "approve" | "reject" | "renew" | "revoke"
+  const canApprove = !!exc?.can_current_user_approve;
+  const canRevoke = user?.role === "admin" || user?.role === "manager";
 
   const load = useCallback(() => {
     api.get(`/v1/exceptions/${id}`).then(r => setExc(r.data)).catch(() => setExc(false));
@@ -192,8 +236,39 @@ export default function ExceptionDetail() {
                   <button onClick={() => setModal("renew")} data-testid="detail-renew-btn"
                     className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-blue-500/40 hover:text-blue-300 text-slate-400 rounded inline-flex items-center gap-1.5"><ArrowClockwise size={14}/> Renew</button>
                 )}
+                {exc.status === "active" && canRevoke && (
+                  <button onClick={() => setModal("revoke")} data-testid="detail-revoke-btn"
+                    className="h-8 px-3 text-[12px] border border-red-500/30 hover:bg-red-500/10 text-red-400 rounded inline-flex items-center gap-1.5"><XCircle size={14}/> Revoke</button>
+                )}
               </div>
             </div>
+
+            {exc.status === "pending_approval" && exc.approval_chain?.length > 0 && (
+              <div className="flex items-center gap-1.5 flex-wrap mb-3" data-testid="approval-chain-stepper">
+                {exc.approval_chain.map((s, i) => (
+                  <div key={i} className="flex items-center gap-1.5">
+                    <div className={`px-2 py-1 rounded border text-[11px] flex items-center gap-1.5 ${
+                      s.status === "approved" ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                      : s.status === "pending" && i === exc.approval_chain.findIndex(x => x.status === "pending")
+                        ? "border-amber-500/40 bg-amber-500/10 text-amber-300" : "border-[#30363D] text-slate-500"
+                    }`}>
+                      {s.status === "approved" ? <CheckCircle size={12}/> : <Clock size={12}/>}
+                      Step {s.step}: {s.role === "specific" ? s.approver_email : s.role}
+                      {s.status === "approved" && <span className="text-slate-500">· {s.by}</span>}
+                    </div>
+                    {i < exc.approval_chain.length - 1 && <span className="text-slate-600">→</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+            {exc.status === "pending_approval" && !canApprove && exc.awaiting_step_label && (
+              <div className="text-[11.5px] text-slate-500 mb-3">Awaiting approval from <span className="text-slate-300">{exc.awaiting_step_label}</span> — you aren't able to act on this step.</div>
+            )}
+            {exc.status === "revoked" && (
+              <div className="text-[12px] text-red-300 bg-red-500/10 border border-red-500/30 rounded p-2 mb-3">
+                Revoked by {exc.revoked_by} on {fmtDate(exc.revoked_at)}: {exc.revocation_reason}
+              </div>
+            )}
 
             <div className="text-[12.5px] text-slate-300 whitespace-pre-wrap">{exc.business_justification || exc.rationale}</div>
             {exc.approval_justification && (
@@ -307,6 +382,7 @@ export default function ExceptionDetail() {
       {modal === "approve" && <ApproveModal exc={exc} onClose={() => setModal(null)} onDone={() => { setModal(null); load(); }} />}
       {modal === "reject" && <RejectModal exc={exc} onClose={() => setModal(null)} onDone={() => { setModal(null); load(); }} />}
       {modal === "renew" && <RenewModal exc={exc} onClose={() => setModal(null)} onDone={() => { setModal(null); load(); }} />}
+      {modal === "revoke" && <RevokeModal exc={exc} onClose={() => setModal(null)} onDone={() => { setModal(null); load(); }} />}
     </Layout>
   );
 }

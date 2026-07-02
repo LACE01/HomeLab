@@ -24,7 +24,7 @@ TRIGGERS = [
     "finding_created_critical", "finding_created_high", "finding_assigned",
     "ticket_sla_warning", "ticket_overdue", "ticket_reassigned",
     "comment_mention", "exception_expiring", "finding_reopened", "kev_match",
-    "tls_cert_expiring",
+    "tls_cert_expiring", "exception_revoked", "exception_risk_escalated",
 ]
 
 CHANNELS = ["email", "discord", "slack", "teams", "webhook"]
@@ -73,6 +73,22 @@ TEMPLATES = {
             "• **Finding:** {title}\n• **Asset:** {asset}\n"
             "• **Approver:** {approver}\n• **Expires:** {expires_at}\n\n"
             "Decide: renew, accept the new risk, or remediate. Open: {url}"
+        ),
+    },
+    "exception_revoked": {
+        "subject": "[VulnOps] Risk acceptance revoked: {title}",
+        "body": (
+            "⛔ A previously-approved risk acceptance has been revoked before its normal expiry.\n\n"
+            "• **Covers:** {title}\n• **Revoked by:** {revoked_by}\n• **Reason:** {reason}\n"
+            "• **Findings reopened:** {finding_count}\n\nOpen: {url}"
+        ),
+    },
+    "exception_risk_escalated": {
+        "subject": "[VulnOps] Risk acceptance needs a second look: {title}",
+        "body": (
+            "📈 Threat activity around this accepted risk has escalated since it was approved.\n\n"
+            "• **Covers:** {title}\n• **What changed:** {escalation_reason}\n"
+            "• **Expires:** {expires_at}\n\nConsider revoking or re-confirming this acceptance. Open: {url}"
         ),
     },
     "tls_cert_expiring": {

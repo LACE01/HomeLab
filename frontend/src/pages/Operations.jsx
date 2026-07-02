@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import { useAuth } from "@/lib/auth";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import { fmtDate, fmtRel } from "@/lib/utils-fmt";
@@ -195,9 +194,10 @@ const EXC_STATUS_TABS = [
   { id: "active", label: "Active" },
   { id: "expired", label: "Expired" },
   { id: "rejected", label: "Rejected" },
+  { id: "revoked", label: "Revoked" },
 ];
 
-const EXC_STATUS_COLOR = { pending_approval: "amber", active: "green", expired: "slate", rejected: "red" };
+const EXC_STATUS_COLOR = { pending_approval: "amber", active: "green", expired: "slate", rejected: "red", revoked: "red" };
 
 function RenewModal({ exc, onClose, onDone }) {
   const [newDate, setNewDate] = useState("");
@@ -282,13 +282,11 @@ function RejectModal({ exc, onClose, onDone }) {
 }
 
 export function Exceptions() {
-  const { user } = useAuth();
   const navigate = useNavigate();
   const [items, setItems] = useState([]);
   const [statusFilter, setStatusFilter] = useState("");
   const [renewing, setRenewing] = useState(null);
   const [rejecting, setRejecting] = useState(null);
-  const canApprove = user?.role === "admin" || user?.role === "manager";
 
   const load = () => api.get("/v1/exceptions", { params: statusFilter ? {status: statusFilter} : {} }).then(r => setItems(r.data.items));
   useEffect(() => { load(); }, [statusFilter]); // eslint-disable-line
@@ -337,11 +335,12 @@ export function Exceptions() {
                 <td>
                   <Chip color={EXC_STATUS_COLOR[e.status] || "slate"}>{e.status?.replace("_"," ")}</Chip>
                   {e.status === "active" && e.days_until_expiry <= 7 && <div className="text-[10px] text-amber-400 mt-0.5">{e.days_until_expiry}d left</div>}
+                  {e.status === "pending_approval" && e.awaiting_step_label && <div className="text-[10px] text-slate-500 mt-0.5">awaiting {e.awaiting_step_label}</div>}
                 </td>
                 <td className="text-slate-400 text-[11px]">{e.requested_by || e.approver}</td>
                 <td className="font-mono text-[11px]">{fmtDate(e.expires_at)}</td>
                 <td className="whitespace-nowrap" onClick={ev=>ev.stopPropagation()}>
-                  {e.status === "pending_approval" && canApprove && (
+                  {e.status === "pending_approval" && e.can_current_user_approve && (
                     <div className="flex gap-1">
                       <button onClick={()=>approve(e)} data-testid={`approve-exc-${e.id}`} className="h-6 px-2 text-[10.5px] bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 rounded">Approve</button>
                       <button onClick={()=>setRejecting(e)} data-testid={`reject-exc-${e.id}`} className="h-6 px-2 text-[10.5px] bg-red-500/20 border border-red-500/40 text-red-300 rounded">Reject</button>

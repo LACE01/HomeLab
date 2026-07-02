@@ -5,7 +5,7 @@ import { useAuth } from "@/lib/auth";
 import Layout from "@/components/Layout";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtDate, fmtRel, isOverdue } from "@/lib/utils-fmt";
-import { ArrowLeft, ChatCircle, ClockCounterClockwise, Ticket, Shield, BookOpen, CheckCircle, ArrowCounterClockwise, Plus, ShieldCheck, X, Trash, SealWarning, SealCheck, DotsSixVertical, SlidersHorizontal, FloppyDisk } from "@phosphor-icons/react";
+import { ArrowLeft, ChatCircle, ClockCounterClockwise, Ticket, Shield, BookOpen, CheckCircle, ArrowCounterClockwise, Plus, ShieldCheck, Trash, SealWarning, SealCheck, DotsSixVertical, SlidersHorizontal, FloppyDisk } from "@phosphor-icons/react";
 import InfoTip from "@/components/InfoTip";
 import { toast } from "sonner";
 
@@ -60,62 +60,6 @@ function AddMitigationForm({ types, onCancel, onAdded, findingId }) {
   );
 }
 
-function ExceptionRequestModal({ findingId, onClose, onDone }) {
-  const [justification, setJustification] = useState("");
-  const [expiresAt, setExpiresAt] = useState("");
-  const [controls, setControls] = useState("");
-  const [saving, setSaving] = useState(false);
-  const submit = async () => {
-    if (!justification.trim() || !expiresAt) { toast.error("Justification and expiry date are required"); return; }
-    setSaving(true);
-    try {
-      await api.post("/v1/exceptions", {
-        finding_id: findingId, business_justification: justification,
-        expires_at: new Date(expiresAt).toISOString(),
-        compensating_controls: controls.split(",").map(s=>s.trim()).filter(Boolean),
-      });
-      toast.success("Exception requested -- pending approval.");
-      onDone();
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Failed to request exception");
-    } finally { setSaving(false); }
-  };
-  return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4" onClick={onClose}>
-      <div className="bg-[#0D1117] border border-[#30363D] rounded-md w-full max-w-sm" onClick={e=>e.stopPropagation()}>
-        <div className="px-4 py-3 border-b border-[#30363D] flex items-center justify-between">
-          <h3 className="text-[13px] font-medium text-slate-100">Request risk exception</h3>
-          <button onClick={onClose} className="text-slate-500 hover:text-slate-300"><X size={16}/></button>
-        </div>
-        <div className="p-4 space-y-3">
-          <div>
-            <label className="text-[11px] uppercase font-mono text-slate-500">Business justification</label>
-            <textarea value={justification} onChange={e=>setJustification(e.target.value)} rows={3}
-              data-testid="exception-justification" className="w-full mt-1 bg-[#161B22] border border-[#30363D] rounded px-2 py-1.5 text-[12.5px] text-slate-200"/>
-          </div>
-          <div>
-            <label className="text-[11px] uppercase font-mono text-slate-500">Expires on</label>
-            <input type="date" value={expiresAt} onChange={e=>setExpiresAt(e.target.value)} data-testid="exception-expires"
-              className="w-full h-8 mt-1 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12.5px] text-slate-200"/>
-          </div>
-          <div>
-            <label className="text-[11px] uppercase font-mono text-slate-500">Compensating controls (comma-separated)</label>
-            <input value={controls} onChange={e=>setControls(e.target.value)} placeholder="WAF rule, network segmentation"
-              className="w-full h-8 mt-1 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12.5px] text-slate-200"/>
-          </div>
-        </div>
-        <div className="px-4 py-3 border-t border-[#30363D] flex justify-end gap-2">
-          <button onClick={onClose} className="h-8 px-3 text-[12px] border border-[#30363D] rounded text-slate-300">Cancel</button>
-          <button onClick={submit} disabled={saving} data-testid="exception-submit"
-            className="h-8 px-3 text-[12px] bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/40 text-blue-200 rounded disabled:opacity-50">
-            {saving ? "Submitting…" : "Submit request"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export default function FindingDetail() {
   const { id } = useParams();
   const [f, setF] = useState(null);
@@ -137,7 +81,6 @@ export default function FindingDetail() {
   const [mitigations, setMitigations] = useState([]);
   const [mitigationTypes, setMitigationTypes] = useState([]);
   const [showAddMitigation, setShowAddMitigation] = useState(false);
-  const [showExceptionForm, setShowExceptionForm] = useState(false);
   const [exceptions, setExceptions] = useState([]);
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
@@ -702,10 +645,10 @@ export default function FindingDetail() {
               exception: { title: "Risk Exception", testid: "section-exception", content: (
                 <>
                   {exceptions.length === 0 && (
-                    <button onClick={()=>setShowExceptionForm(true)} data-testid="request-exception-btn"
+                    <Link to={`/exceptions/new?finding_id=${id}`} data-testid="request-exception-btn"
                       className="w-full h-8 text-[11.5px] border border-[#30363D] hover:border-blue-500/40 hover:text-blue-300 text-slate-300 rounded inline-flex items-center justify-center gap-1.5">
-                      <ShieldCheck size={13}/> Request exception
-                    </button>
+                      <ShieldCheck size={13}/> Request risk acceptance
+                    </Link>
                   )}
                   {exceptions.map(e => (
                     <Link key={e.id} to={`/exceptions/${e.id}`} className="block text-[12px] hover:bg-slate-800/30 -mx-1 px-1 py-1 rounded">
@@ -897,9 +840,6 @@ export default function FindingDetail() {
           })()}
         </div>
       </div>
-      {showExceptionForm && (
-        <ExceptionRequestModal findingId={id} onClose={()=>setShowExceptionForm(false)} onDone={()=>{setShowExceptionForm(false); loadExceptions();}} />
-      )}
     </Layout>
   );
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
@@ -27,6 +27,8 @@ function Field({ label, children, hint }) {
 
 export default function RequestRiskAcceptance() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const prefillFindingId = searchParams.get("finding_id");
   const [targetType, setTargetType] = useState("finding");
 
   // "finding" target
@@ -61,6 +63,16 @@ export default function RequestRiskAcceptance() {
     api.get("/v1/admin/assignment-rules/field-values", { params: { field: "tags" } })
       .then(r => setTagOptions(r.data.values || [])).catch(() => {});
   }, []);
+
+  // Arriving from a finding's "Request exception" button -- lock target type to
+  // that finding and pre-select it instead of making the requester search again.
+  useEffect(() => {
+    if (!prefillFindingId) return;
+    api.get(`/v1/findings/${prefillFindingId}`).then(r => {
+      setTargetType("finding");
+      setSelectedFinding({ id: r.data.id, title: r.data.title, severity: r.data.severity, asset_hostname: r.data.asset_hostname });
+    }).catch(() => toast.error("Could not load that finding"));
+  }, [prefillFindingId]);
 
   // finding search-as-you-type
   useEffect(() => {
