@@ -164,17 +164,24 @@ async def dismiss_candidate(db, candidate_id: str, reason: str | None = None) ->
 async def easm_scan_loop(db, interval_hours: int = 24):
     """Background poll -- runs all enabled watch domains once per interval."""
     import logging
+    from heartbeat import record_heartbeat
     logger = logging.getLogger("vulnops")
     await asyncio.sleep(60)  # let other startup tasks settle first
     while True:
+        ok, detail = True, {"domains_scanned": 0, "domains_failed": 0}
         try:
             domains = await db.easm_domains.find({"enabled": True}, {"_id": 0}).to_list(200)
             for d in domains:
                 try:
                     result = await run_easm_scan(db, d["domain"])
                     logger.info(f"EASM scan: {result}")
+                    detail["domains_scanned"] += 1
                 except Exception as e:
                     logger.exception(f"EASM scan failed for {d['domain']}: {e}")
+                    ok = False
+                    detail["domains_failed"] += 1
         except Exception as e:
             logger.exception(f"EASM loop error: {e}")
+            ok, detail["error"] = False, str(e)
+        await record_heartbeat(db, "easm_scan_loop", "ok" if ok else "error", detail)
         await asyncio.sleep(interval_hours * 3600)

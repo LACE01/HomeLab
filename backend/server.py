@@ -37,6 +37,9 @@ from routes.sbom import router as sbom_router
 from routes.easm import router as easm_router
 from routes.compliance import router as compliance_router
 from routes.chatops import router as chatops_router
+from routes.health import router as health_router
+from routes.backups import router as backups_router
+from routes.audit import router as audit_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("vulnops")
@@ -64,6 +67,9 @@ api.include_router(sbom_router)
 api.include_router(easm_router)
 api.include_router(compliance_router)
 api.include_router(chatops_router)
+api.include_router(health_router)
+api.include_router(backups_router)
+api.include_router(audit_router)
 
 
 @api.get("/")
@@ -120,6 +126,7 @@ async def on_startup():
     from routes.nmap import nmap_scan_loop
     from cert_monitor import cert_monitor_loop
     from easm import easm_scan_loop
+    from backup import backup_loop
     _a.create_task(nightly_loop(db, interval_hours=24))
     # KEV / EPSS / active-attacks sync loop (12h) — was previously manual-trigger only
     _a.create_task(threat_intel_loop(db, interval_hours=12))
@@ -132,3 +139,5 @@ async def on_startup():
     _a.create_task(cert_monitor_loop(db, interval_hours=24))
     # EASM passive subdomain discovery loop (once/day)
     _a.create_task(easm_scan_loop(db, interval_hours=24))
+    # Scheduled DB backup loop -- no-ops unless BACKUP_SCHEDULE_ENABLED=true (see backup.py)
+    _a.create_task(backup_loop(db, interval_hours=24))

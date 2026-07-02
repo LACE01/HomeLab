@@ -1,9 +1,15 @@
-"""Notification engine — Discord / Slack / Teams / Webhook / Email (simulated).
+"""Notification engine — Discord / Slack / Teams / Webhook / Email.
 
 Rules trigger on events; matching rules dispatch messages via configured channels.
+Email prefers plain SMTP (SMTP_HOST env var) so a self-hosted deployment can point at
+its own mail server or a free provider without needing a third-party API key; it falls
+back to Resend (RESEND_API_KEY) if that's what's configured, then simulates if neither is set.
 """
 import os
+import smtplib
+import ssl as ssl_lib
 import uuid
+from email.mime.text import MIMEText
 import json as _json
 import logging
 from datetime import datetime, timezone
@@ -125,6 +131,60 @@ async def _send_webhook(webhook_url: str, subject: str, body: str, ctx: dict) ->
     return {"status_code": r.status_code, "ok": 200 <= r.status_code < 300, "text": r.text[:200]}
 
 
+async def _send_smtp(to_addr: str, subject: str, body: str) -> dict:
+    """Plain SMTP via stdlib smtplib. Blocking, so it runs in a thread -- this is a
+    once-per-notification call, not a hot path, so a thread per send is plenty."""
+    import asyncio
+    host = os.environ.get("SMTP_HOST")
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    username = os.environ.get("SMTP_USERNAME")
+    password = os.environ.get("SMTP_PASSWORD")
+    from_addr = os.environ.get("SMTP_FROM", "VulnOps <noreply@vulnops.local>")
+    use_tls = os.environ.get("SMTP_USE_TLS", "true").lower() not in ("false", "0", "no")
+
+    def _send():
+        msg = MIMEText(body, "plain")
+        msg["Subject"] = subject
+        msg["From"] = from_addr
+        msg["To"] = to_addr
+        with smtplib.SMTP(host, port, timeout=10) as server:
+            if use_tls:
+                server.starttls(context=ssl_lib.create_default_context())
+            if username and password:
+                server.login(username, password)
+            server.sendmail(from_addr, [to_addr], msg.as_string())
+
+    await asyncio.get_running_loop().run_in_executor(None, _send)
+    return {"status_code": 250, "ok": True, "text": f"Sent via SMTP ({host}:{port})"}
+
+
+async def _send_email(to_addr: str, subject: str, body: str) -> dict:
+    """Prefers plain SMTP (SMTP_HOST) since that's the self-hosted-friendly option --
+    falls back to Resend's API if that's what's configured, then simulates."""
+    if not to_addr:
+        return {"status_code": 0, "ok": False, "text": "Channel has no 'to' address configured"}
+
+    smtp_host = os.environ.get("SMTP_HOST")
+    if smtp_host:
+        try:
+            return await _send_smtp(to_addr, subject, body)
+        except Exception as e:
+            logger.exception("SMTP send failed")
+            return {"status_code": 0, "ok": False, "text": f"SMTP error: {e}"}
+
+    api_key = os.environ.get("RESEND_API_KEY")
+    if api_key:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.post("https://api.resend.com/emails",
+                             headers={"Authorization": f"Bearer {api_key}"},
+                             json={"from": "VulnOps <noreply@vulnops.io>",
+                                   "to": [to_addr], "subject": subject,
+                                   "html": body.replace("\n", "<br>")})
+        return {"status_code": r.status_code, "ok": 200 <= r.status_code < 300, "text": r.text[:200]}
+
+    return {"status_code": 0, "ok": True, "text": "SIMULATED (no SMTP_HOST or Resend API key configured)"}
+
+
 async def deliver(channel: dict, template_id: str, ctx: dict, db) -> dict:
     """Render + deliver. Always writes to notifications_outbox regardless of channel."""
     msg = render(template_id, ctx)
@@ -146,19 +206,7 @@ async def deliver(channel: dict, template_id: str, ctx: dict, db) -> dict:
         elif channel["type"] == "webhook":
             result = await _send_webhook(channel["webhook_url"], msg["subject"], msg["body"], ctx)
         elif channel["type"] == "email":
-            # Simulated — no API key wired. Will be sent for real once Resend key is set.
-            api_key = os.environ.get("RESEND_API_KEY")
-            if api_key:
-                # Real send (kept simple — main agent can extend)
-                async with httpx.AsyncClient(timeout=10) as c:
-                    r = await c.post("https://api.resend.com/emails",
-                                     headers={"Authorization": f"Bearer {api_key}"},
-                                     json={"from": "VulnOps <noreply@vulnops.io>",
-                                           "to": [channel.get("to")], "subject": msg["subject"],
-                                           "html": msg["body"].replace("\n", "<br>")})
-                result = {"status_code": r.status_code, "ok": 200 <= r.status_code < 300, "text": r.text[:200]}
-            else:
-                result = {"status_code": 0, "ok": True, "text": "SIMULATED (no Resend API key configured)"}
+            result = await _send_email(channel.get("to"), msg["subject"], msg["body"])
         else:
             result = {"status_code": 0, "ok": False, "text": f"Unknown channel type: {channel['type']}"}
     except Exception as e:

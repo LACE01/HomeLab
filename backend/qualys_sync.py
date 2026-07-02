@@ -546,9 +546,11 @@ async def run_qualys_sync(db) -> dict:
 
 async def qualys_poll_loop(db, interval_minutes: int = 60):
     """Background poll. Skips silently if Qualys integration is not configured."""
+    from heartbeat import record_heartbeat
     # Initial small delay so other startup tasks (seed, index creation) settle
     await asyncio.sleep(20)
     while True:
+        ok, detail = True, {}
         try:
             integration = await _get_integration(db)
             cfg = (integration or {}).get("config") or {}
@@ -556,8 +558,12 @@ async def qualys_poll_loop(db, interval_minutes: int = 60):
                 logger.info("Qualys poll: running sync")
                 summary = await run_qualys_sync(db)
                 logger.info(f"Qualys poll done: {summary.get('summary')}")
+                detail["summary"] = summary.get("summary")
             else:
                 logger.info("Qualys poll: integration not configured, skipping")
+                detail["skipped"] = "not configured"
         except Exception as e:
             logger.exception(f"Qualys poll error: {e}")
+            ok, detail["error"] = False, str(e)
+        await record_heartbeat(db, "qualys_poll_loop", "ok" if ok else "error", detail)
         await asyncio.sleep(interval_minutes * 60)

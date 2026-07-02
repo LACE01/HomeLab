@@ -3,7 +3,7 @@ import { useAuth } from "@/lib/auth";
 import {
   ChartLineUp, ListChecks, HardDrives, Stack, Lightning, Ticket,
   ShieldCheck, PlugsConnected, FileArrowDown, GearSix, SignOut, Database, Bug,
-  UsersThree, Bell, ShareNetwork, BookOpen, Robot, Globe, Certificate, Package, MagnifyingGlass, ClipboardText, SlackLogo,
+  UsersThree, Bell, ShareNetwork, BookOpen, Robot, Globe, Certificate, Package, MagnifyingGlass, ClipboardText, SlackLogo, Heartbeat, HardDrive, Notepad,
 } from "@phosphor-icons/react";
 
 const NavItem = ({ to, icon: Icon, label, testid }) => (
@@ -78,6 +78,9 @@ export default function Sidebar() {
           <NavItem to="/admin/teams" icon={UsersThree} label="Teams" testid="nav-teams" />
           <NavItem to="/admin/notifications" icon={Bell} label="Notifications" testid="nav-notifications" />
           <NavItem to="/admin/chatops" icon={SlackLogo} label="ChatOps" testid="nav-chatops" />
+          <NavItem to="/admin/health" icon={Heartbeat} label="System Health" testid="nav-health" />
+          <NavItem to="/admin/backups" icon={HardDrive} label="Backups" testid="nav-backups" />
+          <NavItem to="/admin/audit-log" icon={Notepad} label="Audit Log" testid="nav-audit-log" />
           <NavItem to="/admin/assignment-rules" icon={GearSix} label="Assignment Rules" testid="nav-rules" />
           <NavItem to="/admin/ownership" icon={GearSix} label="Ownership Map" testid="nav-ownership" />
           <NavItem to="/admin/sla-policies" icon={ShieldCheck} label="SLA Policies" testid="nav-sla" />

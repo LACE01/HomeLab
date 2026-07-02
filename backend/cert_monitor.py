@@ -180,14 +180,19 @@ async def cert_monitor_loop(db, interval_hours: int = 24):
     """Background poll -- checks all enabled watch targets once per interval."""
     import asyncio
     import logging
+    from heartbeat import record_heartbeat
     logger = logging.getLogger("vulnops")
     await asyncio.sleep(45)  # let other startup tasks settle first
     while True:
+        ok, detail = True, {}
         try:
             result = await run_all_cert_checks(db)
             logger.info(f"TLS cert check: {result}")
+            detail = result
         except Exception as e:
             logger.exception(f"TLS cert check failed: {e}")
+            ok, detail["error"] = False, str(e)
+        await record_heartbeat(db, "cert_monitor_loop", "ok" if ok else "error", detail)
         await asyncio.sleep(interval_hours * 3600)
 
 

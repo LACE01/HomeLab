@@ -337,13 +337,18 @@ async def digest_dispatch_loop(db, interval_hours: int = 1):
     flushes its queued events as a single digest. Hourly gives daily/weekly cadences
     reasonable precision without needing a dedicated scheduler."""
     from notifier import run_digest_dispatch
+    from heartbeat import record_heartbeat
     await asyncio.sleep(45)
     while True:
+        ok, detail = True, {}
         try:
             r = await run_digest_dispatch(db)
             logger.info(f"Digest dispatch: {r}")
+            detail["result"] = r
         except Exception as e:
             logger.exception(f"Digest dispatch failed: {e}")
+            ok, detail["error"] = False, str(e)
+        await record_heartbeat(db, "digest_dispatch_loop", "ok" if ok else "error", detail)
         await asyncio.sleep(interval_hours * 3600)
 
 
@@ -352,66 +357,92 @@ async def threat_intel_loop(db, interval_hours: int = 12):
     only ran when an admin manually hit the sync buttons, so KEV and Active Attacks
     stayed at 0 on the dashboard until someone remembered to trigger them by hand."""
     from enrichers import sync_kev, sync_epss, flag_active_attacks, sync_exploitdb
+    from heartbeat import record_heartbeat
     await asyncio.sleep(30)  # let the app finish booting first
     while True:
+        ok, detail = True, {}
         try:
             kev_result = await sync_kev(db)
             logger.info(f"KEV sync: {kev_result}")
+            detail["kev"] = kev_result
         except Exception as e:
             logger.exception(f"KEV sync failed: {e}")
+            ok, detail["kev_error"] = False, str(e)
         try:
             epss_result = await sync_epss(db)
             logger.info(f"EPSS sync: {epss_result}")
+            detail["epss"] = epss_result
         except Exception as e:
             logger.exception(f"EPSS sync failed: {e}")
+            ok, detail["epss_error"] = False, str(e)
         try:
             active_result = await flag_active_attacks(db)
             logger.info(f"Active-attacks flag: {active_result}")
+            detail["active_attacks"] = active_result
         except Exception as e:
             logger.exception(f"Active-attacks flag failed: {e}")
+            ok, detail["active_attacks_error"] = False, str(e)
         try:
             exploitdb_result = await sync_exploitdb(db)
             logger.info(f"Exploit-DB sync: {exploitdb_result}")
+            detail["exploitdb"] = exploitdb_result
         except Exception as e:
             logger.exception(f"Exploit-DB sync failed: {e}")
+            ok, detail["exploitdb_error"] = False, str(e)
+        await record_heartbeat(db, "threat_intel_loop", "ok" if ok else "error", detail)
         await asyncio.sleep(interval_hours * 3600)
 
 
 async def nightly_loop(db, interval_hours: int = 24):
     """Run forever, every interval_hours."""
+    from heartbeat import record_heartbeat
     # Wait 60s on boot so app stabilizes, then run, then sleep
     await asyncio.sleep(60)
     while True:
+        ok, detail = True, {}
         try:
             r = await run_nightly_rescore(db)
             logger.info(f"Nightly rescore: {r}")
+            detail["rescore"] = r
         except Exception as e:
             logger.exception(f"Nightly rescore failed: {e}")
+            ok, detail["rescore_error"] = False, str(e)
         try:
             snap = await compute_org_snapshot(db)
             logger.info(f"Org snapshot: {snap}")
+            detail["snapshot"] = snap
         except Exception as e:
             logger.exception(f"Org snapshot failed: {e}")
+            ok, detail["snapshot_error"] = False, str(e)
         try:
             from routes.workflows import check_exception_expirations
             exc_result = await check_exception_expirations(db)
             logger.info(f"Exception expirations: {exc_result}")
+            detail["exceptions"] = exc_result
         except Exception as e:
             logger.exception(f"Exception expiration check failed: {e}")
+            ok, detail["exceptions_error"] = False, str(e)
         try:
             from routes.automation import run_all_automation_rules
             auto_result = await run_all_automation_rules(db)
             logger.info(f"Automation sweep: {auto_result}")
+            detail["automation"] = auto_result
         except Exception as e:
             logger.exception(f"Automation sweep failed: {e}")
+            ok, detail["automation_error"] = False, str(e)
         try:
             verify_result = await run_verification_sweep(db)
             logger.info(f"Verification sweep: {verify_result}")
+            detail["verification"] = verify_result
         except Exception as e:
             logger.exception(f"Verification sweep failed: {e}")
+            ok, detail["verification_error"] = False, str(e)
         try:
             decay_result = await decay_stale_ownership(db)
             logger.info(f"Ownership decay: {decay_result}")
+            detail["ownership_decay"] = decay_result
         except Exception as e:
             logger.exception(f"Ownership decay failed: {e}")
+            ok, detail["ownership_decay_error"] = False, str(e)
+        await record_heartbeat(db, "nightly_loop", "ok" if ok else "error", detail)
         await asyncio.sleep(interval_hours * 3600)

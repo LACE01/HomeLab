@@ -226,13 +226,18 @@ async def nmap_scan_loop(db, interval_minutes: int = 15):
     design (see run_due_scheduled_scans), so a big fleet of configs drains gradually
     rather than launching a pile of concurrent nmap processes."""
     import logging
+    from heartbeat import record_heartbeat
     logger = logging.getLogger("vulnops")
     await asyncio.sleep(30)  # let other startup tasks settle first
     while True:
+        ok, detail = True, {}
         try:
             result = await run_due_scheduled_scans(db)
             if result.get("ran"):
                 logger.info(f"Nmap scheduler: ran scan '{result.get('name')}'")
+            detail = result
         except Exception as e:
             logger.exception(f"Nmap scheduler error: {e}")
+            ok, detail["error"] = False, str(e)
+        await record_heartbeat(db, "nmap_scan_loop", "ok" if ok else "error", detail)
         await asyncio.sleep(interval_minutes * 60)

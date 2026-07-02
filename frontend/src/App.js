@@ -32,6 +32,9 @@ import SbomUpload from "@/pages/SbomUpload";
 import Easm from "@/pages/Easm";
 import Compliance from "@/pages/Compliance";
 import ChatOps from "@/pages/ChatOps";
+import OpsHealth from "@/pages/OpsHealth";
+import Backups from "@/pages/Backups";
+import AuditLog from "@/pages/AuditLog";
 
 const Protected = ({ children }) => {
   const { user, loading } = useAuth();
@@ -69,6 +72,9 @@ const AppRouter = () => {
       <Route path="/easm" element={<Protected><Easm/></Protected>}/>
       <Route path="/compliance" element={<Protected><Compliance/></Protected>}/>
       <Route path="/admin/chatops" element={<Protected><ChatOps/></Protected>}/>
+      <Route path="/admin/health" element={<Protected><OpsHealth/></Protected>}/>
+      <Route path="/admin/backups" element={<Protected><Backups/></Protected>}/>
+      <Route path="/admin/audit-log" element={<Protected><AuditLog/></Protected>}/>
       <Route path="/admin/assignment-rules" element={<Protected><AssignmentRules/></Protected>}/>
       <Route path="/admin/ownership" element={<Protected><OwnershipMappings/></Protected>}/>
       <Route path="/admin/sla-policies" element={<Protected><SlaPolicies/></Protected>}/>
