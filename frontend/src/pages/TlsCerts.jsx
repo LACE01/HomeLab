@@ -5,7 +5,7 @@ import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import {
   Plus, X, Trash, PencilSimple, ArrowsClockwise, Certificate, CheckCircle, XCircle,
-  WarningCircle, LockKeyOpen, CircleNotch, MagicWand,
+  WarningCircle, LockKeyOpen, CircleNotch, MagicWand, CaretRight,
 } from "@phosphor-icons/react";
 
 function daysLabel(days) {
@@ -37,7 +37,9 @@ export default function TlsCerts() {
   const [editing, setEditing] = useState(null);
   const [checkingAll, setCheckingAll] = useState(false);
   const [checkingIds, setCheckingIds] = useState(new Set());
+  const [detailTargetId, setDetailTargetId] = useState(null);
   const pollRef = useRef(null);
+  const detailTarget = targets.find(t => t.id === detailTargetId) || null;
 
   const load = async () => {
     try {
@@ -164,7 +166,8 @@ export default function TlsCerts() {
       ) : (
         <div className="border border-[#30363D] bg-[#0D1117] rounded-md divide-y divide-[#30363D]">
           {targets.map(t => (
-            <div key={t.id} className="px-4 py-3 flex items-start justify-between gap-3">
+            <div key={t.id} onClick={() => setDetailTargetId(t.id)}
+              className="px-4 py-3 flex items-start justify-between gap-3 cursor-pointer hover:bg-[#161B22] transition-colors">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <Certificate size={14} className="text-slate-500"/>
@@ -192,7 +195,7 @@ export default function TlsCerts() {
                   </div>
                 )}
               </div>
-              <div className="flex items-center gap-1.5 shrink-0">
+              <div className="flex items-center gap-1.5 shrink-0" onClick={e => e.stopPropagation()}>
                 <button onClick={() => checkNow(t)} disabled={checkingIds.has(t.id)}
                   className="h-8 px-2.5 text-[11.5px] bg-blue-500/10 hover:bg-blue-500/20 disabled:opacity-40 text-blue-300 rounded inline-flex items-center gap-1.5 border border-blue-500/30">
                   {checkingIds.has(t.id) ? <CircleNotch size={12} className="animate-spin"/> : <ArrowsClockwise size={12}/>} Check now
@@ -209,6 +212,7 @@ export default function TlsCerts() {
                   className="h-8 w-8 flex items-center justify-center text-slate-500 hover:text-red-400 rounded border border-[#30363D]">
                   <Trash size={14}/>
                 </button>
+                <CaretRight size={14} className="text-slate-600 ml-1"/>
               </div>
             </div>
           ))}
@@ -223,7 +227,76 @@ export default function TlsCerts() {
           onSaved={() => { setModalOpen(false); load(); }}
         />
       )}
+
+      {detailTarget && (
+        <CertDetailModal target={detailTarget} onClose={() => setDetailTargetId(null)}
+          onCheckNow={() => checkNow(detailTarget)} checking={checkingIds.has(detailTarget.id)}/>
+      )}
     </Layout>
+  );
+}
+
+function DetailRow({ label, value, mono }) {
+  return (
+    <div className="flex justify-between gap-3 py-1.5 border-b border-[#30363D]/50 last:border-0">
+      <div className="text-[10.5px] uppercase tracking-wider font-mono text-slate-500 shrink-0">{label}</div>
+      <div className={`text-[12px] text-slate-200 text-right break-all ${mono ? "font-mono" : ""}`}>{value ?? "—"}</div>
+    </div>
+  );
+}
+
+function CertDetailModal({ target, onClose, onCheckNow, checking }) {
+  const c = target.latest;
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-[#0D1117] border border-[#30363D] rounded-md w-full max-w-lg max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#30363D]">
+          <div>
+            <div className="text-[14px] text-slate-100 font-medium font-mono">{target.hostname}:{target.port}</div>
+            {target.label && <div className="text-[11px] text-slate-500">{target.label}</div>}
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-200"><X size={18}/></button>
+        </div>
+        <div className="p-5">
+          <div className="flex items-center justify-between mb-3">
+            {statusChip(target)}
+            <button onClick={onCheckNow} disabled={checking}
+              className="h-7 px-2.5 text-[11px] bg-blue-500/10 hover:bg-blue-500/20 disabled:opacity-40 text-blue-300 rounded inline-flex items-center gap-1.5 border border-blue-500/30">
+              {checking ? <CircleNotch size={12} className="animate-spin"/> : <ArrowsClockwise size={12}/>} Check now
+            </button>
+          </div>
+
+          {!c ? (
+            <div className="text-[12px] text-slate-500 py-4 text-center">Not checked yet — click "Check now" above.</div>
+          ) : c.reachable === false ? (
+            <div className="border border-red-500/30 bg-red-500/5 rounded-md px-3 py-2.5 text-[12px] text-red-300">
+              {c.error}
+            </div>
+          ) : (
+            <div>
+              <DetailRow label="Subject" value={c.subject} mono/>
+              <DetailRow label="Issuer" value={c.issuer} mono/>
+              <DetailRow label="Valid From" value={c.not_before && new Date(c.not_before).toLocaleString()}/>
+              <DetailRow label="Valid Until" value={c.not_after && new Date(c.not_after).toLocaleString()}/>
+              <DetailRow label="Days Until Expiry" value={c.days_until_expiry}/>
+              <DetailRow label="TLS Version" value={c.tls_version} mono/>
+              <DetailRow label="Self-Signed" value={c.self_signed ? "Yes" : "No"}/>
+              <DetailRow label="Trusted by System CA Store" value={c.trust_valid ? "Yes" : `No — ${c.trust_error || "unknown reason"}`}/>
+              <DetailRow label="Hostname Matches SAN" value={c.hostname_matches_san ? "Yes" : "No"}/>
+              <div className="py-1.5">
+                <div className="text-[10.5px] uppercase tracking-wider font-mono text-slate-500 mb-1.5">Subject Alternative Names</div>
+                {c.san?.length ? (
+                  <div className="flex flex-wrap gap-1">
+                    {c.san.map(n => <span key={n} className="text-[11px] font-mono bg-[#161B22] border border-[#30363D] rounded px-1.5 py-0.5 text-slate-300">{n}</span>)}
+                  </div>
+                ) : <div className="text-[11.5px] text-slate-500">None</div>}
+              </div>
+              <div className="text-[10.5px] text-slate-600 mt-3">Last checked {c.checked_at && new Date(c.checked_at).toLocaleString()}</div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 

@@ -4,11 +4,15 @@ import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtDate, fmtRel, isOverdue } from "@/lib/utils-fmt";
-import { MagnifyingGlass, ArrowLeft, Stack } from "@phosphor-icons/react";
+import { MagnifyingGlass, ArrowLeft, Stack, CaretLeft, CaretRight } from "@phosphor-icons/react";
 import { toast } from "sonner";
+
+const PAGE_SIZE = 50;
 
 export function Assets() {
   const [items, setItems] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
   const [q, setQ] = useState("");
   const [criticality, setCriticality] = useState("");
   const [products, setProducts] = useState([]);
@@ -17,13 +21,16 @@ export function Assets() {
   const [assigning, setAssigning] = useState(false);
 
   const load = useCallback(() => {
-    const params = {};
+    const params = { limit: PAGE_SIZE, offset: page * PAGE_SIZE };
     if (q) params.q = q; if (criticality) params.criticality = criticality;
-    api.get("/v1/assets", { params }).then(r => setItems(r.data.items));
-  }, [q, criticality]);
+    api.get("/v1/assets", { params }).then(r => { setItems(r.data.items); setTotal(r.data.total || 0); });
+  }, [q, criticality, page]);
 
-  useEffect(() => { load(); }, [criticality]); // eslint-disable-line
+  useEffect(() => { load(); }, [criticality, page]); // eslint-disable-line
+  useEffect(() => { setPage(0); }, [q, criticality]);
   useEffect(() => { api.get("/v1/products").then(r => setProducts(r.data.items)); }, []);
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   const toggle = (id) => setSelected(s => {
     const next = new Set(s);
@@ -79,6 +86,10 @@ export function Assets() {
         </div>
       )}
 
+      <div className="flex items-center justify-between mb-2 px-1">
+        <div className="text-[11.5px] text-slate-500">{total} asset{total===1?"":"s"} total</div>
+      </div>
+
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">
         <table data-testid="assets-table" className="dense w-full">
           <thead><tr>
@@ -114,6 +125,23 @@ export function Assets() {
             ))}
           </tbody>
         </table>
+      </div>
+
+      <div className="flex items-center justify-between mt-3 px-1">
+        <div className="text-[11px] text-slate-500">
+          Showing {items.length === 0 ? 0 : page * PAGE_SIZE + 1}–{page * PAGE_SIZE + items.length} of {total}
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}
+            className="h-8 w-8 flex items-center justify-center text-slate-400 hover:text-slate-200 disabled:opacity-30 rounded border border-[#30363D]" data-testid="assets-prev-page">
+            <CaretLeft size={14}/>
+          </button>
+          <span className="text-[11.5px] text-slate-500">Page {page + 1} of {totalPages}</span>
+          <button onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}
+            className="h-8 w-8 flex items-center justify-center text-slate-400 hover:text-slate-200 disabled:opacity-30 rounded border border-[#30363D]" data-testid="assets-next-page">
+            <CaretRight size={14}/>
+          </button>
+        </div>
       </div>
     </Layout>
   );

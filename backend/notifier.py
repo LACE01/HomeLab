@@ -182,7 +182,9 @@ async def _send_email(to_addr: str, subject: str, body: str) -> dict:
                                    "html": body.replace("\n", "<br>")})
         return {"status_code": r.status_code, "ok": 200 <= r.status_code < 300, "text": r.text[:200]}
 
-    return {"status_code": 0, "ok": True, "text": "SIMULATED (no SMTP_HOST or Resend API key configured)"}
+    return {"status_code": 0, "ok": True, "simulated": True,
+            "text": "SIMULATED -- no SMTP_HOST or RESEND_API_KEY configured, so nothing was actually sent. "
+                    "Set SMTP_HOST/SMTP_USERNAME/SMTP_PASSWORD in your .env to send real email."}
 
 
 async def deliver(channel: dict, template_id: str, ctx: dict, db) -> dict:
@@ -214,6 +216,7 @@ async def deliver(channel: dict, template_id: str, ctx: dict, db) -> dict:
         result = {"status_code": 0, "ok": False, "text": f"Error: {e}"}
 
     record["delivered"] = result["ok"]
+    record["simulated"] = result.get("simulated", False)
     record["status_code"] = result.get("status_code", 0)
     record["response"] = result.get("text", "")
     await db.notifications_outbox.insert_one(record)

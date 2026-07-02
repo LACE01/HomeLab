@@ -230,4 +230,12 @@ async def ingest_universal(body: UniversalIngestBody, request: Request, _: dict 
         "failed_count": failed, "retry_count": 0, "errors": errors,
     }
     await db.import_jobs.insert_one(job)
+    from routes.common import record_engagement
+    await record_engagement(
+        db, name=f"API ingest — {job['source_name']}", scanner=job["source_name"], scan_type="api_push",
+        scan_method="api", status="completed" if job["status"] == "success" else "failed",
+        assets_scanned=len({f.asset_hostname for f in body.findings}), findings_created=created,
+        findings_updated=updated, started_at=started,
+        error="; ".join(str(e) for e in errors[:3]) if errors else None,
+    )
     return _clean(job)

@@ -145,3 +145,30 @@ async def compute_compliance_summary(db) -> dict:
             "coverage indicator to help prioritize work, not a certified compliance assessment."
         ),
     }
+
+
+SEVERITY_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
+
+
+async def get_control_findings(db, control_id: str, limit: int = 300) -> dict:
+    """Drill-down for a single CIS control: the actual open findings that make up its
+    counts on the summary page, so 'CIS-7 -- 4701 open' is something you can click into
+    rather than just a number."""
+    categories = [cat for cat, meta in CATEGORY_META.items() if control_id in meta.get("cis", [])]
+    if not categories:
+        return {"control_id": control_id, "name": CIS_CONTROLS.get(control_id, control_id), "items": [], "total": 0}
+
+    open_states = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+    findings = await db.findings.find(
+        {"status": {"$in": open_states}},
+        {"_id": 0, "id": 1, "title": 1, "severity": 1, "cve": 1, "cwe": 1, "source_tool_type": 1,
+         "source_tool": 1, "port": 1, "asset_hostname": 1, "asset_id": 1, "status": 1, "risk_score": 1},
+    ).to_list(200000)
+
+    matched = [f for f in findings if classify_finding(f) in categories]
+    matched.sort(key=lambda f: (SEVERITY_ORDER.get(f.get("severity"), 5), -(f.get("risk_score") or 0)))
+
+    return {
+        "control_id": control_id, "name": CIS_CONTROLS.get(control_id, control_id),
+        "total": len(matched), "items": matched[:limit],
+    }

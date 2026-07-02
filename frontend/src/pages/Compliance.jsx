@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
-import { Info, DownloadSimple, CircleNotch } from "@phosphor-icons/react";
+import { SevBadge } from "@/components/Badges";
+import { Info, DownloadSimple, CircleNotch, X, ArrowSquareOut } from "@phosphor-icons/react";
 
 const STATUS_META = {
   gap: { label: "Gap", color: "text-red-400", bar: "bg-red-500" },
@@ -22,10 +24,24 @@ export default function Compliance() {
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
+  const [drillDown, setDrillDown] = useState(null); // { control_id, name, total, items } | "loading" | null
+  const [drillDownFor, setDrillDownFor] = useState(null);
 
   useEffect(() => {
     api.get("/v1/compliance/summary").then(r => setSummary(r.data)).catch(() => toast.error("Failed to load compliance summary")).finally(() => setLoading(false));
   }, []);
+
+  const openControl = async (c) => {
+    setDrillDownFor(c);
+    setDrillDown(null);
+    try {
+      const r = await api.get(`/v1/compliance/controls/${c.id}/findings`);
+      setDrillDown(r.data);
+    } catch (e) {
+      toast.error("Failed to load findings for this control");
+      setDrillDownFor(null);
+    }
+  };
 
   const download = async () => {
     setDownloading(true);
@@ -71,7 +87,8 @@ export default function Compliance() {
             {summary.controls.map(c => {
               const meta = STATUS_META[c.status] || STATUS_META.clean;
               return (
-                <div key={c.id} className="px-4 py-3">
+                <div key={c.id} onClick={() => openControl(c)}
+                  className={`px-4 py-3 ${c.total > 0 ? "cursor-pointer hover:bg-[#161B22] transition-colors" : ""}`}>
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
                       <span className="text-[12px] font-mono text-slate-500">{c.id}</span>{" "}
@@ -115,6 +132,54 @@ export default function Compliance() {
           </div>
         </div>
       </div>
+
+      {drillDownFor && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setDrillDownFor(null)}>
+          <div className="bg-[#0D1117] border border-[#30363D] rounded-md w-full max-w-2xl max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#30363D]">
+              <div>
+                <div className="text-[14px] text-slate-100 font-medium">
+                  <span className="font-mono text-slate-500">{drillDownFor.id}</span> {drillDownFor.name}
+                </div>
+                {drillDown && drillDown !== "loading" && (
+                  <div className="text-[11px] text-slate-500 mt-0.5">{drillDown.total} open finding(s) mapped to this control</div>
+                )}
+              </div>
+              <button onClick={() => setDrillDownFor(null)} className="text-slate-500 hover:text-slate-200"><X size={18}/></button>
+            </div>
+            <div className="p-3">
+              {!drillDown ? (
+                <div className="text-[12.5px] text-slate-500 py-8 text-center">Loading…</div>
+              ) : drillDown.items.length === 0 ? (
+                <div className="text-[12.5px] text-slate-500 py-8 text-center">No open findings mapped to this control.</div>
+              ) : (
+                <div className="divide-y divide-[#30363D]">
+                  {drillDown.items.map(f => (
+                    <Link key={f.id} to={`/findings/${f.id}`}
+                      className="flex items-center justify-between gap-3 px-2 py-2.5 hover:bg-[#161B22] transition-colors rounded">
+                      <div className="min-w-0 flex items-center gap-2">
+                        <SevBadge severity={f.severity}/>
+                        <div className="min-w-0">
+                          <div className="text-[12.5px] text-slate-200 truncate">{f.title}</div>
+                          <div className="text-[10.5px] text-slate-500 font-mono">
+                            {f.cve || f.cwe || "—"} {f.asset_hostname ? `· ${f.asset_hostname}` : ""}
+                          </div>
+                        </div>
+                      </div>
+                      <ArrowSquareOut size={13} className="text-slate-500 shrink-0"/>
+                    </Link>
+                  ))}
+                  {drillDown.total > drillDown.items.length && (
+                    <div className="text-[11px] text-slate-500 text-center py-2">
+                      Showing first {drillDown.items.length} of {drillDown.total} — narrow this down from the Findings page for the rest.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </Layout>
   );
 }

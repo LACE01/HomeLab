@@ -28,19 +28,44 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def query_crtsh(domain: str, timeout: float = 30.0) -> list:
+async def query_crtsh(domain: str, timeout: float = 30.0, retries: int = 3) -> list:
     """Returns a deduped, cleaned list of hostnames found in CT log certs for domain
     (including domain itself and any subdomains). Filters out wildcards, emails
-    embedded in some cert fields, and anything that isn't actually under `domain`."""
+    embedded in some cert fields, and anything that isn't actually under `domain`.
+
+    crt.sh is a free, single-operator service that returns 502/503 under load fairly
+    often -- a second or third attempt a couple seconds later frequently succeeds where
+    the first didn't, so this retries with a short backoff before giving up rather than
+    surfacing a transient blip as a hard failure on the first try."""
     domain = domain.strip().lower().lstrip(".")
-    async with httpx.AsyncClient(timeout=timeout) as c:
-        r = await c.get(CRTSH_URL, params={"q": f"%.{domain}", "output": "json"})
-        if r.status_code != 200:
-            raise ValueError(f"crt.sh returned HTTP {r.status_code}")
+    last_error: Exception | None = None
+    for attempt in range(retries):
         try:
-            rows = r.json()
-        except Exception:
-            raise ValueError("crt.sh returned a non-JSON response (it can rate-limit under load -- try again shortly)")
+            async with httpx.AsyncClient(timeout=timeout) as c:
+                r = await c.get(CRTSH_URL, params={"q": f"%.{domain}", "output": "json"})
+                if r.status_code in (502, 503, 504):
+                    last_error = ValueError(f"crt.sh returned HTTP {r.status_code} (temporary upstream issue)")
+                    if attempt < retries - 1:
+                        await asyncio.sleep(2 * (attempt + 1))
+                        continue
+                    raise ValueError(
+                        f"crt.sh returned HTTP {r.status_code} after {retries} attempts. This is crt.sh's own "
+                        f"service having trouble (it's a free, single-operator service that's often overloaded), "
+                        f"not something wrong with VulnOps -- wait a few minutes and try again."
+                    )
+                if r.status_code != 200:
+                    raise ValueError(f"crt.sh returned HTTP {r.status_code}")
+                try:
+                    rows = r.json()
+                except Exception:
+                    raise ValueError("crt.sh returned a non-JSON response (it can rate-limit under load -- try again shortly)")
+                break
+        except (httpx.TimeoutException, httpx.ConnectError) as e:
+            last_error = ValueError(f"Couldn't reach crt.sh: {e}")
+            if attempt < retries - 1:
+                await asyncio.sleep(2 * (attempt + 1))
+                continue
+            raise last_error
 
     names = set()
     for row in rows or []:

@@ -18,12 +18,24 @@ async def upload_sbom(
         raise HTTPException(400, "Upload a CycloneDX or SPDX SBOM as JSON")
     content = await file.read()
     from sbom import import_sbom
+    from routes.common import record_engagement, now_iso
+    started = now_iso()
     try:
         result = await import_sbom(db, content, filename=file.filename, label=label or None, asset_id=asset_id or None)
     except ValueError as e:
+        await record_engagement(db, name=label or file.filename, scanner="SBOM / OSV.dev", scan_type="manual_upload",
+                                 scan_method="file_upload", status="failed", started_at=started, error=str(e))
         raise HTTPException(400, str(e))
     except Exception as e:
+        await record_engagement(db, name=label or file.filename, scanner="SBOM / OSV.dev", scan_type="manual_upload",
+                                 scan_method="file_upload", status="failed", started_at=started, error=str(e))
         raise HTTPException(502, f"OSV.dev lookup failed: {e}")
+    await record_engagement(
+        db, name=label or file.filename, scanner="SBOM / OSV.dev", scan_type="manual_upload",
+        scan_method="file_upload", status="completed",
+        assets_scanned=result.get("components_parsed", 0), findings_created=result.get("findings_created", 0),
+        findings_updated=result.get("findings_updated", 0), started_at=started,
+    )
     return result
 
 

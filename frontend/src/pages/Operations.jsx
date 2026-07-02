@@ -126,29 +126,39 @@ export function Products() {
 
 export function Engagements() {
   const [items, setItems] = useState([]);
-  useEffect(() => { api.get("/v1/engagements").then(r => setItems(r.data.items)); }, []);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => { api.get("/v1/engagements").then(r => setItems(r.data.items)).finally(() => setLoading(false)); }, []);
   return (
-    <Layout title="Engagements / Scan Runs" subtitle="Recent scanner executions and import jobs">
-      <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">
-        <table className="dense w-full">
-          <thead><tr><th className="text-left">Name</th><th>Scanner</th><th>Scan Type</th><th>Method</th><th>Status</th><th>Assets</th><th>Created</th><th>Updated</th><th>Started</th></tr></thead>
-          <tbody>
-            {items.map(e => (
-              <tr key={e.id} className="border-t border-[#30363D] hover:bg-slate-800/30">
-                <td className="text-slate-200">{e.name}</td>
-                <td className="text-slate-400">{e.scanner}</td>
-                <td><Chip>{e.scan_type}</Chip></td>
-                <td><Chip>{e.scan_method}</Chip></td>
-                <td><Chip color="green">{e.status}</Chip></td>
-                <td className="font-mono">{e.assets_scanned}</td>
-                <td className="font-mono">{e.findings_created}</td>
-                <td className="font-mono">{e.findings_updated}</td>
-                <td className="font-mono text-[11px]">{fmtDate(e.started_at)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+    <Layout title="Engagements / Scan Runs" subtitle="Every actual scan/import run — Qualys polls, Nmap scans, SBOM/EASM sweeps, manual uploads, API pushes">
+      {loading ? (
+        <div className="text-[12.5px] text-slate-500 py-8 text-center">Loading…</div>
+      ) : items.length === 0 ? (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md py-10 text-center text-[12.5px] text-slate-500">
+          No scan runs yet — this fills in as Qualys polls, Nmap scans, SBOM uploads, EASM sweeps,
+          or API ingests actually run.
+        </div>
+      ) : (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">
+          <table className="dense w-full">
+            <thead><tr><th className="text-left">Name</th><th>Scanner</th><th>Scan Type</th><th>Method</th><th>Status</th><th>Assets Scanned</th><th>Findings Created</th><th>Findings Updated</th><th>Started</th></tr></thead>
+            <tbody>
+              {items.map(e => (
+                <tr key={e.id} className="border-t border-[#30363D] hover:bg-slate-800/30">
+                  <td className="text-slate-200">{e.name}</td>
+                  <td className="text-slate-400">{e.scanner}</td>
+                  <td><Chip>{e.scan_type}</Chip></td>
+                  <td><Chip>{e.scan_method}</Chip></td>
+                  <td><Chip color={e.status === "completed" ? "green" : e.status === "failed" ? "red" : "slate"}>{e.status}</Chip></td>
+                  <td className="font-mono">{e.assets_scanned}</td>
+                  <td className="font-mono">{e.findings_created}</td>
+                  <td className="font-mono">{e.findings_updated}</td>
+                  <td className="font-mono text-[11px]">{fmtDate(e.started_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </Layout>
   );
 }

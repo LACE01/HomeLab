@@ -40,9 +40,15 @@ export default function Notifications() {
   };
   const delChannel = async (id) => { if (window.confirm("Delete channel?")) { await api.delete(`/v1/admin/notification-channels/${id}`); await load(); } };
   const testChannel = async (c) => {
-    try { const r = await api.post(`/v1/admin/notification-channels/${c.id}/test`); 
-      if (r.data.delivered) toast.success(`Sent! (HTTP ${r.data.status_code})`); 
-      else toast.error(`Delivery failed: ${r.data.response}`);
+    try {
+      const r = await api.post(`/v1/admin/notification-channels/${c.id}/test`);
+      if (r.data.simulated) {
+        toast(r.data.response, { icon: "⚠️", duration: 8000 });
+      } else if (r.data.delivered) {
+        toast.success(`Sent! (HTTP ${r.data.status_code})`);
+      } else {
+        toast.error(`Delivery failed: ${r.data.response}`);
+      }
       await load();
     } catch (e) { toast.error("Test failed"); }
   };

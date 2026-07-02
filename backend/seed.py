@@ -115,8 +115,15 @@ async def _ensure_notification_channel(db, now_iso_str: str):
 async def _ensure_api_key(db, now_iso_str: str):
     if await db.api_keys.count_documents({}) > 0:
         return
+    # Randomly generated per-deployment (not a hardcoded/guessable value) -- an earlier
+    # version of this seed used a fixed string ("vulnops_ingest_demo_key_2026") that
+    # ended up published in the public repo source, which defeats the point of an API
+    # key. Existing deployments that already have that key seeded won't be silently
+    # rotated (would break anything already configured to push with it) -- rotate it
+    # yourself from Admin > API Keys > Regenerate if you're on an older seed.
+    import secrets
     await db.api_keys.insert_one({
-        "id": _id(), "key": "vulnops_ingest_demo_key_2026",
+        "id": _id(), "key": f"vulnops_{secrets.token_urlsafe(32)}",
         "name": "Default Ingestion Key", "active": True,
         "created_at": now_iso_str, "last_used_at": None,
     })

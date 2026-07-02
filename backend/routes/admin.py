@@ -135,7 +135,8 @@ async def test_channel(channel_id: str, user: dict = Depends(require_role("admin
         "url": "{APP_BASE_URL}/findings/demo (example)",
     }
     rec = await deliver(channel, "new_assignment", ctx, db)
-    return {"delivered": rec["delivered"], "status_code": rec["status_code"], "response": rec["response"]}
+    return {"delivered": rec["delivered"], "simulated": rec.get("simulated", False),
+            "status_code": rec["status_code"], "response": rec["response"]}
 
 
 class RuleIn(BaseModel):
@@ -247,6 +248,35 @@ async def set_assignment_settings(body: AssignmentSettingsBody, user: dict = Dep
     await db.settings.update_one({"id": "assignment_rules"},
         {"$set": {"id": "assignment_rules", "default_team": body.default_team}}, upsert=True)
     return {"default_team": body.default_team}
+
+
+# Fields with a small, known set of valid values -- offered as a dropdown of exactly
+# those options rather than a free-text field, since typos here (e.g. "crown-jewel" vs
+# "crown_jewel") mean the rule silently never matches anything.
+ENUM_FIELD_VALUES = {
+    "environment": ["production", "staging", "development", "unknown"],
+    "platform": ["aws", "azure", "gcp", "on_prem", "unknown"],
+    "criticality": ["crown_jewel", "critical", "high", "medium", "low"],
+    "exposure": ["internet", "external", "internal", "unknown"],
+}
+
+
+@router.get("/v1/admin/assignment-rules/field-values")
+async def assignment_rule_field_values(field: str, user: dict = Depends(get_current_user)):
+    """Values to populate the rule builder's Value dropdown for the selected field --
+    a fixed enum for known-shape fields, or the actual distinct values already present
+    on your assets for open-ended ones (tags, department, hostname, operating_system).
+    cve isn't included -- there's no fixed list to offer, and it's better typed by hand
+    or copy-pasted from a finding."""
+    if field in ENUM_FIELD_VALUES:
+        return {"values": ENUM_FIELD_VALUES[field]}
+    if field == "tags":
+        tags = await db.assets.distinct("tags")
+        return {"values": sorted(t for t in tags if t)}
+    if field in ("department", "hostname", "operating_system"):
+        vals = await db.assets.distinct(field)
+        return {"values": sorted(v for v in vals if v)}
+    return {"values": []}
 
 
 @router.get("/v1/admin/assignment-rules")
@@ -390,6 +420,38 @@ async def ownership_mappings(user: dict = Depends(get_current_user), q: Optional
     return {"items": items, "stale_threshold_days": STALE_OWNERSHIP_DAYS}
 
 
+class ReassignOwnerBody(BaseModel):
+    owner_team: str
+
+
+@router.post("/v1/assets/{asset_id}/reassign-owner")
+async def reassign_owner(asset_id: str, body: ReassignOwnerBody, user: dict = Depends(require_role("admin", "manager"))):
+    """Directly set an asset's owner team from the Ownership Mappings page, instead of
+    only being able to Confirm whatever a rule already inferred. Counts as a
+    confirmation too -- resets confidence/staleness the same way confirm-ownership does."""
+    asset = await db.assets.find_one({"id": asset_id}, {"_id": 0})
+    if not asset:
+        raise HTTPException(404, "Asset not found")
+    if not body.owner_team.strip():
+        raise HTTPException(400, "owner_team is required")
+    now = now_iso()
+    update = {
+        "owner_team": body.owner_team.strip(), "ownership_confidence": 1.0, "ownership_confirmed_at": now,
+        "ownership_rationale": f"Manually assigned to {body.owner_team.strip()} by {user['email']}",
+    }
+    await db.assets.update_one({"id": asset_id}, {"$set": update})
+    await db.findings.update_many(
+        {"asset_id": asset_id, "status": {"$nin": ["Fixed validated", "Closed administratively"]}},
+        {"$set": {"owner_team": update["owner_team"], "ownership_confidence": 1.0, "ownership_confirmed_at": now}},
+    )
+    await db.activity_log.insert_one({
+        "id": str(uuid.uuid4()), "entity_type": "asset", "entity_id": asset_id,
+        "action": "owner_reassigned", "actor": user["email"], "timestamp": now,
+        "details": f"Owner team manually set to {update['owner_team']}",
+    })
+    return {**asset, **update}
+
+
 @router.post("/v1/assets/{asset_id}/confirm-ownership")
 async def confirm_ownership(asset_id: str, user: dict = Depends(require_role("admin", "manager"))):
     """A human looked at this asset's owner team and confirmed it's correct -- resets the
@@ -447,10 +509,52 @@ async def update_sla_policies(body: SLAUpdate, user: dict = Depends(require_role
     return {"policies": SLA_DAYS}
 
 
+class ApiKeyCreateBody(BaseModel):
+    name: str = "Ingestion Key"
+
+
 @router.get("/v1/admin/api-keys")
 async def list_api_keys(user: dict = Depends(require_role("admin"))):
     items = await db.api_keys.find({}, {"_id": 0}).to_list(100)
+    # Flag any key still carrying the old hardcoded/publicly-known demo value from an
+    # earlier seed version, so the UI can nudge you to rotate it.
+    for k in items:
+        k["is_known_demo_value"] = k.get("key") == "vulnops_ingest_demo_key_2026"
     return {"items": items}
+
+
+@router.post("/v1/admin/api-keys")
+async def create_api_key(body: ApiKeyCreateBody, user: dict = Depends(require_role("admin"))):
+    import secrets
+    doc = {
+        "id": str(uuid.uuid4()), "key": f"vulnops_{secrets.token_urlsafe(32)}",
+        "name": body.name, "active": True, "created_at": now_iso(), "last_used_at": None,
+    }
+    await db.api_keys.insert_one(doc)
+    return _clean(doc)
+
+
+@router.post("/v1/admin/api-keys/{key_id}/regenerate")
+async def regenerate_api_key(key_id: str, user: dict = Depends(require_role("admin"))):
+    import secrets
+    existing = await db.api_keys.find_one({"id": key_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "API key not found")
+    new_key = f"vulnops_{secrets.token_urlsafe(32)}"
+    await db.api_keys.update_one({"id": key_id}, {"$set": {"key": new_key, "rotated_at": now_iso()}})
+    return {**existing, "key": new_key}
+
+
+@router.put("/v1/admin/api-keys/{key_id}")
+async def toggle_api_key(key_id: str, active: bool, user: dict = Depends(require_role("admin"))):
+    await db.api_keys.update_one({"id": key_id}, {"$set": {"active": active}})
+    return {"ok": True}
+
+
+@router.delete("/v1/admin/api-keys/{key_id}")
+async def delete_api_key(key_id: str, user: dict = Depends(require_role("admin"))):
+    await db.api_keys.delete_one({"id": key_id})
+    return {"ok": True}
 
 
 # --------------------------- NIGHTLY RESCORE ---------------------------
@@ -612,12 +716,24 @@ async def upload_web_scans(
 ):
     """Upload a CISA Web Scan XLSX. Returns counts (created/updated/web_apps)."""
     from cisa_scans import import_cisa_scans_xlsx
+    from routes.common import record_engagement, now_iso
     if not file.filename or not file.filename.lower().endswith(".xlsx"):
         raise HTTPException(400, "File must be .xlsx")
     content = await file.read()
+    started = now_iso()
     try:
-        return await import_cisa_scans_xlsx(db, content, source_label=label)
+        result = await import_cisa_scans_xlsx(db, content, source_label=label)
+        await record_engagement(
+            db, name=label or file.filename, scanner="CISA Web Scan", scan_type="manual_upload",
+            scan_method="file_upload", status="completed",
+            assets_scanned=result.get("web_apps", 0), findings_created=result.get("created", 0),
+            findings_updated=result.get("updated", 0), started_at=started,
+        )
+        return result
     except Exception as e:
+        await record_engagement(db, name=label or file.filename, scanner="CISA Web Scan",
+                                 scan_type="manual_upload", scan_method="file_upload", status="failed",
+                                 started_at=started, error=str(e))
         raise HTTPException(400, f"Failed to parse XLSX: {e}")
 
 
@@ -634,14 +750,27 @@ async def upload_nmap_scan(
     'internal' means it was run from inside (used for port/service enrichment only,
     no exposure-verification claims)."""
     from nmap_scan import import_nmap_xml
+    from routes.common import record_engagement, now_iso
     if not file.filename or not file.filename.lower().endswith(".xml"):
         raise HTTPException(400, "File must be .xml (nmap -oX output)")
     content = await file.read()
+    started = now_iso()
     try:
-        return await import_nmap_xml(db, content, vantage=vantage, source_label=label or None)
+        result = await import_nmap_xml(db, content, vantage=vantage, source_label=label or None)
+        await record_engagement(
+            db, name=label or file.filename, scanner="Nmap", scan_type="manual_upload",
+            scan_method="file_upload", status="completed",
+            assets_scanned=result.get("hosts_parsed", 0), findings_created=result.get("findings_created", 0),
+            findings_updated=result.get("assets_touched", 0), started_at=started,
+        )
+        return result
     except ValueError as e:
+        await record_engagement(db, name=label or file.filename, scanner="Nmap", scan_type="manual_upload",
+                                 scan_method="file_upload", status="failed", started_at=started, error=str(e))
         raise HTTPException(400, str(e))
     except Exception as e:
+        await record_engagement(db, name=label or file.filename, scanner="Nmap", scan_type="manual_upload",
+                                 scan_method="file_upload", status="failed", started_at=started, error=str(e))
         raise HTTPException(400, f"Failed to parse Nmap XML: {e}")
 
 

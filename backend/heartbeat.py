@@ -18,6 +18,8 @@ KNOWN_LOOPS = {
     "nmap_scan_loop": {"label": "Nmap Scheduled Scans", "expected_interval_hours": 0.25},
     "cert_monitor_loop": {"label": "TLS Certificate Monitor", "expected_interval_hours": 24},
     "easm_scan_loop": {"label": "EASM Subdomain Discovery", "expected_interval_hours": 24},
+    "backup_loop": {"label": "Database Backups", "expected_interval_hours": 24},
+    "automation_scheduler_loop": {"label": "Automation Scheduled Rules", "expected_interval_hours": 0.25},
 }
 
 

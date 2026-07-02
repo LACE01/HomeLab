@@ -10,6 +10,7 @@ acts on findings it hasn't already touched -- otherwise every sweep would re-tag
 re-notify, and re-assign the same findings forever.
 """
 import uuid
+from datetime import datetime, timezone
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -22,6 +23,13 @@ from routes.common import now_iso, _clean, finding_ctx
 router = APIRouter()
 
 OPEN_STATES = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+
+# "nightly" keeps the original behavior -- part of the one big nightly sweep alongside
+# rescoring/KEV sync/exception-expiry, no separate schedule of its own. The others get
+# checked by their own dedicated loop (see automation_scheduler_loop) so they can fire
+# at a specific time rather than whenever the nightly sweep happens to run.
+FREQUENCIES = ["nightly", "daily", "weekly", "monthly", "manual"]
+WEEKDAY_LABELS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 TRIGGER_LABELS = [
     {"id": "new_finding", "label": "New finding ingested"},
@@ -64,6 +72,14 @@ class RuleBody(BaseModel):
     enabled: bool = True
     conditions: dict = {}   # {severity: "Critical", kev_flag: true, min_risk_score: 70, ...}
     actions: List[dict] = []  # [{"type": "assign_team", "team": "AppSec"}, ...]
+
+    # --- scheduling ---
+    frequency: str = "nightly"     # nightly | daily | weekly | monthly | manual
+    run_at_hour: int = 2           # UTC, 0-23 -- used by daily/weekly/monthly
+    run_at_minute: int = 0         # UTC, 0-59
+    run_at_weekday: int = 0        # 0=Monday..6=Sunday -- used by weekly
+    run_at_day_of_month: int = 1   # 1-28 (capped so it's valid in every month) -- used by monthly
+    expires_at: Optional[str] = None  # ISO date/datetime -- rule auto-disables after this
 
 
 def _build_query(conditions: dict) -> dict:
@@ -157,8 +173,12 @@ async def run_rule(rule: dict, dry_run: bool = False) -> dict:
 
 
 async def run_all_automation_rules(db) -> dict:
-    """Called from the nightly loop -- sweep every enabled rule against current findings."""
-    rules = await db.automation_rules.find({"enabled": True}, {"_id": 0}).to_list(200)
+    """Called from the nightly loop -- sweep every enabled 'nightly'-frequency rule
+    against current findings. daily/weekly/monthly rules are handled by
+    automation_scheduler_loop instead, on their own schedule."""
+    rules = await db.automation_rules.find(
+        {"enabled": True, "frequency": {"$in": ["nightly", None]}}, {"_id": 0}
+    ).to_list(200)
     total = 0
     for rule in rules:
         try:
@@ -169,11 +189,106 @@ async def run_all_automation_rules(db) -> dict:
     return {"rules_run": len(rules), "findings_touched": total}
 
 
+def _is_expired(rule: dict, now: datetime) -> bool:
+    exp = rule.get("expires_at")
+    if not exp:
+        return False
+    try:
+        exp_dt = datetime.fromisoformat(exp.replace("Z", "+00:00"))
+    except Exception:
+        return False
+    return now >= exp_dt
+
+
+def is_rule_due(rule: dict, now: datetime, window_minutes: int = 15) -> bool:
+    """True if `rule` should fire during the current scheduler pass. `window_minutes`
+    should match the loop's poll interval -- a rule counts as due if now falls within
+    one poll-interval-wide window starting at its configured run time, and it hasn't
+    already run within that same window (so a slightly-late poll doesn't skip it, but
+    a rule also doesn't fire twice across two polls that both land in its window)."""
+    freq = rule.get("frequency", "nightly")
+    if freq not in ("daily", "weekly", "monthly"):
+        return False
+    if _is_expired(rule, now):
+        return False
+
+    hour = rule.get("run_at_hour", 2) or 0
+    minute = rule.get("run_at_minute", 0) or 0
+    target_minutes_today = hour * 60 + minute
+    now_minutes_today = now.hour * 60 + now.minute
+    in_window = 0 <= (now_minutes_today - target_minutes_today) < window_minutes
+
+    if freq == "daily":
+        pass  # in_window is the only condition
+    elif freq == "weekly":
+        if now.weekday() != (rule.get("run_at_weekday", 0) or 0):
+            return False
+    elif freq == "monthly":
+        target_day = min(max(1, rule.get("run_at_day_of_month", 1) or 1), 28)
+        if now.day != target_day:
+            return False
+    if not in_window:
+        return False
+
+    last_run = rule.get("last_run_at")
+    if last_run:
+        try:
+            last_dt = datetime.fromisoformat(last_run.replace("Z", "+00:00"))
+            if (now - last_dt).total_seconds() < window_minutes * 60:
+                return False  # already ran this same window
+        except Exception:
+            pass
+    return True
+
+
+async def run_due_scheduled_automation_rules(db, window_minutes: int = 15) -> dict:
+    now = datetime.now(timezone.utc)
+    rules = await db.automation_rules.find(
+        {"enabled": True, "frequency": {"$in": ["daily", "weekly", "monthly"]}}, {"_id": 0}
+    ).to_list(200)
+    ran, touched, expired = [], 0, []
+    for rule in rules:
+        if _is_expired(rule, now):
+            await db.automation_rules.update_one({"id": rule["id"]}, {"$set": {"enabled": False}})
+            expired.append(rule["name"])
+            continue
+        if is_rule_due(rule, now, window_minutes):
+            r = await run_rule(rule)
+            ran.append(rule["name"])
+            touched += r.get("matched", 0)
+    return {"rules_ran": ran, "findings_touched": touched, "rules_expired": expired}
+
+
+async def automation_scheduler_loop(db, interval_minutes: int = 15):
+    """Separate from the once-a-day nightly loop so daily/weekly/monthly rules can
+    actually fire at their configured time instead of whenever the nightly sweep
+    happens to run."""
+    import asyncio
+    import logging
+    from heartbeat import record_heartbeat
+    logger = logging.getLogger("vulnops")
+    await asyncio.sleep(45)  # let other startup tasks settle first
+    while True:
+        ok, detail = True, {}
+        try:
+            detail = await run_due_scheduled_automation_rules(db, interval_minutes)
+            if detail.get("rules_ran"):
+                logger.info(f"Automation scheduler: ran {detail['rules_ran']}")
+            if detail.get("rules_expired"):
+                logger.info(f"Automation scheduler: auto-disabled expired rule(s) {detail['rules_expired']}")
+        except Exception as e:
+            logger.exception(f"Automation scheduler error: {e}")
+            ok, detail["error"] = False, str(e)
+        await record_heartbeat(db, "automation_scheduler_loop", "ok" if ok else "error", detail)
+        await asyncio.sleep(interval_minutes * 60)
+
+
 @router.get("/v1/automation/meta")
 async def automation_meta(user: dict = Depends(get_current_user)):
     channels = await db.notification_channels.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(50)
     return {"triggers": TRIGGER_LABELS, "condition_fields": CONDITION_FIELDS,
-            "action_types": ACTION_TYPES, "channels": channels}
+            "action_types": ACTION_TYPES, "channels": channels,
+            "frequencies": FREQUENCIES, "weekday_labels": WEEKDAY_LABELS}
 
 
 @router.get("/v1/automation/rules")

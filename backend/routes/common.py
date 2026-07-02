@@ -38,6 +38,23 @@ def finding_ctx(f: dict) -> dict:
     }
 
 
+async def record_engagement(db, name: str, scanner: str, scan_type: str = "on_demand",
+                             scan_method: str = "api", status: str = "completed",
+                             assets_scanned: int = 0, findings_created: int = 0, findings_updated: int = 0,
+                             started_at: Optional[str] = None, error: Optional[str] = None) -> None:
+    """Records one row on the Engagements page -- one call per actual scan/import run
+    (Qualys poll, Nmap active scan, SBOM upload, EASM sweep, universal ingest). Nothing
+    wrote to this collection before, which is why the page was permanently empty."""
+    import uuid
+    doc = {
+        "id": str(uuid.uuid4()), "name": name, "scanner": scanner, "scan_type": scan_type,
+        "scan_method": scan_method, "status": status, "assets_scanned": assets_scanned,
+        "findings_created": findings_created, "findings_updated": findings_updated,
+        "started_at": started_at or now_iso(), "finished_at": now_iso(), "error": error,
+    }
+    await db.engagements.insert_one(doc)
+
+
 def deep_merge(base: dict, override: dict) -> dict:
     out = dict(base)
     for k, v in (override or {}).items():

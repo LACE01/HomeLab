@@ -17,6 +17,12 @@ async def compliance_summary(user: dict = Depends(get_current_user)):
     return await compute_compliance_summary(db)
 
 
+@router.get("/v1/compliance/controls/{control_id}/findings")
+async def compliance_control_findings(control_id: str, user: dict = Depends(get_current_user)):
+    from compliance import get_control_findings
+    return await get_control_findings(db, control_id)
+
+
 @router.get("/v1/reports/pdf/compliance")
 async def export_compliance_pdf(user: dict = Depends(get_current_user)):
     from reportlab.lib.pagesizes import letter

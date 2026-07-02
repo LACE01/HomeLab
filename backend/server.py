@@ -129,6 +129,7 @@ async def on_startup():
     from cert_monitor import cert_monitor_loop
     from easm import easm_scan_loop
     from backup import backup_loop
+    from routes.automation import automation_scheduler_loop
     _a.create_task(nightly_loop(db, interval_hours=24))
     # KEV / EPSS / active-attacks sync loop (12h) — was previously manual-trigger only
     _a.create_task(threat_intel_loop(db, interval_hours=12))
@@ -143,3 +144,6 @@ async def on_startup():
     _a.create_task(easm_scan_loop(db, interval_hours=24))
     # Scheduled DB backup loop -- no-ops unless BACKUP_SCHEDULE_ENABLED=true (see backup.py)
     _a.create_task(backup_loop(db, interval_hours=24))
+    # Automation rules with a daily/weekly/monthly schedule -- separate from the nightly
+    # sweep so they can fire at a specific configured time (15min poll resolution)
+    _a.create_task(automation_scheduler_loop(db, interval_minutes=15))

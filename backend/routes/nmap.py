@@ -161,6 +161,7 @@ async def delete_scan_config(config_id: str, user: dict = Depends(require_role("
 async def _execute_scan(config_id: str):
     """Runs in the background; updates the config doc with status/result as it goes."""
     from nmap_scan import run_active_scan, import_nmap_xml
+    from routes.common import record_engagement
     cfg = await db.nmap_scan_configs.find_one({"id": config_id}, {"_id": 0})
     if not cfg:
         return
@@ -168,6 +169,7 @@ async def _execute_scan(config_id: str):
         timeout = 1800  # custom scans (all-ports / slow timing / scripts) get more headroom
     else:
         timeout = {"quick": 300, "standard": 900, "thorough": 2700}.get(cfg.get("scan_type"), 900)
+    started = now_iso()
     try:
         xml_bytes = await run_active_scan(
             cfg["targets"], cfg.get("scan_type", "standard"), timeout_sec=timeout,
@@ -177,10 +179,20 @@ async def _execute_scan(config_id: str):
         await db.nmap_scan_configs.update_one({"id": config_id}, {"$set": {
             "status": "idle", "last_run_at": now_iso(), "last_result": {**result, "ok": True},
         }})
+        await record_engagement(
+            db, name=cfg["name"], scanner="Nmap", scan_type=cfg.get("scan_type", cfg.get("mode", "custom")),
+            scan_method="active_scan", status="completed",
+            assets_scanned=result.get("hosts_parsed", 0), findings_created=result.get("findings_created", 0),
+            findings_updated=result.get("assets_touched", 0), started_at=started,
+        )
     except Exception as e:
         await db.nmap_scan_configs.update_one({"id": config_id}, {"$set": {
             "status": "idle", "last_run_at": now_iso(), "last_result": {"ok": False, "error": str(e)},
         }})
+        await record_engagement(
+            db, name=cfg["name"], scanner="Nmap", scan_type=cfg.get("scan_type", cfg.get("mode", "custom")),
+            scan_method="active_scan", status="failed", started_at=started, error=str(e),
+        )
 
 
 @router.post("/v1/admin/nmap/configs/{config_id}/run-now")

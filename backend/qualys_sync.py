@@ -541,6 +541,15 @@ async def run_qualys_sync(db) -> dict:
                   "last_sync_at": _now_iso(),
                   "sync_errors": 0 if status == "success" else (integration.get("sync_errors", 0) + 1)}},
     )
+    from routes.common import record_engagement
+    await record_engagement(
+        db, name=f"Qualys VMDR sync — {started_at[:10]}", scanner="Qualys VMDR",
+        scan_type="scheduled" if status != "failed" else "scheduled", scan_method="api",
+        status="completed" if status == "success" else "failed",
+        assets_scanned=len({d.get("hostname") for d in detections if d.get("hostname")}),
+        findings_created=created, findings_updated=updated, started_at=started_at,
+        error="; ".join(str(e) for e in errors[:3]) if errors else None,
+    )
     return await _record_run(db, status, summary, errors)
 
 

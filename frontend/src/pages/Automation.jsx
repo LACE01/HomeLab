@@ -81,10 +81,24 @@ function ActionRow({ actionTypes, channels, action, onChange, onRemove }) {
   );
 }
 
+function scheduleLabel(rule, meta) {
+  const hh = String(rule.run_at_hour ?? 2).padStart(2, "0");
+  const mm = String(rule.run_at_minute ?? 0).padStart(2, "0");
+  switch (rule.frequency) {
+    case "daily": return `Daily at ${hh}:${mm} UTC`;
+    case "weekly": return `Weekly on ${(meta.weekday_labels || [])[rule.run_at_weekday] || "Monday"} at ${hh}:${mm} UTC`;
+    case "monthly": return `Monthly on day ${rule.run_at_day_of_month || 1} at ${hh}:${mm} UTC`;
+    case "manual": return "Manual only";
+    default: return "Nightly sweep";
+  }
+}
+
 function RuleFormModal({ meta, initial, onClose, onSaved }) {
   const [form, setForm] = useState(initial || {
     name: "", description: "", trigger: "scheduled_sweep", enabled: true,
     conditions: {}, actions: [],
+    frequency: "nightly", run_at_hour: 2, run_at_minute: 0, run_at_weekday: 0,
+    run_at_day_of_month: 1, expires_at: null,
   });
   const [condList, setCondList] = useState(
     Object.entries(form.conditions || {}).map(([field, value]) => ({ field, value }))
@@ -165,9 +179,71 @@ function RuleFormModal({ meta, initial, onClose, onSaved }) {
             </div>
           </div>
 
+          <div className="border border-[#30363D] rounded-md p-3 space-y-2.5 bg-[#0A0D12]">
+            <label className="text-[11px] uppercase font-mono text-slate-500">Schedule</label>
+            <div className="grid grid-cols-2 gap-2">
+              <select value={form.frequency} onChange={e=>setForm({...form, frequency:e.target.value})}
+                className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200">
+                {(meta.frequencies || ["nightly","daily","weekly","monthly","manual"]).map(f => (
+                  <option key={f} value={f}>
+                    {f === "nightly" ? "Nightly sweep (default)" : f === "manual" ? "Manual only (Run now)" : f.charAt(0).toUpperCase() + f.slice(1)}
+                  </option>
+                ))}
+              </select>
+              {["daily", "weekly", "monthly"].includes(form.frequency) && (
+                <div className="flex items-center gap-1">
+                  <input type="number" min={0} max={23} value={form.run_at_hour}
+                    onChange={e=>setForm({...form, run_at_hour: Math.min(23, Math.max(0, parseInt(e.target.value,10)||0))})}
+                    className="w-14 h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200"/>
+                  <span className="text-slate-500 text-[12px]">:</span>
+                  <input type="number" min={0} max={59} value={form.run_at_minute}
+                    onChange={e=>setForm({...form, run_at_minute: Math.min(59, Math.max(0, parseInt(e.target.value,10)||0))})}
+                    className="w-14 h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200"/>
+                  <span className="text-slate-500 text-[11px]">UTC</span>
+                </div>
+              )}
+            </div>
+            {form.frequency === "weekly" && (
+              <select value={form.run_at_weekday} onChange={e=>setForm({...form, run_at_weekday: parseInt(e.target.value,10)})}
+                className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200">
+                {(meta.weekday_labels || ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]).map((d, i) => (
+                  <option key={d} value={i}>{d}</option>
+                ))}
+              </select>
+            )}
+            {form.frequency === "monthly" && (
+              <div className="flex items-center gap-2">
+                <span className="text-[12px] text-slate-400">Day of month:</span>
+                <input type="number" min={1} max={28} value={form.run_at_day_of_month}
+                  onChange={e=>setForm({...form, run_at_day_of_month: Math.min(28, Math.max(1, parseInt(e.target.value,10)||1))})}
+                  className="w-16 h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200"/>
+                <span className="text-[10.5px] text-slate-500">(capped at 28 so it's valid every month)</span>
+              </div>
+            )}
+            {form.frequency === "nightly" && (
+              <div className="text-[11px] text-slate-500">Runs once a day as part of the main nightly sweep, alongside rescoring/KEV sync.</div>
+            )}
+            {form.frequency === "manual" && (
+              <div className="text-[11px] text-slate-500">Never runs automatically — only via "Run now".</div>
+            )}
+
+            <div>
+              <label className="text-[11px] uppercase font-mono text-slate-500">Expires (optional)</label>
+              <div className="flex items-center gap-2 mt-1">
+                <input type="date" value={form.expires_at ? form.expires_at.slice(0, 10) : ""}
+                  onChange={e => setForm({...form, expires_at: e.target.value ? `${e.target.value}T00:00:00Z` : null})}
+                  className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200"/>
+                {form.expires_at && (
+                  <button onClick={() => setForm({...form, expires_at: null})} className="text-[11px] text-slate-500 hover:text-slate-300">Clear</button>
+                )}
+              </div>
+              <div className="text-[10.5px] text-slate-500 mt-1">After this date the rule automatically disables itself.</div>
+            </div>
+          </div>
+
           <label className="flex items-center gap-2 text-[12px] text-slate-300">
             <input type="checkbox" checked={form.enabled} onChange={e=>setForm({...form, enabled:e.target.checked})}/>
-            Enabled — runs automatically on the nightly sweep
+            Enabled
           </label>
         </div>
         <div className="px-4 py-3 border-t border-[#30363D] flex justify-end gap-2">
@@ -238,7 +314,7 @@ export default function Automation() {
 
       <div className="text-[11.5px] text-slate-500 border border-[#30363D] bg-[#0D1117] rounded-md px-3 py-2.5 mb-3 flex items-center gap-2">
         <Robot size={15} className="text-blue-300 shrink-0"/>
-        Rules run automatically once a day alongside rescoring, or on demand with "Run now". Each rule only acts on a given finding once — re-running never double-applies.
+        Rules run on their own schedule (nightly sweep by default, or daily/weekly/monthly at a specific time), or on demand with "Run now". Each rule only acts on a given finding once — re-running never double-applies.
       </div>
 
       {rules.length === 0 && (
@@ -256,7 +332,16 @@ export default function Automation() {
                   <div className="text-[13.5px] font-medium text-slate-100 truncate">{rule.name}</div>
                   <Chip color={rule.enabled ? "green" : "slate"}>{rule.enabled ? "Enabled" : "Disabled"}</Chip>
                 </div>
-                <div className="text-[11px] text-slate-500 mt-0.5">{meta.triggers.find(t=>t.id===rule.trigger)?.label || rule.trigger}</div>
+                <div className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                  <span>{meta.triggers.find(t=>t.id===rule.trigger)?.label || rule.trigger}</span>
+                  <span className="text-slate-700">·</span>
+                  <span>{scheduleLabel(rule, meta)}</span>
+                  {rule.expires_at && (
+                    <Chip color={new Date(rule.expires_at) < new Date() ? "red" : "amber"}>
+                      {new Date(rule.expires_at) < new Date() ? "expired" : `expires ${rule.expires_at.slice(0,10)}`}
+                    </Chip>
+                  )}
+                </div>
               </div>
               <div className="flex items-center gap-1 shrink-0">
                 <button onClick={()=>toggleEnabled(rule)} title="Enable/disable" className="text-slate-500 hover:text-emerald-400"><Power size={14}/></button>

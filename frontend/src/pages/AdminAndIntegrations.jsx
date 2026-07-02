@@ -3,7 +3,7 @@ import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import { fmtDate, fmtRel } from "@/lib/utils-fmt";
-import { CheckCircle, WarningCircle, XCircle, GearSix, Lightning, Info, ArrowsClockwise } from "@phosphor-icons/react";
+import { CheckCircle, WarningCircle, XCircle, GearSix, Lightning, Info, ArrowsClockwise, Eye, EyeSlash, Trash, Plus, Warning } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 export function Integrations() {
@@ -301,11 +301,40 @@ export function Admin() {
   const [users, setUsers] = useState([]);
   const [keys, setKeys] = useState([]);
   const [sla, setSla] = useState({});
+  const [revealedKeys, setRevealedKeys] = useState(new Set());
+
+  const loadKeys = () => api.get("/v1/admin/api-keys").then(r => setKeys(r.data.items)).catch(()=>{});
+
   useEffect(() => {
     api.get("/v1/admin/users").then(r => setUsers(r.data.items)).catch(()=>{});
-    api.get("/v1/admin/api-keys").then(r => setKeys(r.data.items)).catch(()=>{});
+    loadKeys();
     api.get("/v1/admin/sla-policies").then(r => setSla(r.data.policies)).catch(()=>{});
   }, []);
+
+  const toggleReveal = (id) => setRevealedKeys(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+
+  const createKey = async () => {
+    const name = window.prompt("Name for this key (e.g. 'Splunk ingest')", "Ingestion Key");
+    if (!name) return;
+    try { await api.post("/v1/admin/api-keys", { name }); toast.success("Key created"); loadKeys(); }
+    catch (e) { toast.error(e.response?.data?.detail || "Failed to create key"); }
+  };
+
+  const regenerateKey = async (k) => {
+    if (!window.confirm(`Regenerate "${k.name}"? Anything using the old value will stop working immediately.`)) return;
+    try { await api.post(`/v1/admin/api-keys/${k.id}/regenerate`); toast.success("Key regenerated"); setRevealedKeys(prev => new Set(prev).add(k.id)); loadKeys(); }
+    catch (e) { toast.error("Failed to regenerate"); }
+  };
+
+  const deleteKey = async (k) => {
+    if (!window.confirm(`Delete "${k.name}"? Anything using it will stop working immediately.`)) return;
+    try { await api.delete(`/v1/admin/api-keys/${k.id}`); toast.success("Deleted"); loadKeys(); }
+    catch (e) { toast.error("Failed to delete"); }
+  };
 
   return (
     <Layout title="Administration" subtitle="Users, API keys, SLA policies, scoring rules">
@@ -321,14 +350,46 @@ export function Admin() {
         </div>
 
         <div className="border border-[#30363D] bg-[#0D1117] rounded-md">
-          <div className="px-4 py-2 border-b border-[#30363D]"><h3 className="text-[11px] uppercase tracking-wider font-mono text-slate-400">API Keys</h3></div>
+          <div className="px-4 py-2 border-b border-[#30363D] flex items-center justify-between">
+            <h3 className="text-[11px] uppercase tracking-wider font-mono text-slate-400">API Keys</h3>
+            <button onClick={createKey} className="h-6 px-2 text-[10.5px] bg-blue-500/15 border border-blue-500/40 hover:bg-blue-500/25 text-blue-300 rounded inline-flex items-center gap-1">
+              <Plus size={11}/> New key
+            </button>
+          </div>
           <table className="dense w-full">
-            <thead><tr><th className="text-left">Name</th><th className="text-left">Key</th><th>Active</th></tr></thead>
+            <thead><tr><th className="text-left">Name</th><th className="text-left">Key</th><th>Active</th><th></th></tr></thead>
             <tbody>{keys.map(k => (
-              <tr key={k.id} className="border-t border-[#30363D]"><td>{k.name}</td><td className="font-mono text-[11.5px] text-blue-300">{k.key}</td><td><Chip color={k.active?"green":"slate"}>{k.active?"yes":"no"}</Chip></td></tr>
+              <tr key={k.id} className="border-t border-[#30363D]">
+                <td>
+                  {k.name}
+                  {k.is_known_demo_value && (
+                    <div title="This key's value is a hardcoded string from an older version of this app that shipped in the public repo source -- anyone can find it. Regenerate it before relying on this endpoint."
+                      className="inline-flex items-center gap-1 text-amber-400 ml-1.5"><Warning size={11}/></div>
+                  )}
+                </td>
+                <td className="font-mono text-[11.5px] text-blue-300">
+                  <span className="inline-flex items-center gap-1.5">
+                    {revealedKeys.has(k.id) ? k.key : `${k.key.slice(0, 12)}${"•".repeat(12)}`}
+                    <button onClick={() => toggleReveal(k.id)} className="text-slate-500 hover:text-slate-300">
+                      {revealedKeys.has(k.id) ? <EyeSlash size={12}/> : <Eye size={12}/>}
+                    </button>
+                  </span>
+                </td>
+                <td><Chip color={k.active?"green":"slate"}>{k.active?"yes":"no"}</Chip></td>
+                <td>
+                  <div className="flex items-center gap-1 justify-end">
+                    <button onClick={() => regenerateKey(k)} title="Regenerate" className="text-slate-500 hover:text-slate-200"><ArrowsClockwise size={13}/></button>
+                    <button onClick={() => deleteKey(k)} title="Delete" className="text-slate-500 hover:text-red-400"><Trash size={13}/></button>
+                  </div>
+                </td>
+              </tr>
             ))}</tbody>
           </table>
-          <div className="px-4 py-2 text-[11px] text-slate-500 border-t border-[#30363D]">Use with header <span className="font-mono text-slate-300">X-API-Key</span> against <span className="font-mono text-slate-300">POST /api/v1/ingest/universal</span></div>
+          <div className="px-4 py-2 text-[11px] text-slate-500 border-t border-[#30363D]">
+            Used by external tools pushing findings directly (not by any built-in scanner connector — Qualys/Nmap/SBOM/EASM
+            have their own auth). Send it as header <span className="font-mono text-slate-300">X-API-Key</span> against{" "}
+            <span className="font-mono text-slate-300">POST /api/v1/ingest/universal</span>.
+          </div>
         </div>
 
         <div className="border border-[#30363D] bg-[#0D1117] rounded-md lg:col-span-2">
