@@ -3,7 +3,9 @@ import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip, RiskBar } from "@/components/Badges";
 import { Link, useNavigate } from "react-router-dom";
-import { Globe, Fire, UserCircle, ShareNetwork, Warning } from "@phosphor-icons/react";
+import { Globe, Fire, UserCircle, ShareNetwork, Warning, Info, ArrowsClockwise } from "@phosphor-icons/react";
+import { useAuth } from "@/lib/auth";
+import { toast } from "sonner";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
 } from "recharts";
@@ -28,16 +30,37 @@ const Stat = ({ label, value, sub, icon: Icon, tone = "slate", onClick }) => {
 
 export default function Exposure() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [d, setD] = useState(null);
+  const [resyncing, setResyncing] = useState(false);
 
-  useEffect(() => { api.get("/v1/dashboards/exposure").then(r => setD(r.data)); }, []);
+  const load = () => api.get("/v1/dashboards/exposure").then(r => setD(r.data));
+  useEffect(() => { load(); }, []); // eslint-disable-line
+
+  const resync = async () => {
+    setResyncing(true);
+    try {
+      const r = await api.post("/v1/admin/exposure/resync");
+      toast.success(`Checked ${r.data.assets_checked} assets — updated ${r.data.findings_updated} finding(s) across ${r.data.assets_with_changes} asset(s).`);
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Resync failed");
+    } finally { setResyncing(false); }
+  };
 
   if (!d) return <Layout title="Exposure" subtitle="Loading…"><div className="text-slate-500">Loading…</div></Layout>;
 
   const pct = d.total_assets ? Math.round((d.exposed_assets / d.total_assets) * 100) : 0;
 
   return (
-    <Layout title="Exposure" subtitle="What's actually reachable from the internet, and how bad is it">
+    <Layout title="Exposure" subtitle="What's actually reachable from the internet, and how bad is it"
+      actions={user?.role === "admin" && (
+        <button onClick={resync} disabled={resyncing} data-testid="resync-exposure-btn"
+          title="Retroactively fixes findings whose internet-facing flag went stale after an asset was reclassified"
+          className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-blue-500/40 hover:text-blue-300 text-slate-400 rounded inline-flex items-center gap-1.5 disabled:opacity-50">
+          <ArrowsClockwise size={14} className={resyncing ? "animate-spin" : ""}/> {resyncing ? "Resyncing…" : "Resync exposure flags"}
+        </button>
+      )}>
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
         <Stat label="Internet-Facing Assets" value={d.exposed_assets} sub={`${pct}% of ${d.total_assets} total`}
           icon={Globe} tone="blue" />
@@ -50,6 +73,19 @@ export default function Exposure() {
         <Stat label="Exposed + Unassigned" value={d.exposed_unassigned} icon={UserCircle} tone="amber"
           onClick={()=>navigate("/findings?view=unassigned")} />
       </div>
+
+      {d.exposed_assets > 0 && d.exposed_open === 0 && (
+        <div className="border border-blue-500/30 bg-blue-500/5 rounded-md px-4 py-3 mb-4 flex items-start gap-2.5">
+          <Info size={16} className="text-blue-400 shrink-0 mt-0.5"/>
+          <div className="text-[12px] text-blue-200/90 leading-relaxed">
+            {d.exposed_assets} internet-facing asset{d.exposed_assets === 1 ? "" : "s"} tracked, but no vulnerability scan has run
+            against {d.exposed_assets === 1 ? "it" : "them"} yet — EASM only discovers hosts, it doesn't scan for
+            vulnerabilities. Run <Link to="/admin/nmap-scans" className="underline hover:text-blue-100">Nmap</Link> or another
+            scanner targeting these assets to populate this view. If some of these assets already had findings from a prior
+            scan before being marked internet-facing, use "Resync exposure flags" above to catch those up.
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
         <div className="lg:col-span-2 border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">

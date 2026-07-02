@@ -153,13 +153,36 @@ async def run_easm_scan(db, domain: str, concurrency: int = 20) -> dict:
     }
 
 
+async def sync_internet_facing_for_asset(db, asset_id: str, exposure: str) -> int:
+    """Keeps findings.internet_facing in sync with the asset's current exposure.
+    Findings cache this flag at creation time for query performance, so when an
+    asset gets (re)classified as internet-facing after the fact -- e.g. EASM proves
+    a hostname that was only ever internally scanned actually has a public
+    certificate -- its existing findings need to be updated too, or the Exposure
+    dashboard silently undercounts them forever."""
+    internet_facing = exposure in ("internet", "external")
+    result = await db.findings.update_many(
+        {"asset_id": asset_id, "internet_facing": {"$ne": internet_facing}},
+        {"$set": {"internet_facing": internet_facing}},
+    )
+    return result.modified_count
+
+
 async def promote_candidate(db, candidate_id: str, user_email: str) -> dict:
     cand = await db.easm_candidates.find_one({"id": candidate_id}, {"_id": 0})
     if not cand:
         raise ValueError("Candidate not found")
     existing_asset = await db.assets.find_one({"hostname": cand["hostname"]}, {"_id": 0})
     if existing_asset:
-        await db.easm_candidates.update_one({"id": candidate_id}, {"$set": {"status": "promoted", "promoted_asset_id": existing_asset["id"]}})
+        update = {"status": "promoted", "promoted_asset_id": existing_asset["id"]}
+        # crt.sh surfacing this hostname is real evidence it's internet-reachable --
+        # if it was only ever tracked as internal/unknown before, upgrade it now
+        # rather than discarding that signal just because the asset already existed.
+        if existing_asset.get("exposure") not in ("internet", "external"):
+            await db.assets.update_one({"id": existing_asset["id"]}, {"$set": {"exposure": "internet"}})
+            await sync_internet_facing_for_asset(db, existing_asset["id"], "internet")
+            existing_asset["exposure"] = "internet"
+        await db.easm_candidates.update_one({"id": candidate_id}, {"$set": update})
         return existing_asset
 
     asset = {
@@ -193,7 +216,7 @@ async def easm_scan_loop(db, interval_hours: int = 24):
     logger = logging.getLogger("vulnops")
     await asyncio.sleep(60)  # let other startup tasks settle first
     while True:
-        ok, detail = True, {"domains_scanned": 0, "domains_failed": 0}
+        ok, detail = True, {"domains_scanned": 0, "domains_failed": 0, "failures": []}
         try:
             domains = await db.easm_domains.find({"enabled": True}, {"_id": 0}).to_list(200)
             for d in domains:
@@ -205,6 +228,10 @@ async def easm_scan_loop(db, interval_hours: int = 24):
                     logger.exception(f"EASM scan failed for {d['domain']}: {e}")
                     ok = False
                     detail["domains_failed"] += 1
+                    # Keep the actual reason on the heartbeat itself -- not just in
+                    # stdout -- so the Ops Health page can show WHY a domain failed
+                    # without needing container log access.
+                    detail["failures"].append({"domain": d["domain"], "error": str(e)})
         except Exception as e:
             logger.exception(f"EASM loop error: {e}")
             ok, detail["error"] = False, str(e)

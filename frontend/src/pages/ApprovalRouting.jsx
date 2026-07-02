@@ -23,12 +23,12 @@ function TierNode({ data }) {
         {isDefault ? "Default — any manager or admin" : "Custom route"}
       </div>
       <div style={{ display: "flex", gap: 5, marginTop: 8 }}>
-        <button className="nodrag" onClick={onSave} disabled={!dirty || saving}
+        <button className="nodrag nopan" onClick={onSave} disabled={!dirty || saving}
           style={{ fontSize: 10, padding: "3px 7px", borderRadius: 4, border: "1px solid #2F81F766",
                    background: dirty ? "#2F81F733" : "transparent", color: dirty ? "#7db8ff" : "#576069", cursor: dirty ? "pointer" : "default" }}>
           {saving ? "Saving…" : "Save"}
         </button>
-        <button className="nodrag" onClick={onReset}
+        <button className="nodrag nopan" onClick={onReset}
           style={{ fontSize: 10, padding: "3px 7px", borderRadius: 4, border: "1px solid #30363D", background: "transparent", color: "#8B949E", cursor: "pointer" }}>
           Reset
         </button>
@@ -44,15 +44,15 @@ function StepNode({ data }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
         <span style={{ fontSize: 9, fontFamily: "JetBrains Mono", color: "#8B949E", letterSpacing: 0.5 }}>STEP {step}</span>
         {canDelete && (
-          <button className="nodrag" onClick={onDelete} style={{ color: "#f87171", background: "none", border: "none", cursor: "pointer", fontSize: 13, lineHeight: 1 }}>✕</button>
+          <button className="nodrag nopan" onClick={onDelete} style={{ color: "#f87171", background: "none", border: "none", cursor: "pointer", fontSize: 13, lineHeight: 1 }}>✕</button>
         )}
       </div>
-      <select className="nodrag" value={role} onChange={e => onChangeRole(e.target.value)}
+      <select className="nodrag nopan" value={role} onChange={e => onChangeRole(e.target.value)}
         style={{ width: "100%", height: 26, background: "#0D1117", border: "1px solid #30363D", borderRadius: 4, color: "#e2e8f0", fontSize: 11.5, padding: "0 4px" }}>
         {roleOptions.map(r => <option key={r} value={r}>{r === "specific" ? "specific person" : r}</option>)}
       </select>
       {role === "specific" && (
-        <input className="nodrag" type="email" placeholder="person@company.com" value={approver_email || ""}
+        <input className="nodrag nopan" type="email" placeholder="person@company.com" value={approver_email || ""}
           onChange={e => onChangeEmail(e.target.value)}
           style={{ width: "100%", height: 26, marginTop: 6, background: "#0D1117", border: "1px solid #30363D", borderRadius: 4, color: "#e2e8f0", fontSize: 11, padding: "0 6px" }}/>
       )}
@@ -62,7 +62,7 @@ function StepNode({ data }) {
 
 function AddStepNode({ data }) {
   return (
-    <button className="nodrag" onClick={data.onAdd}
+    <button className="nodrag nopan" onClick={data.onAdd}
       style={{ width: STEP_W, height: 62, borderRadius: 8, border: "1.5px dashed #30363D", background: "transparent",
                color: "#8B949E", fontSize: 11.5, cursor: "pointer" }}>
       + Add step

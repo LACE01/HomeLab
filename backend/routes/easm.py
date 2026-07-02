@@ -104,3 +104,22 @@ async def dismiss(candidate_id: str, body: DismissBody, user: dict = Depends(req
     from easm import dismiss_candidate
     await dismiss_candidate(db, candidate_id, body.reason)
     return {"ok": True}
+
+
+@router.post("/v1/admin/exposure/resync")
+async def resync_exposure(user: dict = Depends(require_role("admin"))):
+    """Retroactively fixes findings.internet_facing to match each asset's current
+    exposure. Needed for data that went stale BEFORE this reconciliation existed --
+    e.g. an asset reclassified as internet-facing whose pre-existing findings never
+    got the memo. New promotions/reclassifications stay in sync going forward on
+    their own; this is a one-time catch-up tool for older/imported data."""
+    from easm import sync_internet_facing_for_asset
+    assets = await db.assets.find({}, {"_id": 0, "id": 1, "exposure": 1}).to_list(100000)
+    updated_findings = 0
+    assets_changed = 0
+    for a in assets:
+        n = await sync_internet_facing_for_asset(db, a["id"], a.get("exposure") or "unknown")
+        if n:
+            updated_findings += n
+            assets_changed += 1
+    return {"ok": True, "assets_checked": len(assets), "assets_with_changes": assets_changed, "findings_updated": updated_findings}

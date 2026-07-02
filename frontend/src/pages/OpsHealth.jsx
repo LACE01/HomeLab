@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
-import { Heartbeat, CheckCircle, XCircle, Clock, Database } from "@phosphor-icons/react";
+import { Heartbeat, CheckCircle, XCircle, Clock, Database, X } from "@phosphor-icons/react";
 
 const STATUS_META = {
   ok: { label: "Healthy", color: "green" },
@@ -23,9 +23,59 @@ function timeAgo(iso) {
   return `${Math.round(hrs / 24)}d ago`;
 }
 
+function LoopDetailModal({ loop, onClose }) {
+  const detail = loop.detail || {};
+  const failures = Array.isArray(detail.failures) ? detail.failures : null;
+  const entries = Object.entries(detail).filter(([k]) => k !== "failures");
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4" onClick={onClose}>
+      <div className="bg-[#0D1117] border border-[#30363D] rounded-md w-full max-w-lg max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="px-4 py-3 border-b border-[#30363D] flex items-center justify-between">
+          <div>
+            <h3 className="text-[13px] font-medium text-slate-100">{loop.label}</h3>
+            <div className="text-[10.5px] font-mono text-slate-500">{loop.name} · last run {timeAgo(loop.last_run_at)}</div>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-300"><X size={16}/></button>
+        </div>
+        <div className="p-4 overflow-y-auto space-y-3">
+          {!loop.detail && <div className="text-[12px] text-slate-500">No detail recorded for this run.</div>}
+          {entries.length > 0 && (
+            <div className="grid grid-cols-2 gap-2">
+              {entries.map(([k, v]) => (
+                <div key={k} className="border border-[#30363D] rounded px-2.5 py-1.5">
+                  <div className="text-[10px] uppercase font-mono text-slate-500">{k.replace(/_/g, " ")}</div>
+                  <div className="text-[12px] text-slate-200 font-mono break-all">{typeof v === "object" ? JSON.stringify(v) : String(v)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          {failures && failures.length > 0 && (
+            <div>
+              <div className="text-[11px] uppercase font-mono text-red-400 mb-1.5">{failures.length} failure(s)</div>
+              <div className="space-y-1.5">
+                {failures.map((f, i) => (
+                  <div key={i} className="border border-red-500/30 bg-red-500/5 rounded px-2.5 py-1.5">
+                    <div className="text-[11.5px] text-red-300 font-mono">{f.domain || f.name || f.id || `item ${i + 1}`}</div>
+                    <div className="text-[11.5px] text-slate-300 mt-0.5 break-words">{f.error || f.message || JSON.stringify(f)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="pt-2 border-t border-[#30363D]">
+            <div className="text-[10px] uppercase font-mono text-slate-500 mb-1">Raw detail</div>
+            <pre className="text-[10.5px] text-slate-400 bg-[#161B22] border border-[#30363D] rounded p-2 overflow-x-auto whitespace-pre-wrap break-all">{JSON.stringify(loop.detail, null, 2)}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function OpsHealth() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [selectedLoop, setSelectedLoop] = useState(null);
   const pollRef = useRef(null);
 
   const load = async () => {
@@ -68,7 +118,8 @@ export default function OpsHealth() {
         {data.loops.map(l => {
           const meta = STATUS_META[l.status] || STATUS_META.never_run;
           return (
-            <div key={l.name} className="px-4 py-3.5 flex items-center justify-between gap-3">
+            <div key={l.name} onClick={() => setSelectedLoop(l)} data-testid={`loop-row-${l.name}`}
+              className="px-4 py-3.5 flex items-center justify-between gap-3 cursor-pointer hover:bg-slate-800/20">
               <div className="flex items-center gap-2.5 min-w-0">
                 {l.status === "ok" ? <CheckCircle size={16} className="text-emerald-400 shrink-0"/> :
                  l.status === "never_run" ? <Clock size={16} className="text-slate-600 shrink-0"/> :
@@ -92,10 +143,11 @@ export default function OpsHealth() {
 
       <div className="mt-4 text-[11px] text-slate-500 leading-relaxed max-w-2xl">
         A loop is marked <span className="text-orange-400">stale</span> if it hasn't reported in for more than 2x its
-        expected interval — a single slow run won't trip this, but a crashed or hung loop will. Detailed per-step
-        results (which specific sync failed and why) are in each heartbeat's <code className="font-mono">detail</code> field,
-        also visible in the container logs.
+        expected interval — a single slow run won't trip this, but a crashed or hung loop will. Click any row for its
+        detailed per-step results (which specific sync failed and why) — the same data is also in the container logs.
       </div>
+
+      {selectedLoop && <LoopDetailModal loop={selectedLoop} onClose={() => setSelectedLoop(null)} />}
     </Layout>
   );
 }
