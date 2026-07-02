@@ -278,8 +278,7 @@ async def run_prebuilt(db, report_id: str, fmt: str):
     return None
 
 
-async def run_custom(db, body: dict, fmt: str):
-    """Dynamic builder. Body: {filters:{}, group_by:str, metric:'count'|'risk_sum', date_field:str, date_from:str, date_to:str}"""
+def _build_custom_filters(body: dict) -> dict:
     filters: dict = {}
     raw = body.get("filters") or {}
     if raw.get("severity"):
@@ -302,6 +301,22 @@ async def run_custom(db, body: dict, fmt: str):
         filters.setdefault(date_field, {})["$gte"] = body["date_from"]
     if body.get("date_to"):
         filters.setdefault(date_field, {})["$lt"] = body["date_to"]
+    return filters
+
+
+async def preview_custom(db, body: dict) -> dict:
+    """Lightweight match-count check the Reports builder UI calls before exporting, so
+    a filter combination that matches nothing (wrong status spelling, overly narrow
+    date range, etc.) is caught up front instead of silently producing a PDF/CSV
+    with a header row and nothing underneath it."""
+    filters = _build_custom_filters(body)
+    count = await db.findings.count_documents(filters)
+    return {"count": count, "filters": filters}
+
+
+async def run_custom(db, body: dict, fmt: str):
+    """Dynamic builder. Body: {filters:{}, group_by:str, metric:'count'|'risk_sum', date_field:str, date_from:str, date_to:str}"""
+    filters = _build_custom_filters(body)
 
     group_by = body.get("group_by") or "severity"
     if group_by not in GROUP_FIELDS:
@@ -324,7 +339,11 @@ async def run_custom(db, body: dict, fmt: str):
         csv_rows = [dict(zip([group_by, "count", "critical", metric_label.lower().replace(" ", "_")], r)) for r in rows]
         return _csv_response(csv_rows, [group_by, "count", "critical", metric_label.lower().replace(" ", "_")], "custom-report")
     title = f"Custom Report — by {group_by}"
-    return _pdf_response(title,
-                         [{"type": "text", "value": f"Metric: {metric_label} · Filters: {filters or 'none'}"},
-                          {"type": "table", "headers": [group_by, "Count", "Critical", metric_label], "rows": rows}],
-                         "custom-report")
+    sections = [{"type": "text", "value": f"Metric: {metric_label} · Filters: {filters or 'none'}"}]
+    if rows:
+        sections.append({"type": "table", "headers": [group_by, "Count", "Critical", metric_label], "rows": rows})
+    else:
+        sections.append({"type": "text",
+                          "value": "No findings match these filters. Widen the severity/status selection or date "
+                                    "range and try again — this export intentionally isn't showing a blank table."})
+    return _pdf_response(title, sections, "custom-report")

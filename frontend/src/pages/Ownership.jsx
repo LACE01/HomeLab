@@ -9,6 +9,43 @@ import { toast } from "sonner";
 const FIELDS = ["tags", "environment", "platform", "criticality", "exposure", "department", "cve", "operating_system", "hostname"];
 const FREE_TEXT_FIELDS = new Set(["cve"]); // no fixed/known list of values to offer
 
+// A rule's value is stored as a single comma-separated string on the wire (backward
+// compatible with existing single-value rules), but edited here as removable chips so
+// one rule can match several tags/teams/environments at once instead of needing a
+// separate rule per value.
+function MultiValueInput({ value, onChange, testid }) {
+  const values = (value || "").split(",").map(v => v.trim()).filter(Boolean);
+  const [input, setInput] = useState("");
+  const commit = () => {
+    const v = input.trim();
+    if (!v) return;
+    if (!values.includes(v)) onChange([...values, v].join(","));
+    setInput("");
+  };
+  const remove = (v) => onChange(values.filter(x => x !== v).join(","));
+  return (
+    <div className="min-h-8 bg-[#161B22] border border-[#30363D] rounded px-1.5 py-1 flex flex-wrap gap-1 items-center">
+      {values.map(v => (
+        <span key={v} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-blue-500/15 border border-blue-500/30 rounded text-[10.5px] text-blue-200 whitespace-nowrap">
+          {v}
+          <button type="button" onClick={() => remove(v)} className="text-blue-300 hover:text-blue-100">×</button>
+        </span>
+      ))}
+      <input
+        data-testid={testid} value={input} onChange={e => setInput(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === "Enter" || e.key === ",") { e.preventDefault(); commit(); }
+          else if (e.key === "Backspace" && !input && values.length) { onChange(values.slice(0, -1).join(",")); }
+        }}
+        onBlur={commit}
+        list="assignment-rule-field-values"
+        placeholder={values.length ? "+ add" : "Value(s) — Enter to add each"}
+        className="flex-1 min-w-[70px] bg-transparent outline-none text-[12px] text-slate-200 h-6"
+      />
+    </div>
+  );
+}
+
 export function AssignmentRules() {
   const [items, setItems] = useState([]);
   const [draft, setDraft] = useState({ name:"", priority:100, field:"tags", operator:"equals", value:"", assign_team:"", active:true });
@@ -64,30 +101,50 @@ export function AssignmentRules() {
   const cancelEdit = () => { setEditingRuleId(null); resetDraft(); };
   const del = async (id) => { await api.delete(`/v1/admin/assignment-rules/${id}`); if (id === editingRuleId) cancelEdit(); await load(); };
   const toggle = async (r) => { await api.patch(`/v1/admin/assignment-rules/${r.id}`, {...r, active: !r.active}); await load(); };
+  const [applying, setApplying] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
   const apply = async () => {
-    const r = await api.post("/v1/admin/assignment-rules/apply");
-    const extra = r.data.still_unassigned > 0
-      ? ` · ${r.data.still_unassigned} still unassigned (no rule and no default team) — set a default team below, or add a rule.`
-      : r.data.defaulted_to_fallback > 0 ? ` · ${r.data.defaulted_to_fallback} fell back to the default team.` : "";
-    toast.success(`Applied — ${r.data.updated_assets} assets, ${r.data.updated_findings} findings updated${extra}`, { duration: 6000 });
-    setPreview(null);
-    load();
+    if (applying) return; // guard against double-clicks firing a second run mid-flight
+    setApplying(true);
+    try {
+      const r = await api.post("/v1/admin/assignment-rules/apply");
+      const extra = r.data.still_unassigned > 0
+        ? ` · ${r.data.still_unassigned} still unassigned (no rule and no default team) — set a default team below, or add a rule.`
+        : r.data.defaulted_to_fallback > 0 ? ` · ${r.data.defaulted_to_fallback} fell back to the default team.` : "";
+      toast.success(`Applied — ${r.data.updated_assets} assets, ${r.data.updated_findings} findings updated${extra}`, { duration: 6000 });
+      setPreview(null);
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to apply rules");
+    } finally {
+      setApplying(false);
+    }
   };
   const doPreview = async () => {
-    const r = await api.post("/v1/admin/assignment-rules/preview");
-    setPreview(r.data);
+    if (previewing) return;
+    setPreviewing(true);
+    try {
+      const r = await api.post("/v1/admin/assignment-rules/preview");
+      setPreview(r.data);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to preview rules");
+    } finally {
+      setPreviewing(false);
+    }
   };
 
   return (
     <Layout title="Assignment Rules" subtitle="Auto-route findings to teams based on asset attributes"
       actions={
         <>
-          <button data-testid="preview-rules" onClick={doPreview}
-            className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-blue-500/50 hover:text-blue-300 text-slate-300 rounded inline-flex items-center gap-1.5">
-            Preview
+          <button data-testid="preview-rules" onClick={doPreview} disabled={previewing || applying}
+            className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-blue-500/50 hover:text-blue-300 text-slate-300 rounded inline-flex items-center gap-1.5 disabled:opacity-50">
+            {previewing ? "Checking…" : "Preview"}
           </button>
-          <button data-testid="apply-rules" onClick={apply}
-            className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded inline-flex items-center gap-1.5"><Lightning size={14}/> Apply Rules</button>
+          <button data-testid="apply-rules" onClick={apply} disabled={applying || previewing}
+            className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+            <Lightning size={14}/> {applying ? "Applying rules…" : "Apply Rules"}
+          </button>
         </>
       }>
 
@@ -131,8 +188,7 @@ export function AssignmentRules() {
         <input type="number" placeholder="Priority" value={draft.priority} onChange={(e)=>setDraft({...draft, priority:Number(e.target.value)})} className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px]"/>
         <select value={draft.field} onChange={(e)=>setDraft({...draft, field:e.target.value})} className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px]">{FIELDS.map(f=> <option key={f}>{f}</option>)}</select>
         <select value={draft.operator} onChange={(e)=>setDraft({...draft, operator:e.target.value})} className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px]"><option>equals</option><option>contains</option></select>
-        <input placeholder="Value" data-testid="rule-value" value={draft.value} onChange={(e)=>setDraft({...draft, value:e.target.value})}
-          list="assignment-rule-field-values" className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px]"/>
+        <MultiValueInput testid="rule-value" value={draft.value} onChange={(v)=>setDraft({...draft, value:v})}/>
         <datalist id="assignment-rule-field-values">{fieldValues.map(v => <option key={v} value={v}/>)}</datalist>
         <input placeholder="Assign team" data-testid="rule-team" value={draft.assign_team} onChange={(e)=>setDraft({...draft, assign_team:e.target.value})}
           list="assignment-rule-teams" className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px]"/>
@@ -157,7 +213,13 @@ export function AssignmentRules() {
                 <td className="text-slate-200">{r.name}</td>
                 <td><Chip>{r.field}</Chip></td>
                 <td className="text-slate-400">{r.operator}</td>
-                <td className="font-mono text-[11.5px]">{r.value}</td>
+                <td className="font-mono text-[11.5px]">
+                  <div className="flex flex-wrap gap-1">
+                    {(r.value || "").split(",").map(v => v.trim()).filter(Boolean).map(v => (
+                      <Chip key={v} color="slate">{v}</Chip>
+                    ))}
+                  </div>
+                </td>
                 <td className="text-slate-200">{r.assign_team}</td>
                 <td><button onClick={()=>toggle(r)}><Chip color={r.active?"green":"slate"}>{r.active?"on":"off"}</Chip></button></td>
                 <td>

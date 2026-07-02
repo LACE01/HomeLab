@@ -11,7 +11,7 @@ from db import db
 from auth_utils import get_current_user
 from routes.common import now_iso
 from routes.dashboards import dashboard_executive
-from reports import REPORT_CATALOG, GROUP_FIELDS, run_prebuilt, run_custom
+from reports import REPORT_CATALOG, GROUP_FIELDS, run_prebuilt, run_custom, preview_custom
 
 router = APIRouter()
 
@@ -126,6 +126,11 @@ class CustomReportBody(BaseModel):
     date_field: Optional[str] = "first_seen_at"
     date_from: Optional[str] = None
     date_to: Optional[str] = None
+
+
+@router.post("/v1/reports/custom-preview")
+async def preview_custom_report(body: CustomReportBody, user: dict = Depends(get_current_user)):
+    return await preview_custom(db, body.model_dump())
 
 
 @router.post("/v1/reports/run-custom")

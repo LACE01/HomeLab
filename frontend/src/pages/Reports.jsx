@@ -31,7 +31,33 @@ export default function Reports() {
     date_field: "first_seen_at", date_from: "", date_to: "",
   });
 
+  const [preview, setPreview] = useState(null); // {count} | null while unknown
+  const [previewLoading, setPreviewLoading] = useState(false);
+
   useEffect(() => { api.get("/v1/reports/catalog").then(r => setCatalog(r.data)); }, []);
+
+  const previewPayload = () => {
+    const filters = {};
+    if (b.severity?.length) filters.severity = b.severity;
+    if (b.status?.length) filters.status = b.status;
+    if (b.kev_flag !== null) filters.kev_flag = b.kev_flag;
+    if (b.internet_facing !== null) filters.internet_facing = b.internet_facing;
+    if (b.owner_team) filters.owner_team = b.owner_team;
+    if (b.product_name) filters.product_name = b.product_name;
+    if (b.asset_environment) filters.asset_environment = b.asset_environment;
+    return { fmt: b.fmt, group_by: b.group_by, metric: b.metric, filters,
+      date_field: b.date_field, date_from: b.date_from || null, date_to: b.date_to || null };
+  };
+
+  useEffect(() => {
+    setPreviewLoading(true);
+    const t = setTimeout(() => {
+      api.post("/v1/reports/custom-preview", previewPayload())
+        .then(r => setPreview(r.data)).catch(() => setPreview(null)).finally(() => setPreviewLoading(false));
+    }, 350);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [b.severity, b.status, b.kev_flag, b.internet_facing, b.owner_team, b.product_name, b.asset_environment, b.date_field, b.date_from, b.date_to]);
 
   const runPrebuilt = async (report, fmt) => {
     setBusy(`${report.id}:${fmt}`);
@@ -43,19 +69,13 @@ export default function Reports() {
   };
 
   const runCustom = async () => {
+    if (preview && preview.count === 0) {
+      toast.error("No findings match these filters — adjust them before exporting.");
+      return;
+    }
     setBusy("custom");
     try {
-      const filters = {};
-      if (b.severity?.length) filters.severity = b.severity;
-      if (b.status?.length) filters.status = b.status;
-      if (b.kev_flag !== null) filters.kev_flag = b.kev_flag;
-      if (b.internet_facing !== null) filters.internet_facing = b.internet_facing;
-      if (b.owner_team) filters.owner_team = b.owner_team;
-      if (b.product_name) filters.product_name = b.product_name;
-      if (b.asset_environment) filters.asset_environment = b.asset_environment;
-      const payload = { fmt: b.fmt, group_by: b.group_by, metric: b.metric, filters,
-        date_field: b.date_field, date_from: b.date_from || null, date_to: b.date_to || null };
-      await downloadBlob("/v1/reports/run-custom", {}, "post", payload, `custom-report.${b.fmt}`);
+      await downloadBlob("/v1/reports/run-custom", {}, "post", previewPayload(), `custom-report.${b.fmt}`);
       toast.success("Custom report generated");
     } catch (e) { toast.error(e.response?.data?.detail || "Custom report failed"); }
     finally { setBusy(null); }
@@ -190,14 +210,21 @@ export default function Reports() {
           </div>
 
         </div>
-        <div className="px-4 py-3 border-t border-[#30363D] flex items-center justify-between">
+        <div className="px-4 py-3 border-t border-[#30363D] flex items-center justify-between flex-wrap gap-2">
           <div className="text-[11px] text-slate-500 font-mono">
             {b.metric === "count" ? "Counting findings" : "Summing risk score"} by <span className="text-slate-300">{b.group_by}</span>
             {b.severity.length ? <> · severity={b.severity.join("|")}</> : null}
             {b.kev_flag ? <> · KEV</> : null}
             {b.owner_team ? <> · team={b.owner_team}</> : null}
+            <span className="ml-2" data-testid="b-preview-count">
+              {previewLoading ? "· checking matches…" : preview ? (
+                <span className={preview.count === 0 ? "text-amber-400" : "text-emerald-400"}>
+                  · {preview.count} finding{preview.count === 1 ? "" : "s"} match{preview.count === 1 ? "es" : ""}
+                </span>
+              ) : null}
+            </span>
           </div>
-          <button data-testid="b-run" disabled={busy==='custom'} onClick={runCustom}
+          <button data-testid="b-run" disabled={busy==='custom' || (preview && preview.count === 0)} onClick={runCustom}
             className="h-9 px-4 text-[13px] bg-blue-500 hover:bg-blue-400 text-white rounded inline-flex items-center gap-1.5 disabled:opacity-50">
             <FileArrowDown size={14}/> {busy==='custom' ? "Generating…" : `Run & Download ${b.fmt.toUpperCase()}`}
           </button>

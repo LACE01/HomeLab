@@ -352,22 +352,38 @@ async def delete_rule(rule_id: str, user: dict = Depends(require_role("admin")))
     return {"ok": True}
 
 
+def _rule_values(rule: dict) -> list:
+    """A rule's 'value' is a single comma-separated string on the wire (backward
+    compatible with rules created before multi-value support existed) -- split it
+    into the list of candidate values it should match against, any-of."""
+    raw = rule.get("value") or ""
+    return [v.strip().lower() for v in raw.split(",") if v.strip()]
+
+
 def _rule_matches(rule: dict, asset: dict) -> bool:
     f = rule["field"]
-    val = (rule["value"] or "").lower()
+    vals = _rule_values(rule)
+    if not vals:
+        return False
     if f == "tags":
         tags = [str(t).lower() for t in (asset.get("tags") or [])]
-        return val in tags if rule["operator"] == "equals" else any(val in t for t in tags)
+        if rule["operator"] == "equals":
+            return any(v in tags for v in vals)
+        return any(v in t for v in vals for t in tags)
     if f == "cve":
         return False  # CVE rules don't match by asset — handled in apply_rules per-finding
     av = str(asset.get(f) or "").lower()
-    return av == val if rule["operator"] == "equals" else val in av
+    if rule["operator"] == "equals":
+        return av in vals
+    return any(v in av for v in vals)
 
 
 def _rule_matches_finding(rule: dict, finding: dict) -> bool:
     """Match assignment rule against a finding's CVE/title fields."""
     f = rule["field"]
-    val = (rule["value"] or "").lower()
+    vals = _rule_values(rule)
+    if not vals:
+        return False
     if f == "cve":
         fv = str(finding.get("cve") or "").lower()
     elif f == "title":
@@ -376,7 +392,9 @@ def _rule_matches_finding(rule: dict, finding: dict) -> bool:
         fv = str(finding.get("cwe") or "").lower()
     else:
         return False
-    return fv == val if rule["operator"] == "equals" else val in fv
+    if rule["operator"] == "equals":
+        return fv in vals
+    return any(v in fv for v in vals)
 
 
 @router.post("/v1/admin/assignment-rules/apply")
