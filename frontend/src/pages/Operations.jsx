@@ -4,7 +4,7 @@ import { useAuth } from "@/lib/auth";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import { fmtDate, fmtRel } from "@/lib/utils-fmt";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Plus, X } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -283,6 +283,7 @@ function RejectModal({ exc, onClose, onDone }) {
 
 export function Exceptions() {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [items, setItems] = useState([]);
   const [statusFilter, setStatusFilter] = useState("");
   const [renewing, setRenewing] = useState(null);
@@ -303,7 +304,11 @@ export function Exceptions() {
   };
 
   return (
-    <Layout title="Risk Acceptances / Exceptions" subtitle="Time-bound exceptions with approval, compensating controls, and renewal">
+    <Layout title="Risk Acceptances / Exceptions" subtitle="Time-bound exceptions with approval, compensating controls, and renewal"
+      actions={<button onClick={()=>navigate("/exceptions/new")} data-testid="new-risk-acceptance-btn"
+        className="h-8 px-3 text-[12px] bg-blue-500/15 border border-blue-500/40 hover:bg-blue-500/25 text-blue-300 rounded inline-flex items-center gap-1.5">
+        <Plus size={14}/> New request
+      </button>}>
       <div className="flex items-center gap-1 mb-3">
         {EXC_STATUS_TABS.map(t => (
           <button key={t.id} onClick={()=>setStatusFilter(t.id)}
@@ -314,11 +319,18 @@ export function Exceptions() {
       </div>
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">
         <table className="dense w-full">
-          <thead><tr><th className="text-left">Finding</th><th>Severity</th><th>Asset</th><th className="text-left">Justification</th><th>Status</th><th>Requested by</th><th>Expires</th><th></th></tr></thead>
+          <thead><tr><th className="text-left">Target</th><th>Severity</th><th>Asset</th><th className="text-left">Justification</th><th>Status</th><th>Requested by</th><th>Expires</th><th></th></tr></thead>
           <tbody>
             {items.map(e => (
-              <tr key={e.id} className="border-t border-[#30363D]">
-                <td><Link to={`/findings/${e.finding_id}`} className="text-blue-300 hover:underline">{e.finding_title?.slice(0,50)}</Link><div className="text-[10.5px] text-slate-500 font-mono">{e.cve}</div></td>
+              <tr key={e.id} className="border-t border-[#30363D] hover:bg-slate-800/20 cursor-pointer" onClick={()=>navigate(`/exceptions/${e.id}`)} data-testid={`exception-row-${e.id}`}>
+                <td>
+                  {e.finding_count > 1 ? (
+                    <span className="text-slate-200">{e.finding_count} findings <span className="text-slate-500 font-mono text-[10.5px]">({e.target_type}: {e.target_value})</span></span>
+                  ) : (
+                    <Link to={`/findings/${e.finding_id}`} onClick={ev=>ev.stopPropagation()} className="text-blue-300 hover:underline">{e.finding_title?.slice(0,50)}</Link>
+                  )}
+                  <div className="text-[10.5px] text-slate-500 font-mono">{e.cve}</div>
+                </td>
                 <td><Chip color={e.severity === "Critical" ? "red" : "orange"}>{e.severity}</Chip></td>
                 <td className="font-mono text-[11px]">{e.asset_hostname}</td>
                 <td className="max-w-[300px] text-slate-300">{e.business_justification || e.rationale}<div className="mt-1 flex gap-1 flex-wrap">{(e.compensating_controls||[]).map(c=> <Chip key={c} color="blue">{c}</Chip>)}</div></td>
@@ -328,7 +340,7 @@ export function Exceptions() {
                 </td>
                 <td className="text-slate-400 text-[11px]">{e.requested_by || e.approver}</td>
                 <td className="font-mono text-[11px]">{fmtDate(e.expires_at)}</td>
-                <td className="whitespace-nowrap">
+                <td className="whitespace-nowrap" onClick={ev=>ev.stopPropagation()}>
                   {e.status === "pending_approval" && canApprove && (
                     <div className="flex gap-1">
                       <button onClick={()=>approve(e)} data-testid={`approve-exc-${e.id}`} className="h-6 px-2 text-[10.5px] bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 rounded">Approve</button>

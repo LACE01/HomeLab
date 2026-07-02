@@ -11,6 +11,8 @@ import Findings from "@/pages/Findings";
 import FindingDetail from "@/pages/FindingDetail";
 import { Assets, AssetDetail } from "@/pages/Assets";
 import { Products, Engagements, Tickets, Exceptions } from "@/pages/Operations";
+import RequestRiskAcceptance from "@/pages/RequestRiskAcceptance";
+import ExceptionDetail from "@/pages/ExceptionDetail";
 import ProductDetail from "@/pages/ProductDetail";
 import { Integrations, ImportJobs, Admin } from "@/pages/AdminAndIntegrations";
 import Reports from "@/pages/Reports";
@@ -62,6 +64,8 @@ const AppRouter = () => {
       <Route path="/engagements" element={<Protected><Engagements/></Protected>}/>
       <Route path="/tickets" element={<Protected><Tickets/></Protected>}/>
       <Route path="/exceptions" element={<Protected><Exceptions/></Protected>}/>
+      <Route path="/exceptions/new" element={<Protected><RequestRiskAcceptance/></Protected>}/>
+      <Route path="/exceptions/:id" element={<Protected><ExceptionDetail/></Protected>}/>
       <Route path="/integrations" element={<Protected><Integrations/></Protected>}/>
       <Route path="/imports" element={<Protected><ImportJobs/></Protected>}/>
       <Route path="/reports" element={<Protected><Reports/></Protected>}/>
