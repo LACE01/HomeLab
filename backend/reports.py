@@ -68,39 +68,29 @@ def _csv_response(rows: list, headers: list, filename: str):
 def _pdf_response(title: str, sections: list, filename: str):
     """sections: list of dicts: {type:'text', value:'...'} or {type:'table', headers:[], rows:[[]]}"""
     from fastapi.responses import StreamingResponse
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-    from reportlab.lib import colors
+    from reportlab.platypus import Paragraph, Spacer
+    import pdf_theme as theme
 
+    styles = theme.get_styles()
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=letter, topMargin=36, bottomMargin=36)
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("t", parent=styles["Title"], fontSize=18, textColor=colors.HexColor("#0D1117"))
-    elements = [Paragraph(f"VulnOps — {title}", title_style), Spacer(1, 6),
-                Paragraph(f"Generated: {_now().isoformat()}", styles["Normal"]), Spacer(1, 12)]
+    doc, elements = theme.build_doc(buf, title)
+    elements.append(Paragraph(title, styles["title"]))
+    elements.append(Paragraph(f"Generated {_now().isoformat()[:19].replace('T', ' ')} UTC", styles["subtitle"]))
     for sec in sections:
         if sec["type"] == "text":
-            elements.append(Paragraph(sec["value"], styles["Normal"]))
+            elements.append(Paragraph(sec["value"], styles["body"]))
             elements.append(Spacer(1, 6))
         elif sec["type"] == "heading":
-            elements.append(Paragraph(f"<b>{sec['value']}</b>", styles["Heading3"]))
+            elements.append(Paragraph(sec["value"], styles["h2"]))
         elif sec["type"] == "drawing":
             elements.append(sec["value"])
             elements.append(Spacer(1, 10))
         elif sec["type"] == "table":
-            data = [sec["headers"]] + sec["rows"]
-            t = Table(data, hAlign="LEFT")
-            t.setStyle(TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0D1117")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#30363D")),
-                ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F5F5F5")]),
-            ]))
-            elements.append(t)
+            numeric_cols = tuple(i for i, h in enumerate(sec["headers"])
+                                  if sec["rows"] and str(sec["rows"][0][i]).replace(".", "", 1).replace("-", "", 1).isdigit())
+            elements.append(theme.styled_table(sec["headers"], sec["rows"], numeric_cols=numeric_cols))
             elements.append(Spacer(1, 10))
-    doc.build(elements)
+    theme.build(doc, elements)
     buf.seek(0)
     return StreamingResponse(buf, media_type="application/pdf",
                              headers={"Content-Disposition": f"attachment; filename={filename}.pdf"})

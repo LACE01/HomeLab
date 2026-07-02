@@ -25,72 +25,55 @@ async def compliance_control_findings(control_id: str, user: dict = Depends(get_
 
 @router.get("/v1/reports/pdf/compliance")
 async def export_compliance_pdf(user: dict = Depends(get_current_user)):
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-    from reportlab.lib import colors
+    from reportlab.platypus import Paragraph, Spacer
+    import pdf_theme as theme
     from pdf_charts import bar_chart
     from compliance import compute_compliance_summary
 
     summary = await compute_compliance_summary(db)
+    styles = theme.get_styles()
 
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=36, bottomMargin=36)
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("title", parent=styles["Title"], fontSize=20, textColor=colors.HexColor("#0D1117"))
-    elements: list = []
-    elements.append(Paragraph("VulnOps — Compliance Coverage Report", title_style))
-    elements.append(Spacer(1, 6))
-    elements.append(Paragraph(f"Generated: {now_iso()}", styles["Normal"]))
+    doc, elements = theme.build_doc(buffer, "Compliance Coverage Report")
+    elements.append(Paragraph("Compliance Coverage Report", styles["title"]))
+    elements.append(Paragraph(f"Generated {now_iso()[:19].replace('T', ' ')} UTC", styles["subtitle"]))
+    elements.append(Paragraph(summary["methodology_note"], styles["muted"]))
     elements.append(Spacer(1, 10))
-    elements.append(Paragraph(summary["methodology_note"], styles["Italic"]))
-    elements.append(Spacer(1, 12))
 
-    coverage_str = f"{summary['coverage_pct']}%" if summary.get("coverage_pct") is not None else "No data yet"
-    elements.append(Paragraph(f"<b>CIS Controls v8 Coverage:</b> {coverage_str} of mapped controls with no Critical/High gaps", styles["Heading2"]))
-    elements.append(Spacer(1, 10))
+    coverage_str = f"{summary['coverage_pct']}%" if summary.get("coverage_pct") is not None else "—"
+    gap_count = len([c for c in summary["controls"] if c["status"] == "gap"])
+    at_risk_count = len([c for c in summary["controls"] if c["status"] == "at_risk"])
+    elements.append(theme.stat_cards([
+        {"label": "CIS Controls Coverage", "value": coverage_str, "color": "#2F81F7"},
+        {"label": "Controls with a Gap", "value": str(gap_count), "color": "#ef4444"},
+        {"label": "Controls At Risk", "value": str(at_risk_count), "color": "#f59e0b"},
+        {"label": "Open Findings", "value": str(summary.get("total_open_findings", 0)), "color": "#64748b"},
+    ]))
 
     if summary["controls"]:
-        elements.append(Paragraph("<b>CIS Controls — Open Findings by Control</b>", styles["Heading3"]))
+        elements.append(Paragraph("CIS Controls — Open Findings by Control", styles["h2"]))
         elements.append(bar_chart(
             [c["id"] for c in summary["controls"]],
             [c["critical"] + c["high"] for c in summary["controls"]],
             bar_color="#ef4444"))
-        elements.append(Spacer(1, 6))
-        rows = [["Control", "Name", "Critical", "High", "Medium", "Low", "Status"]]
-        for c in summary["controls"]:
-            rows.append([c["id"], c["name"], str(c["critical"]), str(c["high"]), str(c["medium"]), str(c["low"]), c["status"].replace("_", " ").title()])
-        t = Table(rows, hAlign="LEFT", colWidths=[45, 175, 45, 40, 50, 40, 55])
-        t.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0D1117")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#30363D")),
-            ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ]))
-        elements.append(t)
-        elements.append(Spacer(1, 12))
+        elements.append(Spacer(1, 8))
+        rows = [[c["id"], c["name"], c["critical"], c["high"], c["medium"], c["low"],
+                 c["status"].replace("_", " ").title()] for c in summary["controls"]]
+        elements.append(theme.styled_table(
+            ["Control", "Name", "Crit", "High", "Med", "Low", "Status"], rows,
+            col_widths=[42, 168, 32, 32, 32, 32, 58], numeric_cols=(2, 3, 4, 5)))
 
     if summary["unmapped_clean_controls"]:
-        elements.append(Paragraph("<b>Controls with no findings currently mapped</b>", styles["Heading3"]))
+        elements.append(Paragraph("Controls with no findings currently mapped", styles["h2"]))
         for c in summary["unmapped_clean_controls"]:
-            elements.append(Paragraph(f"• {c['id']} — {c['name']}", styles["Normal"]))
-        elements.append(Spacer(1, 12))
+            elements.append(Paragraph(f"&#8226; <b>{c['id']}</b> — {c['name']}", styles["bullet"]))
 
     if summary["nist_functions"]:
-        elements.append(Paragraph("<b>NIST CSF 2.0 Functions</b>", styles["Heading3"]))
-        rows2 = [["Function", "Critical", "High", "Total Open"]]
-        for n in summary["nist_functions"]:
-            rows2.append([f"{n['function']} — {n['label']}", str(n["critical"]), str(n["high"]), str(n["total"])])
-        t2 = Table(rows2, hAlign="LEFT")
-        t2.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0D1117")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#30363D")),
-            ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ]))
-        elements.append(t2)
+        elements.append(Paragraph("NIST CSF 2.0 Functions", styles["h2"]))
+        rows2 = [[f"{n['function']} — {n['label']}", n["critical"], n["high"], n["total"]] for n in summary["nist_functions"]]
+        elements.append(theme.styled_table(["Function", "Critical", "High", "Total Open"], rows2, numeric_cols=(1, 2, 3)))
 
-    doc.build(elements)
+    theme.build(doc, elements)
     buffer.seek(0)
     return StreamingResponse(buffer, media_type="application/pdf",
                               headers={"Content-Disposition": "attachment; filename=compliance-coverage.pdf"})

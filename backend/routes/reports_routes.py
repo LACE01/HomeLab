@@ -49,67 +49,51 @@ async def export_findings_csv(user: dict = Depends(get_current_user),
 
 @router.get("/v1/reports/pdf/executive")
 async def export_executive_pdf(user: dict = Depends(get_current_user)):
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-    from reportlab.lib import colors
+    from reportlab.platypus import Paragraph, Spacer
+    import pdf_theme as theme
     from pdf_charts import trend_line_chart, bar_chart
 
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=36, bottomMargin=36)
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("title", parent=styles["Title"], fontSize=20, textColor=colors.HexColor("#0D1117"))
-    elements: list = []
-    elements.append(Paragraph("VulnOps — Executive Security Report", title_style))
-    elements.append(Spacer(1, 12))
-    elements.append(Paragraph(f"Generated: {now_iso()}", styles["Normal"]))
-    elements.append(Spacer(1, 12))
-
     dash = await dashboard_executive(user)
-    score_str = f"{dash['current_score']} / 100" if dash.get("current_score") is not None else "No data yet"
-    elements.append(Paragraph(f"<b>Security Score:</b> {score_str}", styles["Heading2"]))
-    elements.append(Paragraph(dash["narrative"], styles["Normal"]))
-    elements.append(Spacer(1, 12))
+    styles = theme.get_styles()
 
-    sla_str = f"{dash['sla_compliance']}%" if dash.get("sla_compliance") is not None else "No data yet"
-    mttr_str = f"{dash['mttr_days']} days" if dash.get("mttr_days") is not None else "No data yet"
-    elements.append(Paragraph(f"<b>SLA Compliance:</b> {sla_str}", styles["Normal"]))
-    elements.append(Paragraph(f"<b>MTTR:</b> {mttr_str}", styles["Normal"]))
+    buffer = io.BytesIO()
+    doc, elements = theme.build_doc(buffer, "Executive Security Report")
+    elements.append(Paragraph("Executive Security Report", styles["title"]))
+    elements.append(Paragraph(f"Generated {now_iso()[:19].replace('T', ' ')} UTC", styles["subtitle"]))
+
+    score_str = f"{dash['current_score']} / 100" if dash.get("current_score") is not None else "—"
+    sla_str = f"{dash['sla_compliance']}%" if dash.get("sla_compliance") is not None else "—"
+    mttr_str = f"{dash['mttr_days']}d" if dash.get("mttr_days") is not None else "—"
+    elements.append(theme.stat_cards([
+        {"label": "Security Score", "value": score_str, "color": "#2F81F7"},
+        {"label": "SLA Compliance", "value": sla_str, "color": "#22c55e"},
+        {"label": "Mean Time to Remediate", "value": mttr_str, "color": "#f59e0b"},
+    ]))
     elements.append(Spacer(1, 12))
+    elements.append(Paragraph(dash["narrative"], styles["body"]))
 
     if dash.get("snapshots"):
-        elements.append(Paragraph("<b>Score / SLA Trend</b>", styles["Heading3"]))
+        elements.append(Paragraph("Score / SLA Trend", styles["h2"]))
         elements.append(trend_line_chart(
             dash["snapshots"], [{"key": "org_score", "label": "Score", "color": "#2F81F7"},
                                  {"key": "sla_compliance", "label": "SLA %", "color": "#f59e0b"}]))
-        elements.append(Spacer(1, 12))
 
-    elements.append(Paragraph("<b>Critical Open Findings by Product</b>", styles["Heading3"]))
+    elements.append(Paragraph("Critical/High Open Findings by Product", styles["h2"]))
     if dash["by_product"]:
         elements.append(bar_chart(
             [p["name"] for p in dash["by_product"]],
             [p.get("critical_open", 0) for p in dash["by_product"]],
             bar_color="#ef4444"))
-        elements.append(Spacer(1, 6))
-    rows = [["Product", "Critical/High Open"]]
-    for p in dash["by_product"]:
-        rows.append([p["name"], str(p.get("critical_open", 0))])
-    t = Table(rows, hAlign="LEFT")
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0D1117")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#30363D")),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-    ]))
-    elements.append(t)
-    elements.append(Spacer(1, 12))
+        elements.append(Spacer(1, 8))
+    rows = [[p["name"], p.get("critical_open", 0)] for p in dash["by_product"]]
+    elements.append(theme.styled_table(["Product", "Critical/High Open"], rows, numeric_cols=(1,)))
 
     if dash["score_factors"]:
-        elements.append(Paragraph("<b>Key Score Factors</b>", styles["Heading3"]))
+        elements.append(Paragraph("Key Score Factors", styles["h2"]))
         for sf in dash["score_factors"]:
-            elements.append(Paragraph(f"• {sf['factor']} ({sf['impact']}) — {sf['reason']}", styles["Normal"]))
+            elements.append(Paragraph(f"&#8226; <b>{sf['factor']}</b> ({sf['impact']}) — {sf['reason']}", styles["bullet"]))
 
-    doc.build(elements)
+    theme.build(doc, elements)
     buffer.seek(0)
     return StreamingResponse(buffer, media_type="application/pdf",
                              headers={"Content-Disposition": "attachment; filename=executive-report.pdf"})
