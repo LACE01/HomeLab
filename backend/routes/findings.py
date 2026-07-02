@@ -233,28 +233,50 @@ async def threat_intel_for_cve(cve: str, user: dict = Depends(get_current_user))
         '        ... on Malware { name } ... on Campaign { name } } } }'
         '    } externalReferences { edges { node { source_name url } } } } } } }'
     )
+    cf_client_id = cfg.get("cf_access_client_id")
+    cf_client_secret = cfg.get("cf_access_client_secret")
+    cf_headers_sent = bool(cf_client_id) and bool(cf_client_secret)
+
     try:
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         # Optional Cloudflare Access service-token headers — needed when the
         # OpenCTI tenant sits behind Cloudflare Zero Trust Access. These must be
         # sent as-is and NOT lost across redirects, so we disable redirect-follow
         # for the initial POST.
-        if cfg.get("cf_access_client_id"):
-            headers["CF-Access-Client-Id"] = cfg["cf_access_client_id"]
-        if cfg.get("cf_access_client_secret"):
-            headers["CF-Access-Client-Secret"] = cfg["cf_access_client_secret"]
+        if cf_client_id:
+            headers["CF-Access-Client-Id"] = cf_client_id
+        if cf_client_secret:
+            headers["CF-Access-Client-Secret"] = cf_client_secret
         async with httpx.AsyncClient(timeout=15, follow_redirects=False) as c:
             r = await c.post(endpoint.rstrip("/") + "/graphql",
                              headers=headers, json={"query": query})
         if r.status_code in (301, 302, 303, 307, 308):
             loc = r.headers.get("location", "")
             cf_login = "cloudflareaccess.com" in loc or "/cdn-cgi/access/login" in loc
-            msg = ("OpenCTI is redirecting to Cloudflare Access login — the service "
-                   "token is configured but NOT yet added as an Include rule on the "
-                   "Cloudflare Access policy. In CF Zero Trust → Access → Applications "
-                   "→ open.smrtlab.net → Policies → add 'Service Auth' include rule "
-                   "with this service token.") if cf_login else f"Unexpected redirect to {loc[:120]}"
-            return {"configured": True, "cve": cve, "error": msg,
+            if cf_login and cf_headers_sent:
+                # The token IS configured and WAS attached to this exact request, and
+                # Cloudflare still bounced it to the login page -- that only happens
+                # when the Access Application's policy doesn't have an Include rule
+                # for this specific service token. Creating the token under
+                # Access -> Service Auth is not enough by itself; it must also be
+                # referenced by a policy on the Application, or CF ignores it.
+                id_hint = f"...{cf_client_id[-10:]}" if len(cf_client_id) > 10 else cf_client_id
+                msg = (f"OpenCTI is redirecting to Cloudflare Access login even though a service token "
+                       f"(client ID ending '{id_hint}') is configured and was sent on this exact request "
+                       "-- so this isn't a VulnOps config problem, it's on the Cloudflare side. In CF Zero "
+                       "Trust → Access → Applications → open.smrtlab.net → Policies, edit (or add) a policy "
+                       "with an Include rule of type 'Service Auth' that selects this token by name. Having "
+                       "the token exist under Access → Service Auth isn't enough on its own -- it must also "
+                       "be attached to the Application's policy, or Cloudflare keeps showing the login page.")
+            elif cf_login and not cf_headers_sent:
+                msg = ("OpenCTI is redirecting to Cloudflare Access login, and no CF-Access service token "
+                       "is saved for this integration yet -- add BOTH cf_access_client_id and "
+                       "cf_access_client_secret under Integrations → OpenCTI → Configure, then Save. "
+                       "(Saving preserves whichever of the two you leave blank on a later edit, so you "
+                       "don't need to re-paste both every time -- but the first save needs both together.)")
+            else:
+                msg = f"Unexpected redirect to {loc[:120]}"
+            return {"configured": True, "cve": cve, "error": msg, "cf_headers_sent": cf_headers_sent,
                     "threat_actors": [], "intrusion_sets": [], "malware": [], "campaigns": [],
                     "indicators": [], "external_references": []}
         if r.status_code != 200:
