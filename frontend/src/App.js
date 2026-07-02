@@ -27,6 +27,11 @@ import PlaybookDetail from "@/pages/PlaybookDetail";
 import Automation from "@/pages/Automation";
 import Exposure from "@/pages/Exposure";
 import NmapUpload from "@/pages/NmapUpload";
+import TlsCerts from "@/pages/TlsCerts";
+import SbomUpload from "@/pages/SbomUpload";
+import Easm from "@/pages/Easm";
+import Compliance from "@/pages/Compliance";
+import ChatOps from "@/pages/ChatOps";
 
 const Protected = ({ children }) => {
   const { user, loading } = useAuth();
@@ -59,6 +64,11 @@ const AppRouter = () => {
       <Route path="/admin" element={<Protected><Admin/></Protected>}/>
       <Route path="/operational" element={<Protected><Operational/></Protected>}/>
       <Route path="/attack-paths" element={<Protected><AttackPaths/></Protected>}/>
+      <Route path="/admin/tls-certs" element={<Protected><TlsCerts/></Protected>}/>
+      <Route path="/admin/sbom" element={<Protected><SbomUpload/></Protected>}/>
+      <Route path="/easm" element={<Protected><Easm/></Protected>}/>
+      <Route path="/compliance" element={<Protected><Compliance/></Protected>}/>
+      <Route path="/admin/chatops" element={<Protected><ChatOps/></Protected>}/>
       <Route path="/admin/assignment-rules" element={<Protected><AssignmentRules/></Protected>}/>
       <Route path="/admin/ownership" element={<Protected><OwnershipMappings/></Protected>}/>
       <Route path="/admin/sla-policies" element={<Protected><SlaPolicies/></Protected>}/>

@@ -68,11 +68,173 @@ def validate_targets(targets: str) -> list:
     return tokens
 
 
-async def run_active_scan(targets: str, scan_type: str = "standard", timeout_sec: int = 900) -> bytes:
+SAFE_SCRIPT_CATEGORIES = {"default", "safe", "discovery", "version", "vuln"}
+PORT_SPEC_RE = re.compile(r"^[\d,\-TU:]{1,300}$")
+TIMING_RE = re.compile(r"^-T[0-5]$")
+
+# Flags a GUI-builder or raw-command scan is allowed to use. Execution always goes
+# through asyncio.create_subprocess_exec (argv list, never a shell), so this isn't
+# about shell injection -- it's about keeping the container from writing arbitrary
+# files, spoofing packets, reading local files, or hitting things outside the
+# targets you typed in.
+FLAGS_NO_ARG = {"-sS", "-sT", "-sU", "-sV", "-sC", "-O", "-Pn", "-F", "-A",
+                "--open", "-n", "-R", "--reason", "-v", "-vv", "-6"}
+FLAGS_WITH_ARG = {"-p", "--top-ports", "--script"}
+BLOCKED_FLAGS_HINT = {
+    "-oX": "VulnOps controls scan output itself", "-oN": "VulnOps controls scan output itself",
+    "-oG": "VulnOps controls scan output itself", "-oA": "VulnOps controls scan output itself",
+    "-oS": "VulnOps controls scan output itself",
+    "-iL": "target lists must go through the Targets field, not a file",
+    "-iR": "random target selection isn't supported here",
+    "--resume": "not supported for on-demand scans",
+    "-e": "interface binding isn't exposed", "-S": "source-IP spoofing isn't allowed",
+    "-D": "decoy scanning isn't allowed", "-g": "source-port spoofing isn't allowed",
+    "--source-port": "source-port spoofing isn't allowed", "--spoof-mac": "MAC spoofing isn't allowed",
+    "--proxies": "proxy chaining isn't allowed", "--script-args-file": "reading local files isn't allowed",
+    "--datadir": "not allowed", "--servicedb": "not allowed", "--versiondb": "not allowed",
+    "--privileged": "not needed -- the container already has the right capabilities",
+    "--badsum": "not allowed", "--ttl": "not allowed",
+}
+
+
+def _validate_port_spec(value: str) -> bool:
+    if not PORT_SPEC_RE.match(value):
+        return False
+    for part in value.split(","):
+        part = part.strip()
+        if not part:
+            return False
+        if part.startswith(("T:", "U:")):
+            part = part[2:]
+        if "-" in part:
+            bounds = part.split("-")
+            if len(bounds) != 2 or not all(b.isdigit() for b in bounds):
+                return False
+            lo, hi = int(bounds[0]), int(bounds[1])
+            if not (1 <= lo <= 65535 and 1 <= hi <= 65535 and lo <= hi):
+                return False
+        else:
+            if not part.isdigit() or not (1 <= int(part) <= 65535):
+                return False
+    return True
+
+
+def _validate_flag_value(flag: str, value: str) -> list:
+    if flag == "-p":
+        if not _validate_port_spec(value):
+            raise ValueError(f"'-p {value}' doesn't look like a valid port spec (try '80,443' or '1-1000', each 1-65535)")
+        return ["-p", value]
+    if flag == "--top-ports":
+        if not value.isdigit() or not (1 <= int(value) <= 65535):
+            raise ValueError(f"'--top-ports {value}' must be a number between 1 and 65535")
+        return ["--top-ports", value]
+    if flag == "--script":
+        cats = [c.strip() for c in value.split(",") if c.strip()]
+        if not cats or any(c not in SAFE_SCRIPT_CATEGORIES for c in cats):
+            raise ValueError(f"--script only supports these categories here: {', '.join(sorted(SAFE_SCRIPT_CATEGORIES))}")
+        return ["--script", value]
+    raise ValueError(f"Unhandled flag {flag}")
+
+
+def build_scan_args(port_mode: str = "top1000", custom_ports: str | None = None, timing: int = 4,
+                     detect_service: bool = True, detect_os: bool = True,
+                     scripts: list | None = None, scan_technique: str = "syn") -> list:
+    """Assembles an nmap args list from GUI-builder options (the toggle-based form),
+    reusing the same validators the raw-command parser uses."""
+    args = [{"syn": "-sS", "connect": "-sT", "udp": "-sU"}.get(scan_technique, "-sS")]
+    if not (isinstance(timing, int) and 0 <= timing <= 5):
+        raise ValueError("Timing must be between 0 (paranoid) and 5 (insane)")
+    args.append(f"-T{timing}")
+    if port_mode == "all":
+        args.append("-p-")
+    elif port_mode == "top100":
+        args += ["--top-ports", "100"]
+    elif port_mode == "top1000":
+        args += ["--top-ports", "1000"]
+    elif port_mode == "custom":
+        if not custom_ports:
+            raise ValueError("Custom port spec is required when port_mode is 'custom'")
+        args += _validate_flag_value("-p", custom_ports)
+    else:
+        raise ValueError(f"Unknown port_mode '{port_mode}'")
+    if detect_service:
+        args.append("-sV")
+    if detect_os:
+        args.append("-O")
+    scripts = scripts or []
+    if scripts:
+        args += _validate_flag_value("--script", ",".join(scripts))
+    return args
+
+
+def parse_nmap_command(cmd: str) -> dict:
+    """Parses a raw `nmap ...` command line a user pastes in, into a validated args
+    list + target string, so power users aren't limited to the GUI builder. Rejects
+    anything not on the allow-list (see BLOCKED_FLAGS_HINT for why each one is out)."""
+    cmd = (cmd or "").strip()
+    if not cmd:
+        raise ValueError("Command is empty")
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError as e:
+        raise ValueError(f"Couldn't parse command: {e}")
+    if tokens and tokens[0] in ("sudo",):
+        tokens = tokens[1:]
+    if tokens and tokens[0] in ("nmap", "/usr/bin/nmap"):
+        tokens = tokens[1:]
+
+    args, targets = [], []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if not tok.startswith("-"):
+            targets.append(tok)
+            i += 1
+            continue
+        if TIMING_RE.match(tok):
+            args.append(tok); i += 1; continue
+        if tok in FLAGS_NO_ARG:
+            args.append(tok); i += 1; continue
+        if tok in BLOCKED_FLAGS_HINT:
+            raise ValueError(f"'{tok}' isn't allowed here: {BLOCKED_FLAGS_HINT[tok]}")
+        if tok == "-p-":
+            args.append("-p-"); i += 1; continue
+        glued_match = None
+        for base in FLAGS_WITH_ARG:
+            if tok.startswith(base + "="):
+                glued_match = (base, tok[len(base) + 1:]); break
+        if glued_match is None and tok.startswith("-p") and tok != "-p" and not tok.startswith("--"):
+            glued_match = ("-p", tok[2:])
+        if glued_match:
+            base, value = glued_match
+            args.extend(_validate_flag_value(base, value))
+            i += 1
+            continue
+        if tok in FLAGS_WITH_ARG:
+            if i + 1 >= len(tokens):
+                raise ValueError(f"'{tok}' needs a value")
+            args.extend(_validate_flag_value(tok, tokens[i + 1]))
+            i += 2
+            continue
+        raise ValueError(f"'{tok}' isn't on the allowed flag list for scans run from VulnOps")
+
+    if not targets:
+        raise ValueError("No targets found in the command -- add one or more IPs/CIDRs/hostnames")
+    target_str = " ".join(targets)
+    validate_targets(target_str)
+    return {"args": args, "targets": target_str}
+
+
+def resolved_command_preview(args: list, targets: str) -> str:
+    return "nmap " + " ".join(shlex.quote(a) for a in args) + " " + targets
+
+
+async def run_active_scan(targets: str, scan_type: str = "standard", timeout_sec: int = 900,
+                           custom_args: list | None = None) -> bytes:
     """Shells out to the nmap binary and returns the raw XML output. Never touches the
     network except via nmap itself, and only against the exact targets passed in."""
     tokens = validate_targets(targets)
-    args = SCAN_PRESETS.get(scan_type, SCAN_PRESETS["standard"])
+    args = custom_args if custom_args else SCAN_PRESETS.get(scan_type, SCAN_PRESETS["standard"])
     cmd = ["nmap", *args, "-oX", "-", *tokens]
 
     proc = await asyncio.create_subprocess_exec(

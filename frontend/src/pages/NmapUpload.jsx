@@ -5,13 +5,34 @@ import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import {
   UploadSimple, FileCode, Globe, House, Plus, X, Trash, PencilSimple, Play,
-  Clock, ShieldWarning, CheckCircle, XCircle, CircleNotch,
+  Clock, ShieldWarning, CheckCircle, XCircle, CircleNotch, Terminal, Sliders, ListChecks,
 } from "@phosphor-icons/react";
 
 const SCAN_TYPE_META = {
   quick: { label: "Quick", desc: "Top ~100 ports, no service/OS detection — seconds to a couple minutes" },
   standard: { label: "Standard", desc: "Top 1000 ports + service/OS detection — a few minutes" },
   thorough: { label: "Thorough", desc: "All 65535 ports + service/OS detection — can take a long time on big ranges" },
+};
+
+const MODE_META = {
+  preset: { label: "Presets", icon: ListChecks, desc: "Quick / Standard / Thorough" },
+  builder: { label: "Builder", icon: Sliders, desc: "GUI toggles for ports, timing, scripts" },
+  raw: { label: "Command line", icon: Terminal, desc: "Paste a raw nmap command" },
+};
+
+const PORT_MODE_META = {
+  top100: "Top 100 ports",
+  top1000: "Top 1000 ports",
+  all: "All 65535 ports",
+  custom: "Custom port spec",
+};
+
+const SCRIPT_CATEGORY_META = {
+  default: "Default (nmap -sC equivalent)",
+  safe: "Safe (non-intrusive checks)",
+  discovery: "Discovery (extra host/service info)",
+  version: "Version (deeper service fingerprinting)",
+  vuln: "Vuln (checks for known vulnerabilities)",
 };
 
 const SCHEDULE_PRESETS = [
@@ -161,7 +182,12 @@ function ManualUpload() {
   );
 }
 
-const EMPTY_FORM = { name: "", targets: "", scan_type: "standard", vantage: "internal", schedule_hours: 0, enabled: true, authorized: false };
+const EMPTY_FORM = {
+  name: "", targets: "", mode: "preset", scan_type: "standard", vantage: "internal",
+  schedule_hours: 0, enabled: true, authorized: false,
+  port_mode: "top1000", custom_ports: "", timing: 4, detect_service: true, detect_os: true,
+  scripts: [], scan_technique: "syn", custom_command: "",
+};
 
 function ScheduledScans() {
   const [configs, setConfigs] = useState([]);
@@ -285,7 +311,11 @@ function ScanConfigRow({ cfg, running, onRun, onEdit, onDelete, onToggle }) {
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[13.5px] text-slate-100 font-medium">{cfg.name}</span>
             <Chip color={cfg.vantage === "external" ? "orange" : "blue"}>{cfg.vantage}</Chip>
-            <Chip color="slate">{SCAN_TYPE_META[cfg.scan_type]?.label || cfg.scan_type}</Chip>
+            {(!cfg.mode || cfg.mode === "preset") ? (
+              <Chip color="slate">{SCAN_TYPE_META[cfg.scan_type]?.label || cfg.scan_type}</Chip>
+            ) : (
+              <Chip color="purple">{MODE_META[cfg.mode]?.label || cfg.mode}</Chip>
+            )}
             {!cfg.enabled && <Chip color="slate">Disabled</Chip>}
             {running && (
               <span className="inline-flex items-center gap-1 text-[11px] text-blue-300">
@@ -293,7 +323,9 @@ function ScanConfigRow({ cfg, running, onRun, onEdit, onDelete, onToggle }) {
               </span>
             )}
           </div>
-          <div className="text-[11.5px] text-slate-500 font-mono mt-1 truncate">{cfg.targets}</div>
+          <div className="text-[11.5px] text-slate-500 font-mono mt-1 truncate">
+            {cfg.mode && cfg.mode !== "preset" && cfg.resolved_command ? cfg.resolved_command : cfg.targets}
+          </div>
           <div className="flex items-center gap-3 mt-1.5 text-[11px] text-slate-500">
             <span className="inline-flex items-center gap-1"><Clock size={12}/> {scheduleLabel}</span>
             {cfg.last_run_at && <span>Last run: {new Date(cfg.last_run_at).toLocaleString()}</span>}
@@ -338,15 +370,45 @@ function ScanConfigRow({ cfg, running, onRun, onEdit, onDelete, onToggle }) {
 function ScanConfigModal({ initial, isEdit, onClose, onSaved }) {
   const [form, setForm] = useState({
     name: initial.name || "", targets: initial.targets || "",
-    scan_type: initial.scan_type || "standard", vantage: initial.vantage || "internal",
+    mode: initial.mode || "preset", scan_type: initial.scan_type || "standard", vantage: initial.vantage || "internal",
     schedule_hours: initial.schedule_hours ?? 0, enabled: initial.enabled ?? true,
     authorized: initial.authorized ?? false,
+    port_mode: initial.port_mode || "top1000", custom_ports: initial.custom_ports || "",
+    timing: initial.timing ?? 4, detect_service: initial.detect_service ?? true, detect_os: initial.detect_os ?? true,
+    scripts: initial.scripts || [], scan_technique: initial.scan_technique || "syn",
+    custom_command: initial.custom_command || "",
   });
   const [saving, setSaving] = useState(false);
+  const [preview, setPreview] = useState(null);
+  const [previewErr, setPreviewErr] = useState(null);
+  const previewTimer = useRef(null);
+
+  useEffect(() => {
+    if (form.mode === "preset") { setPreview(null); setPreviewErr(null); return; }
+    clearTimeout(previewTimer.current);
+    previewTimer.current = setTimeout(async () => {
+      try {
+        const r = await api.post("/v1/admin/nmap/configs/preview", form);
+        setPreview(r.data);
+        setPreviewErr(null);
+      } catch (e) {
+        setPreview(null);
+        setPreviewErr(e.response?.data?.detail || null);
+      }
+    }, 500);
+    return () => clearTimeout(previewTimer.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.mode, form.targets, form.port_mode, form.custom_ports, form.timing, form.detect_service,
+      form.detect_os, form.scripts, form.scan_technique, form.custom_command, form.authorized]);
+
+  const toggleScript = (cat) => {
+    setForm(f => ({ ...f, scripts: f.scripts.includes(cat) ? f.scripts.filter(s => s !== cat) : [...f.scripts, cat] }));
+  };
 
   const save = async () => {
     if (!form.name.trim()) { toast.error("Name is required"); return; }
-    if (!form.targets.trim()) { toast.error("Targets are required"); return; }
+    if (form.mode !== "raw" && !form.targets.trim()) { toast.error("Targets are required"); return; }
+    if (form.mode === "raw" && !form.custom_command.trim()) { toast.error("Paste an nmap command first"); return; }
     if (!form.authorized) { toast.error("You must confirm you're authorized to scan these targets"); return; }
     setSaving(true);
     try {
@@ -364,7 +426,7 @@ function ScanConfigModal({ initial, isEdit, onClose, onSaved }) {
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-[#0D1117] border border-[#30363D] rounded-md w-full max-w-lg max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+      <div className="bg-[#0D1117] border border-[#30363D] rounded-md w-full max-w-xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#30363D]">
           <div className="text-[14px] text-slate-100 font-medium">{isEdit ? "Edit scan config" : "New scan config"}</div>
           <button onClick={onClose} className="text-slate-500 hover:text-slate-200"><X size={18}/></button>
@@ -379,25 +441,130 @@ function ScanConfigModal({ initial, isEdit, onClose, onSaved }) {
           </div>
 
           <div>
-            <label className="block text-[10px] uppercase tracking-wider font-mono text-slate-500 mb-1.5">Targets</label>
-            <input value={form.targets} onChange={e => setForm({ ...form, targets: e.target.value })}
-              placeholder="10.0.0.0/24, 192.168.1.10, host.example.com"
-              className="w-full h-9 bg-[#161B22] border border-[#30363D] rounded px-3 text-[12.5px] text-slate-100 font-mono"/>
-            <div className="text-[10.5px] text-slate-500 mt-1">Comma or space separated IPs, CIDR blocks, or hostnames — up to 64 per config.</div>
-          </div>
-
-          <div>
-            <label className="block text-[10px] uppercase tracking-wider font-mono text-slate-500 mb-1.5">Scan depth</label>
+            <label className="block text-[10px] uppercase tracking-wider font-mono text-slate-500 mb-1.5">How to configure this scan</label>
             <div className="grid grid-cols-3 gap-1.5">
-              {Object.entries(SCAN_TYPE_META).map(([key, meta]) => (
-                <button key={key} type="button" onClick={() => setForm({ ...form, scan_type: key })}
-                  className={`rounded-md border px-2.5 py-2 text-left transition-colors ${form.scan_type === key ? "border-blue-500/50 bg-blue-500/10" : "border-[#30363D] hover:border-[#484F58]"}`}>
-                  <div className={`text-[12px] ${form.scan_type === key ? "text-blue-200" : "text-slate-300"}`}>{meta.label}</div>
-                  <div className="text-[10px] text-slate-500 mt-0.5 leading-tight">{meta.desc}</div>
-                </button>
-              ))}
+              {Object.entries(MODE_META).map(([key, meta]) => {
+                const Icon = meta.icon;
+                return (
+                  <button key={key} type="button" onClick={() => setForm({ ...form, mode: key })}
+                    className={`rounded-md border px-2.5 py-2 text-left transition-colors ${form.mode === key ? "border-violet-500/50 bg-violet-500/10" : "border-[#30363D] hover:border-[#484F58]"}`}>
+                    <div className={`flex items-center gap-1.5 text-[12px] ${form.mode === key ? "text-violet-200" : "text-slate-300"}`}>
+                      <Icon size={13}/> {meta.label}
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-0.5 leading-tight">{meta.desc}</div>
+                  </button>
+                );
+              })}
             </div>
           </div>
+
+          {form.mode === "raw" ? (
+            <div>
+              <label className="block text-[10px] uppercase tracking-wider font-mono text-slate-500 mb-1.5">Nmap command</label>
+              <textarea value={form.custom_command} onChange={e => setForm({ ...form, custom_command: e.target.value })}
+                placeholder="nmap -sV -O -p 1-1000 -T4 10.0.0.0/24"
+                rows={3}
+                className="w-full bg-[#161B22] border border-[#30363D] rounded px-3 py-2 text-[12.5px] text-slate-100 font-mono resize-none"/>
+              <div className="text-[10.5px] text-slate-500 mt-1">
+                Targets are parsed from the command itself. Output flags (-oX etc.), file-based target lists (-iL),
+                decoys, and spoofing flags aren't allowed — VulnOps controls output and only scans exactly what you type.
+              </div>
+            </div>
+          ) : (
+            <div>
+              <label className="block text-[10px] uppercase tracking-wider font-mono text-slate-500 mb-1.5">Targets</label>
+              <input value={form.targets} onChange={e => setForm({ ...form, targets: e.target.value })}
+                placeholder="10.0.0.0/24, 192.168.1.10, host.example.com"
+                className="w-full h-9 bg-[#161B22] border border-[#30363D] rounded px-3 text-[12.5px] text-slate-100 font-mono"/>
+              <div className="text-[10.5px] text-slate-500 mt-1">Comma or space separated IPs, CIDR blocks, or hostnames — up to 64 per config.</div>
+            </div>
+          )}
+
+          {form.mode === "preset" && (
+            <div>
+              <label className="block text-[10px] uppercase tracking-wider font-mono text-slate-500 mb-1.5">Scan depth</label>
+              <div className="grid grid-cols-3 gap-1.5">
+                {Object.entries(SCAN_TYPE_META).map(([key, meta]) => (
+                  <button key={key} type="button" onClick={() => setForm({ ...form, scan_type: key })}
+                    className={`rounded-md border px-2.5 py-2 text-left transition-colors ${form.scan_type === key ? "border-blue-500/50 bg-blue-500/10" : "border-[#30363D] hover:border-[#484F58]"}`}>
+                    <div className={`text-[12px] ${form.scan_type === key ? "text-blue-200" : "text-slate-300"}`}>{meta.label}</div>
+                    <div className="text-[10px] text-slate-500 mt-0.5 leading-tight">{meta.desc}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {form.mode === "builder" && (
+            <div className="space-y-3 border border-[#30363D] rounded-md p-3.5 bg-[#0A0D12]">
+              <div>
+                <label className="block text-[10px] uppercase tracking-wider font-mono text-slate-500 mb-1.5">Scan technique</label>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {[{k:"syn",l:"SYN (-sS)"},{k:"connect",l:"Connect (-sT)"},{k:"udp",l:"UDP (-sU)"}].map(t => (
+                    <button key={t.k} type="button" onClick={() => setForm({ ...form, scan_technique: t.k })}
+                      className={`h-8 rounded border text-[11.5px] ${form.scan_technique === t.k ? "border-violet-500/50 bg-violet-500/10 text-violet-200" : "border-[#30363D] text-slate-400 hover:border-[#484F58]"}`}>
+                      {t.l}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] uppercase tracking-wider font-mono text-slate-500 mb-1.5">Ports</label>
+                <div className="grid grid-cols-4 gap-1.5 mb-1.5">
+                  {Object.entries(PORT_MODE_META).map(([key, label]) => (
+                    <button key={key} type="button" onClick={() => setForm({ ...form, port_mode: key })}
+                      className={`h-8 rounded border text-[11px] px-1 ${form.port_mode === key ? "border-violet-500/50 bg-violet-500/10 text-violet-200" : "border-[#30363D] text-slate-400 hover:border-[#484F58]"}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {form.port_mode === "custom" && (
+                  <input value={form.custom_ports} onChange={e => setForm({ ...form, custom_ports: e.target.value })}
+                    placeholder="80,443,8080-8090"
+                    className="w-full h-8 bg-[#161B22] border border-[#30363D] rounded px-3 text-[12px] text-slate-100 font-mono"/>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-[10px] uppercase tracking-wider font-mono text-slate-500 mb-1.5">
+                  Timing: T{form.timing} {form.timing <= 1 ? "(slow/stealthy)" : form.timing >= 4 ? "(fast)" : ""}
+                </label>
+                <input type="range" min={0} max={5} value={form.timing}
+                  onChange={e => setForm({ ...form, timing: parseInt(e.target.value, 10) })}
+                  className="w-full"/>
+              </div>
+
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 text-[12px] text-slate-300 cursor-pointer">
+                  <input type="checkbox" checked={form.detect_service} onChange={e => setForm({ ...form, detect_service: e.target.checked })}/>
+                  Service/version detection (-sV)
+                </label>
+                <label className="flex items-center gap-2 text-[12px] text-slate-300 cursor-pointer">
+                  <input type="checkbox" checked={form.detect_os} onChange={e => setForm({ ...form, detect_os: e.target.checked })}/>
+                  OS detection (-O)
+                </label>
+              </div>
+
+              <div>
+                <label className="block text-[10px] uppercase tracking-wider font-mono text-slate-500 mb-1.5">NSE scripts</label>
+                <div className="space-y-1">
+                  {Object.entries(SCRIPT_CATEGORY_META).map(([cat, desc]) => (
+                    <label key={cat} className="flex items-center gap-2 text-[11.5px] text-slate-300 cursor-pointer">
+                      <input type="checkbox" checked={form.scripts.includes(cat)} onChange={() => toggleScript(cat)}/>
+                      <span className="font-mono text-slate-400">{cat}</span> — {desc}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {(preview || previewErr) && form.mode !== "preset" && (
+            <div className={`rounded-md px-3 py-2 text-[11px] font-mono break-all ${previewErr ? "border border-red-500/30 bg-red-500/5 text-red-300" : "border border-emerald-500/30 bg-emerald-500/5 text-emerald-300"}`}>
+              {previewErr || preview?.resolved_command}
+            </div>
+          )}
 
           <div>
             <label className="block text-[10px] uppercase tracking-wider font-mono text-slate-500 mb-1.5">Vantage point</label>

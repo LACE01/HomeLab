@@ -3,7 +3,7 @@ import { useAuth } from "@/lib/auth";
 import {
   ChartLineUp, ListChecks, HardDrives, Stack, Lightning, Ticket,
   ShieldCheck, PlugsConnected, FileArrowDown, GearSix, SignOut, Database, Bug,
-  UsersThree, Bell, ShareNetwork, BookOpen, Robot, Globe,
+  UsersThree, Bell, ShareNetwork, BookOpen, Robot, Globe, Certificate, Package, MagnifyingGlass, ClipboardText, SlackLogo,
 } from "@phosphor-icons/react";
 
 const NavItem = ({ to, icon: Icon, label, testid }) => (
@@ -51,6 +51,8 @@ export default function Sidebar() {
           <NavItem to="/findings" icon={ListChecks} label="Findings" testid="nav-findings" />
           <NavItem to="/attack-paths" icon={ShareNetwork} label="Attack Paths" testid="nav-attack-paths" />
           <NavItem to="/exposure" icon={Globe} label="Exposure" testid="nav-exposure" />
+          <NavItem to="/admin/tls-certs" icon={Certificate} label="TLS Certificates" testid="nav-tls-certs" />
+          <NavItem to="/easm" icon={MagnifyingGlass} label="Attack Surface" testid="nav-easm" />
           <NavItem to="/tickets" icon={Ticket} label="Tickets" testid="nav-tickets" />
           <NavItem to="/exceptions" icon={ShieldCheck} label="Exceptions" testid="nav-exceptions" />
           <NavItem to="/admin/playbooks" icon={BookOpen} label="Playbooks" testid="nav-playbooks" />
@@ -66,13 +68,16 @@ export default function Sidebar() {
           <NavItem to="/imports" icon={Database} label="Import Jobs" testid="nav-imports" />
           <NavItem to="/admin/web-scans" icon={Database} label="Web Scan Uploads" testid="nav-web-scans" />
           <NavItem to="/admin/nmap-scans" icon={Database} label="Nmap Scan Uploads" testid="nav-nmap-scans" />
+          <NavItem to="/admin/sbom" icon={Package} label="SBOM / Dependencies" testid="nav-sbom" />
         </Group>
         <Group title="Reports & Admin">
           <NavItem to="/reports" icon={FileArrowDown} label="Reports" testid="nav-reports" />
+          <NavItem to="/compliance" icon={ClipboardText} label="Compliance" testid="nav-compliance" />
           <NavItem to="/admin" icon={GearSix} label="Admin" testid="nav-admin" />
           <NavItem to="/admin/users" icon={UsersThree} label="Users" testid="nav-users" />
           <NavItem to="/admin/teams" icon={UsersThree} label="Teams" testid="nav-teams" />
           <NavItem to="/admin/notifications" icon={Bell} label="Notifications" testid="nav-notifications" />
+          <NavItem to="/admin/chatops" icon={SlackLogo} label="ChatOps" testid="nav-chatops" />
           <NavItem to="/admin/assignment-rules" icon={GearSix} label="Assignment Rules" testid="nav-rules" />
           <NavItem to="/admin/ownership" icon={GearSix} label="Ownership Map" testid="nav-ownership" />
           <NavItem to="/admin/sla-policies" icon={ShieldCheck} label="SLA Policies" testid="nav-sla" />

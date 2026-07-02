@@ -21,10 +21,17 @@ router = APIRouter()
 SCAN_TYPES = ["quick", "standard", "thorough"]
 
 
+MODES = ["preset", "builder", "raw"]
+PORT_MODES = ["top100", "top1000", "all", "custom"]
+SCAN_TECHNIQUES = ["syn", "connect", "udp"]
+
+
 class ScanConfigBody(BaseModel):
     name: str
-    targets: str                       # comma/whitespace-separated IPs, CIDRs, hostnames
-    scan_type: str = "standard"        # quick | standard | thorough
+    targets: str                       # comma/whitespace-separated IPs, CIDRs, hostnames --
+                                        # ignored in "raw" mode, where targets come from the command itself
+    mode: str = "preset"               # preset | builder | raw
+    scan_type: str = "standard"        # quick | standard | thorough -- used when mode == "preset"
     vantage: str = "internal"          # scans launched from this container are internal
                                         # to your own network by construction -- "external"
                                         # only makes honest sense if this host itself sits
@@ -34,34 +41,96 @@ class ScanConfigBody(BaseModel):
     authorized: bool = False           # must be true to create/update -- your explicit
                                         # confirmation that you're allowed to scan these targets
 
+    # --- "builder" mode: GUI toggle options ---
+    port_mode: str = "top1000"         # top100 | top1000 | all | custom
+    custom_ports: Optional[str] = None
+    timing: int = 4                    # -T0 (paranoid) .. -T5 (insane)
+    detect_service: bool = True        # -sV
+    detect_os: bool = True             # -O
+    scripts: list = []                 # subset of default/safe/discovery/version/vuln
+    scan_technique: str = "syn"        # syn (-sS) | connect (-sT) | udp (-sU)
 
-def _validate(body: ScanConfigBody):
+    # --- "raw" mode: paste a command line ---
+    custom_command: Optional[str] = None
+
+
+def _validate(body: ScanConfigBody) -> dict:
+    """Returns extra fields to merge into the stored doc (parsed args, resolved
+    command preview, and -- for raw mode -- the targets extracted from the command)."""
     if not body.authorized:
         raise HTTPException(400, "You must confirm you're authorized to scan these targets")
-    if body.scan_type not in SCAN_TYPES:
-        raise HTTPException(400, f"scan_type must be one of {SCAN_TYPES}")
     if body.vantage not in ("internal", "external"):
         raise HTTPException(400, "vantage must be 'internal' or 'external'")
     if body.schedule_hours < 0 or body.schedule_hours > 24 * 30:
         raise HTTPException(400, "schedule_hours must be between 0 (manual only) and 720 (30 days)")
-    from nmap_scan import validate_targets
+    if body.mode not in MODES:
+        raise HTTPException(400, f"mode must be one of {MODES}")
+
+    from nmap_scan import validate_targets, build_scan_args, parse_nmap_command, resolved_command_preview
+
+    if body.mode == "preset":
+        if body.scan_type not in SCAN_TYPES:
+            raise HTTPException(400, f"scan_type must be one of {SCAN_TYPES}")
+        try:
+            validate_targets(body.targets)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"custom_args": None, "resolved_command": None}
+
+    if body.mode == "builder":
+        if body.port_mode not in PORT_MODES:
+            raise HTTPException(400, f"port_mode must be one of {PORT_MODES}")
+        if body.scan_technique not in SCAN_TECHNIQUES:
+            raise HTTPException(400, f"scan_technique must be one of {SCAN_TECHNIQUES}")
+        try:
+            validate_targets(body.targets)
+            args = build_scan_args(
+                port_mode=body.port_mode, custom_ports=body.custom_ports, timing=body.timing,
+                detect_service=body.detect_service, detect_os=body.detect_os,
+                scripts=body.scripts, scan_technique=body.scan_technique,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"custom_args": args, "resolved_command": resolved_command_preview(args, body.targets)}
+
+    # mode == "raw"
+    if not body.custom_command or not body.custom_command.strip():
+        raise HTTPException(400, "Paste an nmap command when mode is 'raw'")
     try:
-        validate_targets(body.targets)
+        parsed = parse_nmap_command(body.custom_command)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    return {
+        "custom_args": parsed["args"], "targets": parsed["targets"],
+        "resolved_command": resolved_command_preview(parsed["args"], parsed["targets"]),
+    }
 
 
 @router.get("/v1/admin/nmap/configs")
 async def list_scan_configs(user: dict = Depends(get_current_user)):
     items = await db.nmap_scan_configs.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
-    return {"items": items, "scan_types": SCAN_TYPES}
+    return {"items": items, "scan_types": SCAN_TYPES, "port_modes": PORT_MODES,
+            "scan_techniques": SCAN_TECHNIQUES, "script_categories": ["default", "safe", "discovery", "version", "vuln"]}
+
+
+@router.post("/v1/admin/nmap/configs/preview")
+async def preview_scan_config(body: ScanConfigBody, user: dict = Depends(require_role("admin"))):
+    """Dry-run validation -- returns the resolved nmap command without saving anything,
+    so the UI can show 'this is exactly what will run' before you hit Save."""
+    extra = _validate(body)
+    if extra.get("resolved_command"):
+        resolved = extra["resolved_command"]
+    else:
+        from nmap_scan import SCAN_PRESETS, resolved_command_preview
+        resolved = resolved_command_preview(SCAN_PRESETS.get(body.scan_type, SCAN_PRESETS["standard"]), body.targets)
+    return {"resolved_command": resolved, "targets": extra.get("targets", body.targets)}
 
 
 @router.post("/v1/admin/nmap/configs")
 async def create_scan_config(body: ScanConfigBody, user: dict = Depends(require_role("admin"))):
-    _validate(body)
+    extra = _validate(body)
     doc = {
-        "id": str(uuid.uuid4()), **body.model_dump(), "status": "idle",
+        "id": str(uuid.uuid4()), **body.model_dump(), **extra, "status": "idle",
         "last_run_at": None, "last_result": None,
         "created_at": now_iso(), "created_by": user["email"],
     }
@@ -71,11 +140,11 @@ async def create_scan_config(body: ScanConfigBody, user: dict = Depends(require_
 
 @router.put("/v1/admin/nmap/configs/{config_id}")
 async def update_scan_config(config_id: str, body: ScanConfigBody, user: dict = Depends(require_role("admin"))):
-    _validate(body)
+    extra = _validate(body)
     existing = await db.nmap_scan_configs.find_one({"id": config_id}, {"_id": 0})
     if not existing:
         raise HTTPException(404, "Scan config not found")
-    update = body.model_dump()
+    update = {**body.model_dump(), **extra}
     update["updated_at"] = now_iso()
     await db.nmap_scan_configs.update_one({"id": config_id}, {"$set": update})
     return {**existing, **update}
@@ -93,9 +162,15 @@ async def _execute_scan(config_id: str):
     cfg = await db.nmap_scan_configs.find_one({"id": config_id}, {"_id": 0})
     if not cfg:
         return
-    timeout = {"quick": 300, "standard": 900, "thorough": 2700}.get(cfg["scan_type"], 900)
+    if cfg.get("mode") in ("builder", "raw"):
+        timeout = 1800  # custom scans (all-ports / slow timing / scripts) get more headroom
+    else:
+        timeout = {"quick": 300, "standard": 900, "thorough": 2700}.get(cfg.get("scan_type"), 900)
     try:
-        xml_bytes = await run_active_scan(cfg["targets"], cfg["scan_type"], timeout_sec=timeout)
+        xml_bytes = await run_active_scan(
+            cfg["targets"], cfg.get("scan_type", "standard"), timeout_sec=timeout,
+            custom_args=cfg.get("custom_args"),
+        )
         result = await import_nmap_xml(db, xml_bytes, vantage=cfg["vantage"], source_label=f"Scheduled: {cfg['name']}")
         await db.nmap_scan_configs.update_one({"id": config_id}, {"$set": {
             "status": "idle", "last_run_at": now_iso(), "last_result": {**result, "ok": True},
