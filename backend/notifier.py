@@ -24,6 +24,7 @@ TRIGGERS = [
     "finding_created_critical", "finding_created_high", "finding_assigned",
     "ticket_sla_warning", "ticket_overdue", "ticket_reassigned",
     "comment_mention", "exception_expiring", "finding_reopened", "kev_match",
+    "tls_cert_expiring",
 ]
 
 CHANNELS = ["email", "discord", "slack", "teams", "webhook"]
@@ -72,6 +73,14 @@ TEMPLATES = {
             "• **Finding:** {title}\n• **Asset:** {asset}\n"
             "• **Approver:** {approver}\n• **Expires:** {expires_at}\n\n"
             "Decide: renew, accept the new risk, or remediate. Open: {url}"
+        ),
+    },
+    "tls_cert_expiring": {
+        "subject": "[VulnOps] TLS certificate expiring: {hostname}",
+        "body": (
+            "🔒 The TLS certificate for {hostname} {expiry_phrase}.\n\n"
+            "• **Severity:** {severity}\n• **Port:** {port}\n"
+            "• **Days left:** {days_left}\n• **Reason:** {reason}\n\nOpen: {url}"
         ),
     },
     "digest_list": {

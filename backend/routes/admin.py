@@ -2,7 +2,7 @@
 assignment-rules, ownership-mappings, sla-policies, api-keys, nightly-rescore."""
 import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr
@@ -253,6 +253,49 @@ async def set_assignment_settings(body: AssignmentSettingsBody, user: dict = Dep
 # Fields with a small, known set of valid values -- offered as a dropdown of exactly
 # those options rather than a free-text field, since typos here (e.g. "crown-jewel" vs
 # "crown_jewel") mean the rule silently never matches anything.
+# --------------------------- CUSTOMIZABLE PAGE LAYOUTS ---------------------------
+# Lets admins reorder the "tile" sections on certain pages (e.g. FindingDetail's
+# sidebar) without a code change/redeploy. Unknown page keys just get an empty
+# default -- the frontend falls back to its own hardcoded order in that case.
+DEFAULT_LAYOUTS = {
+    "finding_detail_sidebar": [
+        "status", "exception", "comments", "risk_score", "identifiers", "scoring",
+        "exploits", "asset", "sla", "source", "tickets", "references",
+    ],
+}
+
+
+@router.get("/v1/admin/ui-layout/{page}")
+async def get_ui_layout(page: str, user: dict = Depends(get_current_user)):
+    doc = await db.ui_layout_prefs.find_one({"page": page}, {"_id": 0})
+    default = DEFAULT_LAYOUTS.get(page, [])
+    order = (doc or {}).get("order") or list(default)
+    # If new sections were added to the code after a custom order was saved, append
+    # them at the end instead of letting them silently disappear from the page.
+    order = order + [k for k in default if k not in order]
+    return {"order": order, "default": default, "customized": bool(doc)}
+
+
+class UiLayoutBody(BaseModel):
+    order: List[str]
+
+
+@router.put("/v1/admin/ui-layout/{page}")
+async def set_ui_layout(page: str, body: UiLayoutBody, user: dict = Depends(require_role("admin"))):
+    await db.ui_layout_prefs.update_one(
+        {"page": page},
+        {"$set": {"page": page, "order": body.order, "updated_at": now_iso(), "updated_by": user["email"]}},
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+@router.delete("/v1/admin/ui-layout/{page}")
+async def reset_ui_layout(page: str, user: dict = Depends(require_role("admin"))):
+    await db.ui_layout_prefs.delete_one({"page": page})
+    return {"ok": True, "default": DEFAULT_LAYOUTS.get(page, [])}
+
+
 ENUM_FIELD_VALUES = {
     "environment": ["production", "staging", "development", "unknown"],
     "platform": ["aws", "azure", "gcp", "on_prem", "unknown"],

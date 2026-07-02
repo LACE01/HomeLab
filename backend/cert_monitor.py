@@ -114,6 +114,18 @@ def classify(days_until_expiry: int, trust_valid: bool, trust_error: str | None)
     return None, None
 
 
+async def _notify_cert_expiring(db, hostname, port, severity, reason, days_left, expiry_phrase, finding_id):
+    from notifier import dispatch
+    try:
+        await dispatch("tls_cert_expiring", {
+            "hostname": hostname, "port": port, "severity": severity, "reason": reason,
+            "days_left": days_left if days_left is not None else "—", "expiry_phrase": expiry_phrase,
+            "url": f"/findings/{finding_id}",
+        }, db)
+    except Exception:
+        pass
+
+
 async def run_cert_check(db, hostname: str, port: int = 443, asset_id: str | None = None,
                           label: str | None = None) -> dict:
     """Checks one target, upserts the result into tls_certificates, and creates/
@@ -144,10 +156,24 @@ async def run_cert_check(db, hostname: str, port: int = 443, asset_id: str | Non
     open_states = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
 
     if severity:
+        days_left = info.get("days_until_expiry")
+        if days_left is not None and days_left < 0:
+            expiry_phrase = f"expired {abs(days_left)} day(s) ago"
+        elif days_left is not None:
+            expiry_phrase = f"expires in {days_left} day(s)"
+        else:
+            expiry_phrase = "could not be checked"
+
         if existing and existing.get("status") in open_states:
+            was_severity = existing.get("severity")
             await db.findings.update_one({"id": existing["id"]}, {"$set": {
                 "severity": severity, "description": reason, "last_seen_at": now,
             }})
+            # Re-notify on escalation (e.g. High -> Critical as the expiry date gets
+            # closer) rather than only once at first detection -- otherwise a cert
+            # nobody acted on just silently gets worse with no further nudge.
+            if severity == "Critical" and was_severity != "Critical":
+                await _notify_cert_expiring(db, hostname, port, severity, reason, days_left, expiry_phrase, existing["id"])
         elif not existing:
             asset = await db.assets.find_one({"id": asset_id}, {"_id": 0}) if asset_id else None
             finding = {
@@ -163,6 +189,7 @@ async def run_cert_check(db, hostname: str, port: int = 443, asset_id: str | Non
                 "rti": [], "cwe": "CWE-295" if not (info.get("trust_valid")) else None,
             }
             await db.findings.insert_one(finding)
+            await _notify_cert_expiring(db, hostname, port, severity, reason, days_left, expiry_phrase, finding["id"])
         # If it exists but was already fixed/accepted, leave it alone -- don't reopen
         # automatically; a human closed it and a re-check shouldn't silently override that.
     elif existing and existing.get("status") in open_states:

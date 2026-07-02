@@ -1,12 +1,16 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import Layout from "@/components/Layout";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtDate, fmtRel, isOverdue } from "@/lib/utils-fmt";
-import { ArrowLeft, ChatCircle, ClockCounterClockwise, Ticket, Shield, BookOpen, CheckCircle, ArrowCounterClockwise, Plus, ShieldCheck, X, Trash, SealWarning, SealCheck } from "@phosphor-icons/react";
+import { ArrowLeft, ChatCircle, ClockCounterClockwise, Ticket, Shield, BookOpen, CheckCircle, ArrowCounterClockwise, Plus, ShieldCheck, X, Trash, SealWarning, SealCheck, DotsSixVertical, SlidersHorizontal, FloppyDisk } from "@phosphor-icons/react";
 import InfoTip from "@/components/InfoTip";
 import { toast } from "sonner";
+
+const DEFAULT_SIDEBAR_ORDER = ["status", "exception", "comments", "risk_score", "identifiers",
+  "scoring", "exploits", "asset", "sla", "source", "tickets", "references"];
 
 const Section = ({ title, children, testid }) => (
   <div data-testid={testid} className="border border-[#30363D] bg-[#0D1117] rounded-md">
@@ -135,9 +139,49 @@ export default function FindingDetail() {
   const [showAddMitigation, setShowAddMitigation] = useState(false);
   const [showExceptionForm, setShowExceptionForm] = useState(false);
   const [exceptions, setExceptions] = useState([]);
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const [sidebarOrder, setSidebarOrder] = useState(DEFAULT_SIDEBAR_ORDER);
+  const [customizingLayout, setCustomizingLayout] = useState(false);
+  const [savingLayout, setSavingLayout] = useState(false);
+  const [dragKey, setDragKey] = useState(null);
 
   const loadMitigations = () => api.get(`/v1/findings/${id}/mitigations`).then(r => { setMitigations(r.data.items); setMitigationTypes(r.data.types); });
   const loadExceptions = () => api.get("/v1/exceptions").then(r => setExceptions(r.data.items.filter(e => e.finding_id === id)));
+
+  const loadSidebarLayout = () => api.get("/v1/admin/ui-layout/finding_detail_sidebar").then(r => setSidebarOrder(r.data.order));
+  const saveSidebarLayout = async () => {
+    setSavingLayout(true);
+    try {
+      await api.put("/v1/admin/ui-layout/finding_detail_sidebar", { order: sidebarOrder });
+      toast.success("Layout saved for everyone.");
+      setCustomizingLayout(false);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to save layout");
+    } finally { setSavingLayout(false); }
+  };
+  const resetSidebarLayout = async () => {
+    try {
+      const r = await api.delete("/v1/admin/ui-layout/finding_detail_sidebar");
+      setSidebarOrder(r.data.default);
+      toast.success("Reset to default layout.");
+    } catch (e) {
+      toast.error("Failed to reset layout");
+    }
+  };
+  const onTileDragStart = (key) => setDragKey(key);
+  const onTileDrop = (key) => {
+    if (!dragKey || dragKey === key) return;
+    setSidebarOrder(prev => {
+      const next = [...prev];
+      const from = next.indexOf(dragKey), to = next.indexOf(key);
+      if (from === -1 || to === -1) return prev;
+      next.splice(from, 1);
+      next.splice(to, 0, dragKey);
+      return next;
+    });
+    setDragKey(null);
+  };
 
   useEffect(() => {
     api.get(`/v1/findings/${id}`).then(r => { setF(r.data); setStatusVal(r.data.status); });
@@ -151,6 +195,7 @@ export default function FindingDetail() {
     api.get(`/v1/findings/${id}/patch-group`).then(r => setPatchGroup(r.data));
     loadMitigations();
     loadExceptions();
+    loadSidebarLayout();
   }, [id]); // eslint-disable-line
 
   const loadPlaybook = () => api.get(`/v1/findings/${id}/playbook`).then(r => {
@@ -600,201 +645,256 @@ export default function FindingDetail() {
             </div>
           </Section>
 
-          <Section title="Comments" testid="section-comments">
-            <div className="space-y-2 mb-3">
-              {comments.length === 0 && <div className="text-[12px] text-slate-500">No comments yet.</div>}
-              {comments.map(c => (
-                <div key={c.id} className="border border-[#30363D] rounded p-2.5 bg-[#161B22]">
-                  <div className="text-[10.5px] font-mono text-slate-500">{c.author} · {fmtDate(c.created_at)}</div>
-                  {c.text && <div className="text-[12.5px] text-slate-200 mt-1 whitespace-pre-wrap">{c.text}</div>}
-                  {(c.attachments || []).length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {c.attachments.map((a, i) => a.mime?.startsWith("image/") ? (
-                        <a key={i} href={a.data_url} target="_blank" rel="noopener noreferrer" title={a.name}>
-                          <img src={a.data_url} alt={a.name} className="max-h-24 rounded border border-[#30363D] hover:border-blue-500/50"/>
-                        </a>
-                      ) : (
-                        <a key={i} href={a.data_url} download={a.name} className="text-[11.5px] text-blue-300 hover:underline">📎 {a.name}</a>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-            {attachments.length > 0 && (
-              <div className="mb-2 flex flex-wrap gap-2">
-                {attachments.map((a, i) => (
-                  <div key={i} className="flex items-center gap-1.5 px-2 py-1 border border-[#30363D] rounded bg-[#161B22] text-[11px]">
-                    {a.mime?.startsWith("image/") && <img src={a.data_url} alt="" className="h-6 w-6 object-cover rounded"/>}
-                    <span className="text-slate-300 truncate max-w-[140px]">{a.name}</span>
-                    <button onClick={()=>setAttachments(attachments.filter((_,j)=>j!==i))} className="text-red-400 hover:text-red-300">×</button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <div className="flex gap-2">
-              <input data-testid="comment-input" value={newComment} onChange={(e)=>setNewComment(e.target.value)} placeholder="Add a triage note (paste screenshot or attach below)…"
-                className="flex-1 h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12.5px] text-slate-200"
-                onPaste={(e) => { const items = e.clipboardData?.items; if (items) { const files=[]; for (const it of items) if (it.kind==='file') { const f=it.getAsFile(); if (f) files.push(f); } if (files.length) handleFiles(files); } }}
-              />
-              <label data-testid="comment-attach" className="h-8 px-2.5 text-[12px] border border-[#30363D] hover:border-blue-500/50 rounded inline-flex items-center gap-1 cursor-pointer text-slate-300">
-                📎
-                <input type="file" multiple accept="image/*,application/pdf" className="hidden" onChange={(e)=>handleFiles(e.target.files)}/>
-              </label>
-              <button data-testid="comment-add" onClick={addComment} className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded inline-flex items-center gap-1">
-                <ChatCircle size={14}/> Add
-              </button>
-            </div>
-          </Section>
         </div>
 
         <div className="space-y-4">
-          <Section title="Status & Triage" testid="section-status">
-            <select data-testid="status-select" value={statusVal} onChange={(e)=>updateStatus(e.target.value)}
-              className="w-full h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12.5px]">
-              {["New","Needs triage","Valid","False positive","Duplicate","Mitigated","Accepted risk","Deferred","Fixed pending validation","Fixed validated","Reopened","Out of scope","Closed administratively"].map(s => <option key={s}>{s}</option>)}
-            </select>
-            <div className="mt-2 grid grid-cols-2 gap-1">
-              <KV k="Validation" v={f.validation_status}/>
-              <KV k="Reopened" v={f.reopened_count} mono/>
-            </div>
-            {f.verification_status && (
-              <div className="mt-3 border-t border-[#30363D] pt-2.5">
-                <div className="flex items-center justify-between mb-1">
-                  <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Verification</div>
-                  <Chip color={f.verification_status === "passed" ? "green" : f.verification_status === "failed" ? "red" : "amber"}>
-                    {f.verification_status}
-                  </Chip>
+          <div className="flex items-center justify-between">
+            <div className="text-[10.5px] uppercase font-mono text-slate-600">Sidebar</div>
+            {isAdmin && (
+              customizingLayout ? (
+                <div className="flex gap-1.5">
+                  <button onClick={resetSidebarLayout} data-testid="layout-reset"
+                    className="h-6 px-2 text-[10.5px] border border-[#30363D] hover:border-[#484F58] text-slate-400 rounded inline-flex items-center gap-1"><ArrowCounterClockwise size={11}/> Reset</button>
+                  <button onClick={saveSidebarLayout} disabled={savingLayout} data-testid="layout-save"
+                    className="h-6 px-2 text-[10.5px] bg-blue-500/20 border border-blue-500/40 text-blue-200 rounded inline-flex items-center gap-1 disabled:opacity-50"><FloppyDisk size={11}/> {savingLayout ? "Saving…" : "Save"}</button>
+                  <button onClick={()=>setCustomizingLayout(false)} className="h-6 px-2 text-[10.5px] border border-[#30363D] text-slate-400 rounded">Done</button>
                 </div>
-                {f.verification_note && <div className="text-[11.5px] text-slate-400 leading-relaxed">{f.verification_note}</div>}
-                {statusVal === "Fixed pending validation" && (
-                  <button data-testid="verify-now" onClick={verifyNow} disabled={verifying}
-                    className="mt-2 h-7 px-2.5 text-[11px] bg-blue-500/15 border border-blue-500/40 hover:bg-blue-500/25 text-blue-300 rounded disabled:opacity-50">
-                    {verifying ? "Checking…" : "Verify now"}
-                  </button>
-                )}
-              </div>
+              ) : (
+                <button onClick={()=>setCustomizingLayout(true)} data-testid="layout-customize"
+                  className="h-6 px-2 text-[10.5px] border border-[#30363D] hover:border-blue-500/40 hover:text-blue-300 text-slate-500 rounded inline-flex items-center gap-1">
+                  <SlidersHorizontal size={11}/> Customize layout
+                </button>
+              )
             )}
-          </Section>
+          </div>
 
-          <Section title="Risk Exception" testid="section-exception">
-            {exceptions.length === 0 && (
-              <button onClick={()=>setShowExceptionForm(true)} data-testid="request-exception-btn"
-                className="w-full h-8 text-[11.5px] border border-[#30363D] hover:border-blue-500/40 hover:text-blue-300 text-slate-300 rounded inline-flex items-center justify-center gap-1.5">
-                <ShieldCheck size={13}/> Request exception
-              </button>
-            )}
-            {exceptions.map(e => (
-              <div key={e.id} className="text-[12px]">
-                <Chip color={{pending_approval:"amber", active:"green", expired:"slate", rejected:"red"}[e.status] || "slate"}>{e.status?.replace("_"," ")}</Chip>
-                <div className="text-slate-400 mt-1.5">{e.business_justification || e.rationale}</div>
-                <div className="text-[10.5px] text-slate-500 mt-1">Expires {fmtDate(e.expires_at)}</div>
-              </div>
-            ))}
-          </Section>
-
-                    <Section title="Risk Score">
-            <RiskBar score={f.risk_score} />
-          </Section>
-
-          <Section title="Identifiers">
-            <KV k="Internal ID" v={<span className="font-mono text-[10.5px]">{f.id}</span>} />
-            <KV k="CVE" v={f.cve} mono/>
-            <KV k="CWE" v={f.cwe} mono/>
-            <KV k="QID" v={f.qid} mono/>
-            <KV k="Plugin ID" v={f.plugin_id} mono/>
-            <KV k="Source ID" v={f.source_observation_id} mono/>
-            {f.port && <KV k="Port" v={`${f.port}/${f.protocol || "tcp"}`} mono/>}
-            {f.service && <KV k="Service" v={[f.service, f.service_product, f.service_version].filter(Boolean).join(" ")} />}
-          </Section>
-
-          <Section title="Scoring">
-            <KV k="CVSS v3" v={f.cvss_score} mono/>
-            <KV k="CVSS Vector" v={<span className="font-mono text-[10px] break-all">{f.cvss_v3_vector}</span>} />
-            <KV k="EPSS" v={f.epss_score ? (f.epss_score*100).toFixed(2)+"%" : "—"} mono/>
-            <KV k="EPSS %ile" v={f.epss_percentile?.toFixed?.(1)} mono/>
-          </Section>
-
-          {(f.exploit_references || []).length > 0 && (
-            <Section title="Public Exploits" testid="public-exploits-section">
-              <div className="border border-orange-500/30 bg-orange-500/5 rounded-md px-3 py-2 mb-3 text-[11.5px] text-orange-200 leading-relaxed">
-                {f.exploit_references.length} public exploit{f.exploit_references.length === 1 ? "" : "s"} indexed for this CVE — a working
-                proof-of-concept exists in the wild, which materially lowers the bar for exploitation.
-              </div>
-              <div className="space-y-2">
-                {f.exploit_references.map((ex, i) => (
-                  <a key={ex.edb_id || i} href={ex.url} target="_blank" rel="noopener noreferrer"
-                    className="block border border-[#30363D] hover:border-orange-500/40 rounded-md px-3 py-2 transition-colors">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="text-[12px] text-slate-200 leading-snug">{ex.title || `Exploit-DB #${ex.edb_id}`}</div>
-                      {ex.verified ? (
-                        <span className="shrink-0 inline-flex items-center gap-1 text-[10px] text-emerald-400"><SealCheck size={12}/> Verified</span>
-                      ) : (
-                        <span className="shrink-0 inline-flex items-center gap-1 text-[10px] text-slate-500"><SealWarning size={12}/> Unverified</span>
+          {(() => {
+            const sidebarSections = {
+              status: { title: "Status & Triage", testid: "section-status", content: (
+                <>
+                  <select data-testid="status-select" value={statusVal} onChange={(e)=>updateStatus(e.target.value)}
+                    className="w-full h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12.5px]">
+                    {["New","Needs triage","Valid","False positive","Duplicate","Mitigated","Accepted risk","Deferred","Fixed pending validation","Fixed validated","Reopened","Out of scope","Closed administratively"].map(s => <option key={s}>{s}</option>)}
+                  </select>
+                  <div className="mt-2 grid grid-cols-2 gap-1">
+                    <KV k="Validation" v={f.validation_status}/>
+                    <KV k="Reopened" v={f.reopened_count} mono/>
+                  </div>
+                  {f.verification_status && (
+                    <div className="mt-3 border-t border-[#30363D] pt-2.5">
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Verification</div>
+                        <Chip color={f.verification_status === "passed" ? "green" : f.verification_status === "failed" ? "red" : "amber"}>
+                          {f.verification_status}
+                        </Chip>
+                      </div>
+                      {f.verification_note && <div className="text-[11.5px] text-slate-400 leading-relaxed">{f.verification_note}</div>}
+                      {statusVal === "Fixed pending validation" && (
+                        <button data-testid="verify-now" onClick={verifyNow} disabled={verifying}
+                          className="mt-2 h-7 px-2.5 text-[11px] bg-blue-500/15 border border-blue-500/40 hover:bg-blue-500/25 text-blue-300 rounded disabled:opacity-50">
+                          {verifying ? "Checking…" : "Verify now"}
+                        </button>
                       )}
                     </div>
-                    <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                      {ex.edb_id && <Chip color="orange">EDB-{ex.edb_id}</Chip>}
-                      {ex.type && <Chip color="slate">{ex.type}</Chip>}
-                      {ex.platform && <Chip color="slate">{ex.platform}</Chip>}
-                      {ex.date_published && <span className="text-[10.5px] text-slate-500 font-mono">{ex.date_published}</span>}
+                  )}
+                </>
+              ) },
+              exception: { title: "Risk Exception", testid: "section-exception", content: (
+                <>
+                  {exceptions.length === 0 && (
+                    <button onClick={()=>setShowExceptionForm(true)} data-testid="request-exception-btn"
+                      className="w-full h-8 text-[11.5px] border border-[#30363D] hover:border-blue-500/40 hover:text-blue-300 text-slate-300 rounded inline-flex items-center justify-center gap-1.5">
+                      <ShieldCheck size={13}/> Request exception
+                    </button>
+                  )}
+                  {exceptions.map(e => (
+                    <Link key={e.id} to={`/exceptions/${e.id}`} className="block text-[12px] hover:bg-slate-800/30 -mx-1 px-1 py-1 rounded">
+                      <Chip color={{pending_approval:"amber", active:"green", expired:"slate", rejected:"red"}[e.status] || "slate"}>{e.status?.replace("_"," ")}</Chip>
+                      <div className="text-slate-400 mt-1.5">{e.business_justification || e.rationale}</div>
+                      <div className="text-[10.5px] text-slate-500 mt-1">Expires {fmtDate(e.expires_at)}</div>
+                    </Link>
+                  ))}
+                </>
+              ) },
+              comments: { title: "Comments", testid: "section-comments", content: (
+                <>
+                  <div className="space-y-2 mb-3">
+                    {comments.length === 0 && <div className="text-[12px] text-slate-500">No comments yet.</div>}
+                    {comments.map(c => (
+                      <div key={c.id} className="border border-[#30363D] rounded p-2.5 bg-[#161B22]">
+                        <div className="text-[10.5px] font-mono text-slate-500">{c.author} · {fmtDate(c.created_at)}</div>
+                        {c.text && <div className="text-[12.5px] text-slate-200 mt-1 whitespace-pre-wrap">{c.text}</div>}
+                        {(c.attachments || []).length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {c.attachments.map((a, i) => a.mime?.startsWith("image/") ? (
+                              <a key={i} href={a.data_url} target="_blank" rel="noopener noreferrer" title={a.name}>
+                                <img src={a.data_url} alt={a.name} className="max-h-24 rounded border border-[#30363D] hover:border-blue-500/50"/>
+                              </a>
+                            ) : (
+                              <a key={i} href={a.data_url} download={a.name} className="text-[11.5px] text-blue-300 hover:underline">📎 {a.name}</a>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  {attachments.length > 0 && (
+                    <div className="mb-2 flex flex-wrap gap-2">
+                      {attachments.map((a, i) => (
+                        <div key={i} className="flex items-center gap-1.5 px-2 py-1 border border-[#30363D] rounded bg-[#161B22] text-[11px]">
+                          {a.mime?.startsWith("image/") && <img src={a.data_url} alt="" className="h-6 w-6 object-cover rounded"/>}
+                          <span className="text-slate-300 truncate max-w-[140px]">{a.name}</span>
+                          <button onClick={()=>setAttachments(attachments.filter((_,j)=>j!==i))} className="text-red-400 hover:text-red-300">×</button>
+                        </div>
+                      ))}
                     </div>
-                  </a>
-                ))}
-              </div>
-            </Section>
-          )}
+                  )}
+                  <div className="flex gap-2">
+                    <input data-testid="comment-input" value={newComment} onChange={(e)=>setNewComment(e.target.value)} placeholder="Add a triage note (paste screenshot or attach below)…"
+                      className="flex-1 h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12.5px] text-slate-200"
+                      onPaste={(e) => { const items = e.clipboardData?.items; if (items) { const files=[]; for (const it of items) if (it.kind==='file') { const f=it.getAsFile(); if (f) files.push(f); } if (files.length) handleFiles(files); } }}
+                    />
+                    <label data-testid="comment-attach" className="h-8 px-2.5 text-[12px] border border-[#30363D] hover:border-blue-500/50 rounded inline-flex items-center gap-1 cursor-pointer text-slate-300">
+                      📎
+                      <input type="file" multiple accept="image/*,application/pdf" className="hidden" onChange={(e)=>handleFiles(e.target.files)}/>
+                    </label>
+                    <button data-testid="comment-add" onClick={addComment} className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded inline-flex items-center gap-1">
+                      <ChatCircle size={14}/> Add
+                    </button>
+                  </div>
+                </>
+              ) },
+              risk_score: { title: "Risk Score", content: <RiskBar score={f.risk_score} /> },
+              identifiers: { title: "Identifiers", content: (
+                <>
+                  <KV k="Internal ID" v={<span className="font-mono text-[10.5px]">{f.id}</span>} />
+                  <KV k="CVE" v={f.cve} mono/>
+                  <KV k="CWE" v={f.cwe} mono/>
+                  <KV k="QID" v={f.qid} mono/>
+                  <KV k="Plugin ID" v={f.plugin_id} mono/>
+                  <KV k="Source ID" v={f.source_observation_id} mono/>
+                  {f.port && <KV k="Port" v={`${f.port}/${f.protocol || "tcp"}`} mono/>}
+                  {f.service && <KV k="Service" v={[f.service, f.service_product, f.service_version].filter(Boolean).join(" ")} />}
+                </>
+              ) },
+              scoring: { title: "Scoring", content: (
+                <>
+                  <KV k="CVSS v3" v={f.cvss_score} mono/>
+                  <KV k="CVSS Vector" v={<span className="font-mono text-[10px] break-all">{f.cvss_v3_vector}</span>} />
+                  <KV k="EPSS" v={f.epss_score ? (f.epss_score*100).toFixed(2)+"%" : "—"} mono/>
+                  <KV k="EPSS %ile" v={f.epss_percentile?.toFixed?.(1)} mono/>
+                </>
+              ) },
+              exploits: (f.exploit_references || []).length > 0 ? { title: "Public Exploits", testid: "public-exploits-section", content: (
+                <>
+                  <div className="border border-orange-500/30 bg-orange-500/5 rounded-md px-3 py-2 mb-3 text-[11.5px] text-orange-200 leading-relaxed">
+                    {f.exploit_references.length} public exploit{f.exploit_references.length === 1 ? "" : "s"} indexed for this CVE — a working
+                    proof-of-concept exists in the wild, which materially lowers the bar for exploitation.
+                  </div>
+                  <div className="space-y-2">
+                    {f.exploit_references.map((ex, i) => (
+                      <a key={ex.edb_id || i} href={ex.url} target="_blank" rel="noopener noreferrer"
+                        className="block border border-[#30363D] hover:border-orange-500/40 rounded-md px-3 py-2 transition-colors">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="text-[12px] text-slate-200 leading-snug">{ex.title || `Exploit-DB #${ex.edb_id}`}</div>
+                          {ex.verified ? (
+                            <span className="shrink-0 inline-flex items-center gap-1 text-[10px] text-emerald-400"><SealCheck size={12}/> Verified</span>
+                          ) : (
+                            <span className="shrink-0 inline-flex items-center gap-1 text-[10px] text-slate-500"><SealWarning size={12}/> Unverified</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                          {ex.edb_id && <Chip color="orange">EDB-{ex.edb_id}</Chip>}
+                          {ex.type && <Chip color="slate">{ex.type}</Chip>}
+                          {ex.platform && <Chip color="slate">{ex.platform}</Chip>}
+                          {ex.date_published && <span className="text-[10.5px] text-slate-500 font-mono">{ex.date_published}</span>}
+                        </div>
+                      </a>
+                    ))}
+                  </div>
+                </>
+              ) } : null,
+              asset: { title: "Asset", content: (
+                <>
+                  <Link to={`/assets/${f.asset_id}`} className="text-blue-300 hover:underline font-mono text-[12.5px]">{f.asset_hostname}</Link>
+                  <KV k="IP" v={f.asset_ip} mono/>
+                  <KV k="Criticality" v={f.asset_criticality}/>
+                  <KV k="Exposure" v={f.asset_exposure}/>
+                  <KV k="Environment" v={f.asset_environment}/>
+                  <KV k="Owner Team" v={f.owner_team}/>
+                  <KV k="Ownership Confidence" v={f.ownership_confidence != null ? `${(f.ownership_confidence*100).toFixed(0)}%` : "—"} mono/>
+                </>
+              ) },
+              sla: { title: "SLA / Lifecycle", content: (
+                <>
+                  <KV k="First Seen" v={fmtDate(f.first_seen_at)} mono/>
+                  <KV k="Last Seen" v={fmtDate(f.last_seen_at)} mono/>
+                  <KV k="Due" v={<span className={isOverdue(f.due_at) ? "text-red-300" : "text-slate-200"}>{fmtDate(f.due_at)}</span>} mono/>
+                  <KV k="SLA (days)" v={f.sla_days} mono/>
+                  <KV k="Days Open" v={f.days_open} mono/>
+                </>
+              ) },
+              source: { title: "Source & Detection", content: (
+                <>
+                  <KV k="Source Tool" v={f.source_tool}/>
+                  <KV k="Tool Type" v={f.source_tool_type}/>
+                  <KV k="Scan Method" v={f.scan_method}/>
+                  <KV k="Auth" v={f.scan_authenticated ? "Authenticated" : "Unauth"}/>
+                  <KV k="Channel" v={f.detection_channel}/>
+                  <KV k="Parser" v={`${f.parser_type || "—"} v${f.parser_version || "—"}`}/>
+                </>
+              ) },
+              tickets: { title: "Tickets", content: (
+                <>
+                  {tickets.length === 0 && <div className="text-[12px] text-slate-500">No linked tickets.</div>}
+                  {tickets.map(t => (
+                    <a key={t.id} href={t.url} target="_blank" rel="noopener noreferrer"
+                      className="flex justify-between gap-2 py-1.5 border-b border-[#30363D]/40 last:border-0 hover:text-blue-300">
+                      <span className="font-mono text-[12px] text-blue-300">{t.external_id}</span>
+                      <span className="text-[11px] text-slate-500">{t.system} · {t.status}</span>
+                    </a>
+                  ))}
+                </>
+              ) },
+              references: { title: "References", content: (
+                <>
+                  {(f.advisory_links || []).map((l, i) => {
+                    const url = typeof l === "string" ? l : l?.url;
+                    const label = typeof l === "string" ? l : (l?.source || l?.url || "Reference");
+                    return url ? <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="block text-[12px] text-blue-300 hover:underline truncate">{label}</a> : null;
+                  })}
+                  {(f.external_references || []).slice(0, 12).map((r, i) => {
+                    const url = Array.isArray(r) ? r[0] : (r?.url || (typeof r === "string" ? r : null));
+                    const label = Array.isArray(r) ? (r[1] || r[0]) : (r?.source || r?.url || "Ref");
+                    return url ? <a key={`e-${i}`} href={url} target="_blank" rel="noopener noreferrer" className="block text-[12px] text-slate-400 hover:text-blue-300 hover:underline truncate">{label}</a> : null;
+                  })}
+                </>
+              ) },
+            };
 
-          <Section title="Asset">
-            <Link to={`/assets/${f.asset_id}`} className="text-blue-300 hover:underline font-mono text-[12.5px]">{f.asset_hostname}</Link>
-            <KV k="IP" v={f.asset_ip} mono/>
-            <KV k="Criticality" v={f.asset_criticality}/>
-            <KV k="Exposure" v={f.asset_exposure}/>
-            <KV k="Environment" v={f.asset_environment}/>
-            <KV k="Owner Team" v={f.owner_team}/>
-            <KV k="Ownership Confidence" v={f.ownership_confidence != null ? `${(f.ownership_confidence*100).toFixed(0)}%` : "—"} mono/>
-          </Section>
-
-          <Section title="SLA / Lifecycle">
-            <KV k="First Seen" v={fmtDate(f.first_seen_at)} mono/>
-            <KV k="Last Seen" v={fmtDate(f.last_seen_at)} mono/>
-            <KV k="Due" v={<span className={isOverdue(f.due_at) ? "text-red-300" : "text-slate-200"}>{fmtDate(f.due_at)}</span>} mono/>
-            <KV k="SLA (days)" v={f.sla_days} mono/>
-            <KV k="Days Open" v={f.days_open} mono/>
-          </Section>
-
-          <Section title="Source & Detection">
-            <KV k="Source Tool" v={f.source_tool}/>
-            <KV k="Tool Type" v={f.source_tool_type}/>
-            <KV k="Scan Method" v={f.scan_method}/>
-            <KV k="Auth" v={f.scan_authenticated ? "Authenticated" : "Unauth"}/>
-            <KV k="Channel" v={f.detection_channel}/>
-            <KV k="Parser" v={`${f.parser_type || "—"} v${f.parser_version || "—"}`}/>
-          </Section>
-
-          <Section title="Tickets">
-            {tickets.length === 0 && <div className="text-[12px] text-slate-500">No linked tickets.</div>}
-            {tickets.map(t => (
-              <a key={t.id} href={t.url} target="_blank" rel="noopener noreferrer"
-                className="flex justify-between gap-2 py-1.5 border-b border-[#30363D]/40 last:border-0 hover:text-blue-300">
-                <span className="font-mono text-[12px] text-blue-300">{t.external_id}</span>
-                <span className="text-[11px] text-slate-500">{t.system} · {t.status}</span>
-              </a>
-            ))}
-          </Section>
-
-          <Section title="References">
-            {(f.advisory_links || []).map((l, i) => {
-              const url = typeof l === "string" ? l : l?.url;
-              const label = typeof l === "string" ? l : (l?.source || l?.url || "Reference");
-              return url ? <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="block text-[12px] text-blue-300 hover:underline truncate">{label}</a> : null;
-            })}
-            {(f.external_references || []).slice(0, 12).map((r, i) => {
-              const url = Array.isArray(r) ? r[0] : (r?.url || (typeof r === "string" ? r : null));
-              const label = Array.isArray(r) ? (r[1] || r[0]) : (r?.source || r?.url || "Ref");
-              return url ? <a key={`e-${i}`} href={url} target="_blank" rel="noopener noreferrer" className="block text-[12px] text-slate-400 hover:text-blue-300 hover:underline truncate">{label}</a> : null;
-            })}
-          </Section>
+            return sidebarOrder.map(key => {
+              const sec = sidebarSections[key];
+              if (!sec) return null;
+              return (
+                <div key={key}
+                  draggable={customizingLayout}
+                  onDragStart={() => onTileDragStart(key)}
+                  onDragOver={(e) => customizingLayout && e.preventDefault()}
+                  onDrop={() => customizingLayout && onTileDrop(key)}
+                  className={customizingLayout ? "cursor-move" : undefined}
+                >
+                  <Section title={sec.title} testid={sec.testid}>
+                    {customizingLayout && (
+                      <div className="flex items-center gap-1.5 text-slate-600 mb-2 -mt-1 select-none">
+                        <DotsSixVertical size={14}/><span className="text-[10px] uppercase font-mono">Drag to reorder</span>
+                      </div>
+                    )}
+                    {sec.content}
+                  </Section>
+                </div>
+              );
+            });
+          })()}
         </div>
       </div>
       {showExceptionForm && (

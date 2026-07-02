@@ -382,13 +382,13 @@ async def check_exception_expirations(db) -> dict:
             continue
         f = await db.findings.find_one({"id": exc.get("finding_id")}, {"_id": 0})
         recipient = exc.get("contact_email") or exc.get("requested_by")
+        days_left = max(0, (datetime.fromisoformat(exc["expires_at"].replace("Z", "+00:00")) - datetime.now(timezone.utc)).days)
         try:
-            await dispatch("ticket_sla_warning", {
-                "severity": (f or {}).get("severity"),
-                "title": f"Risk acceptance expiring soon: {exc.get('finding_title') or (f or {}).get('title', exc.get('finding_id'))}",
-                "cve": (f or {}).get("cve") or "—", "asset": (f or {}).get("asset_hostname"),
-                "owner_team": (f or {}).get("owner_team"), "risk_score": (f or {}).get("risk_score"),
-                "due_at": exc["expires_at"][:19], "url": f"/exceptions/{exc['id']}",
+            await dispatch("exception_expiring", {
+                "title": exc.get("finding_title") or (f or {}).get("title", exc.get("finding_id")),
+                "asset": (f or {}).get("asset_hostname") or (exc.get("target_type") == "host" and exc.get("target_value")) or "—",
+                "approver": exc.get("approver") or "—", "expires_at": exc["expires_at"][:10],
+                "days_left": days_left, "url": f"/exceptions/{exc['id']}",
             }, db)
         except Exception:
             pass
