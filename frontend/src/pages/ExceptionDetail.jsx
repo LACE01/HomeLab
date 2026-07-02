@@ -8,7 +8,7 @@ import { Chip, SevBadge } from "@/components/Badges";
 import { fmtDate, fmtRel } from "@/lib/utils-fmt";
 import {
   ArrowLeft, CheckCircle, XCircle, ArrowClockwise, Clock, Ticket as TicketIcon,
-  User, EnvelopeSimple, ShieldCheck, X,
+  User, EnvelopeSimple, ShieldCheck, X, ChatCircle, Paperclip, Radioactive, TrendUp,
 } from "@phosphor-icons/react";
 
 const STATUS_COLOR = { pending_approval: "amber", active: "green", expired: "slate", rejected: "red", revoked: "red" };
@@ -194,11 +194,43 @@ export default function ExceptionDetail() {
   const [modal, setModal] = useState(null); // "approve" | "reject" | "renew" | "revoke"
   const canApprove = !!exc?.can_current_user_approve;
   const canRevoke = user?.role === "admin" || user?.role === "manager";
+  const [newNote, setNewNote] = useState("");
+  const [noteAttachments, setNoteAttachments] = useState([]);
+  const [signals, setSignals] = useState(null);
 
   const load = useCallback(() => {
     api.get(`/v1/exceptions/${id}`).then(r => setExc(r.data)).catch(() => setExc(false));
   }, [id]);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (exc && exc.status === "active") {
+      api.get(`/v1/exceptions/${id}/risk-signals`).then(r => setSignals(r.data)).catch(() => setSignals(null));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exc?.status, id]);
+
+  const handleNoteFiles = async (files) => {
+    const arr = Array.from(files || []);
+    const out = [...noteAttachments];
+    for (const file of arr) {
+      if (!file.type.startsWith("image/") && file.type !== "application/pdf") { toast.error(`${file.name}: only images/PDFs allowed`); continue; }
+      if (file.size > 1_000_000) { toast.error(`${file.name} > 1MB — skipped`); continue; }
+      const reader = new FileReader();
+      const data_url = await new Promise((res) => { reader.onload = () => res(reader.result); reader.readAsDataURL(file); });
+      out.push({ name: file.name, mime: file.type, data_url });
+    }
+    setNoteAttachments(out);
+  };
+  const addNote = async () => {
+    if (!newNote.trim() && noteAttachments.length === 0) return;
+    try {
+      await api.post(`/v1/exceptions/${id}/comments`, { text: newNote, attachments: noteAttachments });
+      setNewNote(""); setNoteAttachments([]);
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to add note");
+    }
+  };
 
   if (exc === false) return <Layout title="Risk Acceptance"><div className="text-slate-500 text-center py-10">Not found.</div></Layout>;
   if (!exc) return <Layout title="Risk Acceptance"><div className="text-slate-500 text-center py-10">Loading…</div></Layout>;
@@ -310,6 +342,55 @@ export default function ExceptionDetail() {
             </div>
           </div>
 
+          <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+            <div className="text-[13px] font-medium text-slate-100 mb-3">Notes / Updates</div>
+            <div className="space-y-2 mb-3">
+              {(exc.comments || []).length === 0 && <div className="text-[12px] text-slate-500">No notes yet.</div>}
+              {(exc.comments || []).map(c => (
+                <div key={c.id} className="border border-[#30363D] rounded p-2.5 bg-[#161B22]">
+                  <div className="text-[10.5px] font-mono text-slate-500">{c.author} · {fmtDate(c.created_at)}</div>
+                  {c.text && <div className="text-[12.5px] text-slate-200 mt-1 whitespace-pre-wrap">{c.text}</div>}
+                  {(c.attachments || []).length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {c.attachments.map((a, i) => a.mime?.startsWith("image/") ? (
+                        <a key={i} href={a.data_url} target="_blank" rel="noopener noreferrer" title={a.name}>
+                          <img src={a.data_url} alt={a.name} className="max-h-24 rounded border border-[#30363D] hover:border-blue-500/50"/>
+                        </a>
+                      ) : (
+                        <a key={i} href={a.data_url} download={a.name} className="text-[11.5px] text-blue-300 hover:underline">📎 {a.name}</a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            {noteAttachments.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                {noteAttachments.map((a, i) => (
+                  <div key={i} className="flex items-center gap-1.5 px-2 py-1 border border-[#30363D] rounded bg-[#161B22] text-[11px]">
+                    {a.mime?.startsWith("image/") && <img src={a.data_url} alt="" className="h-6 w-6 object-cover rounded"/>}
+                    <span className="text-slate-300 truncate max-w-[140px]">{a.name}</span>
+                    <button onClick={()=>setNoteAttachments(noteAttachments.filter((_,j)=>j!==i))} className="text-red-400 hover:text-red-300"><X size={12}/></button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <input value={newNote} onChange={e=>setNewNote(e.target.value)} placeholder="Add an update (vendor ETA, context, anything worth logging)…"
+                data-testid="exception-note-input"
+                className="flex-1 h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12.5px] text-slate-200"
+                onPaste={(e) => { const items = e.clipboardData?.items; if (items) { const files=[]; for (const it of items) if (it.kind==='file') { const f=it.getAsFile(); if (f) files.push(f); } if (files.length) handleNoteFiles(files); } }}
+              />
+              <label className="h-8 px-2.5 text-[12px] border border-[#30363D] hover:border-blue-500/50 rounded inline-flex items-center gap-1 cursor-pointer text-slate-300">
+                <Paperclip size={14}/>
+                <input type="file" multiple accept="image/*,application/pdf" className="hidden" onChange={(e)=>handleNoteFiles(e.target.files)}/>
+              </label>
+              <button data-testid="exception-note-add" onClick={addNote} className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded inline-flex items-center gap-1">
+                <ChatCircle size={14}/> Add
+              </button>
+            </div>
+          </div>
+
           {(exc.evidence_files || []).length > 0 && (
             <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
               <div className="text-[13px] font-medium text-slate-100 mb-2">Evidence</div>
@@ -357,6 +438,47 @@ export default function ExceptionDetail() {
               <Chip color={exc.ticket.status === "open" ? "amber" : exc.ticket.status === "reopened" ? "red" : "slate"}>{exc.ticket.status}</Chip>
             </div>
           )}
+          {exc.status === "active" && (
+            <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+              <div className="text-[13px] font-medium text-slate-100 mb-2 flex items-center gap-1.5"><Radioactive size={15}/> Threat Signals</div>
+              {!signals ? (
+                <div className="text-[12px] text-slate-500">Loading…</div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-2 mb-2">
+                    <div className={`border rounded px-2 py-1.5 text-[11px] ${signals.kev_flag ? "border-red-500/40 bg-red-500/10 text-red-300" : "border-[#30363D] text-slate-500"}`}>
+                      KEV listed: <span className="font-mono">{signals.kev_flag ? "Yes" : "No"}</span>
+                    </div>
+                    <div className={`border rounded px-2 py-1.5 text-[11px] ${signals.active_attacks ? "border-red-500/40 bg-red-500/10 text-red-300" : "border-[#30363D] text-slate-500"}`}>
+                      Active attacks: <span className="font-mono">{signals.active_attacks ? "Yes" : "No"}</span>
+                    </div>
+                    <div className={`border rounded px-2 py-1.5 text-[11px] ${signals.exploit_count > 0 ? "border-orange-500/40 bg-orange-500/10 text-orange-300" : "border-[#30363D] text-slate-500"}`}>
+                      Public exploits: <span className="font-mono">{signals.exploit_count}</span>
+                    </div>
+                    <div className={`border rounded px-2 py-1.5 text-[11px] ${signals.epss_threshold != null && signals.max_epss_score >= signals.epss_threshold ? "border-amber-500/40 bg-amber-500/10 text-amber-300" : "border-[#30363D] text-slate-500"}`}>
+                      EPSS: <span className="font-mono">{signals.max_epss_score != null ? `${(signals.max_epss_score * 100).toFixed(0)}%` : "—"}</span>
+                    </div>
+                  </div>
+                  {signals.epss_threshold != null && (
+                    <div className="text-[10.5px] text-slate-500 mb-2">Re-alert threshold: {(signals.epss_threshold * 100).toFixed(0)}% EPSS</div>
+                  )}
+                  {signals.opencti && signals.opencti.configured && (signals.opencti.threat_actors?.length || signals.opencti.malware?.length || signals.opencti.campaigns?.length) ? (
+                    <div className="mt-2 pt-2 border-t border-[#30363D]">
+                      <div className="text-[10px] uppercase font-mono text-slate-500 mb-1 flex items-center gap-1"><TrendUp size={11}/> OpenCTI enrichment ({signals.cve})</div>
+                      <div className="flex flex-wrap gap-1">
+                        {(signals.opencti.threat_actors || []).map(a => <Chip key={a} color="red">{a}</Chip>)}
+                        {(signals.opencti.malware || []).map(m => <Chip key={m} color="orange">{m}</Chip>)}
+                        {(signals.opencti.campaigns || []).map(c => <Chip key={c} color="purple">{c}</Chip>)}
+                      </div>
+                    </div>
+                  ) : signals.opencti && !signals.opencti.configured ? (
+                    <div className="text-[10.5px] text-slate-600 mt-2">OpenCTI not connected — configure it under Integrations for threat-actor/campaign enrichment.</div>
+                  ) : null}
+                </>
+              )}
+            </div>
+          )}
+
           <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
             <div className="text-[13px] font-medium text-slate-100 mb-2 flex items-center gap-1.5"><ShieldCheck size={15}/> Reminder</div>
             <div className="text-[12px] text-slate-400">

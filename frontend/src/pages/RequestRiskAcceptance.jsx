@@ -51,6 +51,7 @@ export default function RequestRiskAcceptance() {
   const [durationDays, setDurationDays] = useState(90);
   const [expiresAt, setExpiresAt] = useState("");
   const [reminderDays, setReminderDays] = useState(7);
+  const [epssThreshold, setEpssThreshold] = useState("");
   const [controls, setControls] = useState("");
   const [contactName, setContactName] = useState("");
   const [contactEmail, setContactEmail] = useState("");
@@ -130,6 +131,7 @@ export default function RequestRiskAcceptance() {
         reminder_days_before: Number(reminderDays) || 7,
         evidence_files: attachments,
       };
+      if (epssThreshold !== "") body.epss_threshold = Number(epssThreshold) / 100;
       if (durationMode === "custom") body.expires_at = new Date(expiresAt).toISOString();
       else body.duration_days = durationDays;
 
@@ -253,6 +255,15 @@ export default function RequestRiskAcceptance() {
             <Field label="Notify before expiry (days)" hint="The team gets a reminder this many days before the risk acceptance lapses and findings reopen.">
               <input type="number" min={1} max={90} value={reminderDays} onChange={e => setReminderDays(e.target.value)} data-testid="ra-reminder-days"
                 className="w-28 h-9 mt-1 px-2.5 bg-[#161B22] border border-[#30363D] rounded text-[12.5px] text-slate-200"/>
+            </Field>
+
+            <Field label="Re-alert if exploitation risk escalates (optional)" hint="If threat activity for this CVE gets worse while the acceptance is active — newly KEV-listed, a new public exploit, or EPSS crossing the threshold below — the team gets notified again to re-visit the decision.">
+              <div className="flex items-center gap-2 mt-1">
+                <input type="number" min={0} max={100} step={1} value={epssThreshold} onChange={e => setEpssThreshold(e.target.value)}
+                  placeholder="e.g. 50" data-testid="ra-epss-threshold"
+                  className="w-28 h-9 px-2.5 bg-[#161B22] border border-[#30363D] rounded text-[12.5px] text-slate-200"/>
+                <span className="text-[11.5px] text-slate-500">% EPSS threshold (leave blank to only alert on KEV/new-exploit/active-attack signals)</span>
+              </div>
             </Field>
 
             <Field label="Compensating controls (comma-separated, optional)">

@@ -304,6 +304,7 @@ class ExceptionCreate(BaseModel):
     contact_email: str = ""
     reminder_days_before: int = 7
     evidence_files: List[dict] = []  # [{name, mime, data_url}] -- small images/PDFs only
+    epss_threshold: Optional[float] = None  # 0-1; re-notify if EPSS crosses this while active
 
 
 @router.post("/v1/exceptions")
@@ -343,6 +344,7 @@ async def request_exception(body: ExceptionCreate, user: dict = Depends(get_curr
         "status": "pending_approval", "reminder_sent": False, "ticket_id": None,
         "tier": tier, "approval_chain": approval_chain,
         "revoked_at": None, "revoked_by": None, "revocation_reason": None,
+        "epss_threshold": body.epss_threshold, "last_risk_signals": None,
     }
     await db.exceptions.insert_one(exc)
     scope = primary.get("title") if len(finding_ids) == 1 else f"{len(finding_ids)} findings ({body.target_type}={body.target_value})"
@@ -537,6 +539,33 @@ async def request_renewal(exception_id: str, body: RenewBody, user: dict = Depen
     return {"ok": True}
 
 
+class ExceptionCommentBody(BaseModel):
+    text: str
+    attachments: Optional[List[dict]] = None
+
+
+@router.get("/v1/exceptions/{exception_id}/comments")
+async def list_exception_comments(exception_id: str, user: dict = Depends(get_current_user)):
+    items = await db.comments.find({"exception_id": exception_id}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return {"items": items}
+
+
+@router.post("/v1/exceptions/{exception_id}/comments")
+async def add_exception_comment(exception_id: str, body: ExceptionCommentBody, user: dict = Depends(get_current_user)):
+    """Free-form notes/updates over the life of a risk acceptance -- separate from the
+    approve/reject/renew/revoke audit trail, for context that doesn't map to a formal
+    state transition (a link to a vendor patch ETA, a heads-up from another team, etc.)."""
+    exc = await db.exceptions.find_one({"id": exception_id}, {"_id": 0})
+    if not exc:
+        raise HTTPException(404, "Exception not found")
+    _validate_evidence_files(body.attachments or [])
+    c = {"id": str(uuid.uuid4()), "exception_id": exception_id, "author": user["email"],
+         "text": body.text, "attachments": body.attachments or [], "created_at": now_iso()}
+    await db.comments.insert_one(c)
+    await _log_exception_event(db, exc, "note_added", user["email"], f"Note added: {body.text[:140]}")
+    return _clean(c)
+
+
 @router.get("/v1/exceptions/{exception_id}")
 async def get_exception(exception_id: str, user: dict = Depends(get_current_user)):
     exc = await db.exceptions.find_one({"id": exception_id}, {"_id": 0})
@@ -559,10 +588,96 @@ async def get_exception(exception_id: str, user: dict = Depends(get_current_user
     current_step = _current_pending_step(approval_chain) if exc.get("status") == "pending_approval" else None
     can_act = bool(current_step) and _user_authorized_for_step(user, current_step)
 
-    return {**exc, "findings": findings, "ticket": ticket, "timeline": timeline,
+    comments = await db.comments.find({"exception_id": exception_id}, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+    return {**exc, "findings": findings, "ticket": ticket, "timeline": timeline, "comments": comments,
             "approval_chain": approval_chain,
             "awaiting_step_label": _step_label(current_step) if current_step else None,
             "can_current_user_approve": can_act}
+
+
+def _compute_risk_signals(findings: list) -> dict:
+    """Current-state threat signals for the finding(s) an exception covers -- reuses
+    data this app already syncs nightly (KEV, EPSS, Exploit-DB, active-attack
+    tagging) rather than standing up a separate feed just for this panel."""
+    epss_scores = [f.get("epss_score") for f in findings if f.get("epss_score") is not None]
+    return {
+        "kev_flag": any(f.get("kev_flag") for f in findings),
+        "max_epss_score": max(epss_scores) if epss_scores else None,
+        "exploit_count": sum(len(f.get("exploit_references") or []) for f in findings),
+        "active_attacks": any("active_attacks" in (f.get("rti") or []) for f in findings),
+    }
+
+
+@router.get("/v1/exceptions/{exception_id}/risk-signals")
+async def exception_risk_signals(exception_id: str, user: dict = Depends(get_current_user)):
+    exc = await db.exceptions.find_one({"id": exception_id}, {"_id": 0})
+    if not exc:
+        raise HTTPException(404, "Exception not found")
+    fids = [f for f in (exc.get("finding_ids") or [exc.get("finding_id")]) if f]
+    findings = await db.findings.find({"id": {"$in": fids}}, {"_id": 0}).to_list(500)
+    signals = _compute_risk_signals(findings)
+
+    cve = next((f.get("cve") for f in findings if f.get("id") == exc.get("finding_id") and f.get("cve")), None) \
+        or next((f.get("cve") for f in findings if f.get("cve")), None)
+    opencti = None
+    if cve:
+        try:
+            from routes.findings import threat_intel_for_cve
+            opencti = await threat_intel_for_cve(cve, user=user)
+        except Exception:
+            opencti = None
+
+    return {**signals, "cve": cve, "opencti": opencti,
+            "epss_threshold": exc.get("epss_threshold"), "last_checked_signals": exc.get("last_risk_signals")}
+
+
+async def check_exception_risk_escalations(db) -> dict:
+    """Called from the nightly loop: for every active exception, compare current
+    threat signals against what was last observed. If exploitation activity has
+    clearly gotten worse since approval (newly KEV-listed, a new public exploit,
+    active-attack tagging appears, or EPSS crosses the requester's own threshold),
+    notify and log it on the timeline so someone re-visits the decision -- without
+    auto-revoking it; that stays a deliberate human action."""
+    from notifier import dispatch
+    escalated = 0
+    async for exc in db.exceptions.find({"status": "active"}, {"_id": 0}):
+        fids = [f for f in (exc.get("finding_ids") or [exc.get("finding_id")]) if f]
+        if not fids:
+            continue
+        findings = await db.findings.find({"id": {"$in": fids}}, {"_id": 0}).to_list(500)
+        if not findings:
+            continue
+        signals = _compute_risk_signals(findings)
+        prev = exc.get("last_risk_signals") or {}
+        threshold = exc.get("epss_threshold")
+
+        reasons = []
+        if signals["kev_flag"] and not prev.get("kev_flag"):
+            reasons.append("now listed in CISA KEV (actively exploited in the wild)")
+        if signals["exploit_count"] > (prev.get("exploit_count") or 0):
+            reasons.append(f"{signals['exploit_count']} public exploit(s) now indexed (was {prev.get('exploit_count') or 0})")
+        if signals["active_attacks"] and not prev.get("active_attacks"):
+            reasons.append("now flagged under active attack campaign tracking")
+        if (threshold is not None and signals["max_epss_score"] is not None
+                and signals["max_epss_score"] >= threshold and (prev.get("max_epss_score") or 0) < threshold):
+            reasons.append(f"EPSS crossed your {threshold:.0%} threshold (now {signals['max_epss_score']:.0%})")
+
+        await db.exceptions.update_one({"id": exc["id"]}, {"$set": {"last_risk_signals": signals}})
+        if not reasons:
+            continue
+        reason_text = "; ".join(reasons)
+        await _log_exception_event(db, exc, "risk_escalated", "system", f"Threat signal escalation: {reason_text}")
+        try:
+            await dispatch("exception_risk_escalated", {
+                "title": exc.get("finding_title") or exc.get("finding_id"),
+                "escalation_reason": reason_text, "expires_at": (exc.get("expires_at") or "")[:10],
+                "url": f"/exceptions/{exc['id']}",
+            }, db)
+        except Exception:
+            pass
+        escalated += 1
+    return {"escalated": escalated}
 
 
 async def check_exception_expirations(db) -> dict:

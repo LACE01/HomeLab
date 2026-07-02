@@ -423,6 +423,14 @@ async def nightly_loop(db, interval_hours: int = 24):
             logger.exception(f"Exception expiration check failed: {e}")
             ok, detail["exceptions_error"] = False, str(e)
         try:
+            from routes.workflows import check_exception_risk_escalations
+            escalation_result = await check_exception_risk_escalations(db)
+            logger.info(f"Exception risk escalations: {escalation_result}")
+            detail["exception_risk_escalations"] = escalation_result
+        except Exception as e:
+            logger.exception(f"Exception risk escalation check failed: {e}")
+            ok, detail["exception_risk_escalations_error"] = False, str(e)
+        try:
             from routes.automation import run_all_automation_rules
             auto_result = await run_all_automation_rules(db)
             logger.info(f"Automation sweep: {auto_result}")
