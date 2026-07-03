@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, LineChart, Line } from "recharts";
+import { ArrowLeft, CaretUp, CaretDown } from "@phosphor-icons/react";
 
 const Stat = ({ label, value, suffix, onClick, tone }) => {
   const tones = { red: "text-red-300", orange: "text-orange-300", amber: "text-amber-300", slate: "text-slate-100" };
@@ -23,10 +24,22 @@ const Panel = ({ title, children }) => (
 );
 
 export default function Operational() {
+  const [searchParams] = useSearchParams();
+  const initialTeam = searchParams.get("team") || "";
   const [d, setD] = useState(null);
-  const [team, setTeam] = useState("");
+  const [team, setTeam] = useState(initialTeam);
+  const [view, setView] = useState(initialTeam ? "team" : "leaderboard"); // "leaderboard" | "team"
   const navigate = useNavigate();
-  useEffect(() => { api.get("/v1/dashboards/operational", { params: team ? {team} : {} }).then(r => setD(r.data)); }, [team]);
+  useEffect(() => {
+    if (view !== "team") return;
+    api.get("/v1/dashboards/operational", { params: team ? {team} : {} }).then(r => setD(r.data));
+  }, [team, view]);
+
+  const openTeam = (teamName) => { setTeam(teamName || ""); setView("team"); };
+
+  if (view === "leaderboard") {
+    return <TeamsLeaderboard onOpenTeam={openTeam}/>;
+  }
   if (!d) return <Layout title="Operational Dashboard"><div className="text-slate-500">Loading…</div></Layout>;
 
   const agingData = Object.entries(d.aging_buckets).map(([k,v]) => ({bucket:k, count:v}));
@@ -42,8 +55,13 @@ export default function Operational() {
   return (
     <Layout title="Operational Dashboard" subtitle={`Aging, throughput, and team health — ${d.team_scope}`}
       actions={
-        <input placeholder="Scope: team name" data-testid="op-team-filter" value={team} onChange={(e)=>setTeam(e.target.value)}
-          className="h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] w-44"/>
+        <>
+          <button onClick={()=>setView("leaderboard")} className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] rounded inline-flex items-center gap-1.5 text-slate-300">
+            <ArrowLeft size={13}/> All teams
+          </button>
+          <input placeholder="Scope: team name" data-testid="op-team-filter" value={team} onChange={(e)=>setTeam(e.target.value)}
+            className="h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] w-44"/>
+        </>
       }>
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-3">
         <Stat label="Open Total" value={d.total_open} onClick={()=>link({})}/>
@@ -52,7 +70,9 @@ export default function Operational() {
         <Stat label="Active Attacks" value={d.active_attacks_open} tone="orange" onClick={()=>link({view:"active_attacks"})}/>
         <Stat label="Unassigned" value={d.unassigned_open} tone="amber" onClick={()=>link({view:"unassigned"})}/>
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
+      <div className="grid grid-cols-2 md:grid-cols-7 gap-3 mb-4">
+        <Stat label="SLA Compliance" value={d.sla_compliance ?? "—"} suffix={d.sla_compliance != null ? "%" : ""}
+          tone={d.sla_compliance == null ? "slate" : d.sla_compliance >= 85 ? "slate" : d.sla_compliance >= 60 ? "amber" : "red"}/>
         <Stat label="MTTR" value={d.mttr_days} suffix=" d"/>
         <Stat label="Reopen Rate" value={d.reopen_rate} suffix="%"/>
         <Stat label="Reopened Open" value={d.reopened_open} onClick={()=>link({view:"reopened"})}/>
@@ -127,6 +147,81 @@ export default function Operational() {
           </ResponsiveContainer>
         </div>
       </Panel>
+    </Layout>
+  );
+}
+
+
+function TeamsLeaderboard({ onOpenTeam }) {
+  const [items, setItems] = useState(null);
+  const [sortKey, setSortKey] = useState("overdue");
+  const [sortDir, setSortDir] = useState("desc");
+
+  useEffect(() => { api.get("/v1/dashboards/teams-leaderboard").then(r => setItems(r.data.items)); }, []);
+
+  if (!items) return <Layout title="Team Dashboards" subtitle="SLA health across every team"><div className="text-slate-500">Loading…</div></Layout>;
+
+  const sorted = [...items].sort((a, b) => {
+    const av = a[sortKey], bv = b[sortKey];
+    const an = av == null ? -1 : av, bn = bv == null ? -1 : bv;
+    return sortDir === "desc" ? bn - an : an - bn;
+  });
+
+  const toggleSort = (key) => {
+    if (sortKey === key) setSortDir(d => d === "desc" ? "asc" : "desc");
+    else { setSortKey(key); setSortDir("desc"); }
+  };
+
+  const Th = ({ label, k }) => (
+    <th className="text-right cursor-pointer select-none hover:text-slate-200" onClick={() => toggleSort(k)}>
+      <span className="inline-flex items-center gap-0.5">
+        {label} {sortKey === k && (sortDir === "desc" ? <CaretDown size={10}/> : <CaretUp size={10}/>)}
+      </span>
+    </th>
+  );
+
+  const slaTone = (v) => v == null ? "text-slate-500" : v >= 85 ? "text-emerald-300" : v >= 60 ? "text-amber-300" : "text-red-300";
+
+  return (
+    <Layout title="Team Dashboards" subtitle="SLA compliance, backlog, and exposure — one row per team, click through for the full drill-down">
+      <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">
+        <table className="dense w-full">
+          <thead>
+            <tr>
+              <th className="text-left">Team</th>
+              <Th label="SLA %" k="sla_compliance"/>
+              <Th label="Open" k="open"/>
+              <Th label="Overdue" k="overdue"/>
+              <Th label="Critical" k="critical_open"/>
+              <Th label="KEV" k="kev_open"/>
+              <Th label="MTTR (d)" k="mttr_days"/>
+              <Th label="Resolved (90d)" k="resolved_90d"/>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map(row => (
+              <tr key={row.team} onClick={() => onOpenTeam(row.team)}
+                className="border-t border-[#30363D] cursor-pointer hover:bg-slate-800/30">
+                <td className="text-slate-200 font-medium">{row.team}</td>
+                <td className={`text-right font-mono ${slaTone(row.sla_compliance)}`}>{row.sla_compliance != null ? `${row.sla_compliance}%` : "—"}</td>
+                <td className="text-right font-mono">{row.open}</td>
+                <td className={`text-right font-mono ${row.overdue > 0 ? "text-red-300" : ""}`}>{row.overdue}</td>
+                <td className={`text-right font-mono ${row.critical_open > 0 ? "text-red-300" : ""}`}>{row.critical_open}</td>
+                <td className={`text-right font-mono ${row.kev_open > 0 ? "text-red-300" : ""}`}>{row.kev_open}</td>
+                <td className="text-right font-mono">{row.mttr_days ?? "—"}</td>
+                <td className="text-right font-mono text-slate-500">{row.resolved_90d}</td>
+              </tr>
+            ))}
+            {sorted.length === 0 && (
+              <tr><td colSpan={8} className="text-center text-slate-500 py-8">No findings with an owner_team assigned yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div className="text-[11px] text-slate-500 mt-2">
+        SLA % is the share of each team's last-90-day resolutions that landed on or before their due date — same convention as the
+        org-wide score on the Executive dashboard, just scoped per team. Click any row for that team's full aging/throughput drill-down.
+      </div>
     </Layout>
   );
 }

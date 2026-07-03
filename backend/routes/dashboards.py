@@ -273,14 +273,87 @@ async def dashboard_operational(user: dict = Depends(get_current_user), team: Op
     critical_open = await db.findings.count_documents({**base_flt, "severity": "Critical", "status": {"$in": open_states}})
     unassigned_open = await db.findings.count_documents({**base_flt, "assigned_to": None, "status": {"$in": open_states}})
 
+    # Same "fraction of resolutions that landed on time" convention as the org-wide
+    # score on the Executive tab (nightly.compute_org_snapshot), just scoped to this
+    # team so a per-team SLA dashboard actually has an SLA number on it.
+    from nightly import RESOLVED_STATES
+    sla_cutoff = (now_dt - timedelta(days=90)).isoformat()
+    resolved_90d = await db.findings.find(
+        {**base_flt, "status": {"$in": RESOLVED_STATES}, "last_changed_at": {"$gte": sla_cutoff}},
+        {"_id": 0, "due_at": 1, "last_changed_at": 1},
+    ).to_list(20000)
+    if resolved_90d:
+        on_time = sum(1 for f in resolved_90d if f.get("due_at") and f.get("last_changed_at") and f["last_changed_at"] <= f["due_at"])
+        sla_compliance = round((on_time / len(resolved_90d)) * 100, 1)
+    else:
+        sla_compliance = None
+
     return {
         "total_open": total_open, "aging_buckets": buckets,
         "by_assignee": [{"assignee": k, "count": v} for k, v in sorted(by_assignee.items(), key=lambda x: -x[1])][:15],
         "overdue_by_severity": overdue_by_sev,
         "throughput": throughput, "mttr_days": mttr, "reopen_rate": reopen_rate,
         "scan_coverage_pct": coverage, "reopened_open": reopened_total,
-        "active_exceptions": await db.exceptions.count_documents({"status": "active"}),
+        "active_exceptions": await db.exceptions.count_documents({**base_flt, "status": "active"} if team else {"status": "active"}),
         "kev_open": kev_open, "active_attacks_open": active_attacks_open,
         "critical_open": critical_open, "unassigned_open": unassigned_open,
+        "sla_compliance": sla_compliance, "sla_resolved_sample": len(resolved_90d),
         "team_scope": team or "All teams",
     }
+
+
+@router.get("/v1/dashboards/teams-leaderboard")
+async def dashboards_teams_leaderboard(user: dict = Depends(get_current_user)):
+    """Side-by-side SLA health for every team, so a manager/exec can see who's
+    falling behind without clicking into each team's dashboard one at a time. Each
+    team's own drill-down (GET /v1/dashboards/operational?team=X, the existing
+    per-team dashboard) is one click away from any row here."""
+    from nightly import OPEN_STATES, RESOLVED_STATES
+    teams: dict = {}
+
+    def _row(team_name):
+        return teams.setdefault(team_name, {
+            "team": team_name, "open": 0, "overdue": 0, "critical_open": 0, "kev_open": 0,
+            "_resolved_90d": 0, "_on_time_90d": 0, "_ttr_sum": 0.0, "_ttr_n": 0,
+        })
+
+    now = now_iso()
+    async for f in db.findings.find({"status": {"$in": OPEN_STATES}},
+                                    {"_id": 0, "owner_team": 1, "due_at": 1, "severity": 1, "kev_flag": 1}):
+        row = _row(f.get("owner_team") or "Unassigned")
+        row["open"] += 1
+        if f.get("due_at") and f["due_at"] < now:
+            row["overdue"] += 1
+        if (f.get("severity") or "").lower() == "critical":
+            row["critical_open"] += 1
+        if f.get("kev_flag"):
+            row["kev_open"] += 1
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    async for f in db.findings.find(
+        {"status": {"$in": RESOLVED_STATES}, "last_changed_at": {"$gte": cutoff}},
+        {"_id": 0, "owner_team": 1, "due_at": 1, "last_changed_at": 1, "first_seen_at": 1},
+    ):
+        row = _row(f.get("owner_team") or "Unassigned")
+        row["_resolved_90d"] += 1
+        if f.get("due_at") and f.get("last_changed_at") and f["last_changed_at"] <= f["due_at"]:
+            row["_on_time_90d"] += 1
+        try:
+            fs = datetime.fromisoformat((f.get("first_seen_at") or "").replace("Z", "+00:00"))
+            lc = datetime.fromisoformat((f.get("last_changed_at") or "").replace("Z", "+00:00"))
+            row["_ttr_sum"] += max(0, (lc - fs).total_seconds() / 86400)
+            row["_ttr_n"] += 1
+        except Exception:
+            pass
+
+    items = []
+    for team_name, row in teams.items():
+        sla = round((row["_on_time_90d"] / row["_resolved_90d"]) * 100, 1) if row["_resolved_90d"] else None
+        mttr = round(row["_ttr_sum"] / row["_ttr_n"], 1) if row["_ttr_n"] else None
+        items.append({
+            "team": team_name, "open": row["open"], "overdue": row["overdue"],
+            "critical_open": row["critical_open"], "kev_open": row["kev_open"],
+            "sla_compliance": sla, "mttr_days": mttr, "resolved_90d": row["_resolved_90d"],
+        })
+    items.sort(key=lambda x: (-x["overdue"], -x["critical_open"], -x["open"]))
+    return {"items": items}

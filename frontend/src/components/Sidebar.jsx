@@ -47,7 +47,7 @@ export default function Sidebar() {
       <nav className="flex-1 overflow-y-auto py-3 px-2">
         <Group title="Operations">
           <NavItem to="/" icon={ChartLineUp} label="Dashboard" testid="nav-dashboard" />
-          <NavItem to="/operational" icon={Lightning} label="Operational" testid="nav-operational" />
+          <NavItem to="/operational" icon={Lightning} label="Team Dashboards" testid="nav-operational" />
           <NavItem to="/findings" icon={ListChecks} label="Findings" testid="nav-findings" />
           <NavItem to="/attack-paths" icon={ShareNetwork} label="Attack Paths" testid="nav-attack-paths" />
           <NavItem to="/exposure" icon={Globe} label="Exposure" testid="nav-exposure" />
