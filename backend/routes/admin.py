@@ -49,6 +49,7 @@ async def create_user(body: UserCreate, user: dict = Depends(require_role("admin
 
 class UserUpdate(BaseModel):
     name: Optional[str] = None
+    email: Optional[EmailStr] = None
     team: Optional[str] = None
     department: Optional[str] = None
     role: Optional[str] = None
@@ -58,10 +59,21 @@ class UserUpdate(BaseModel):
 
 @router.patch("/v1/admin/users/{user_id}")
 async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(require_role("admin"))):
+    existing = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "User not found")
+
     update = {}
     for k, v in body.model_dump(exclude_none=True).items():
         if k == "password":
             update["password_hash"] = hash_password(v)
+        elif k == "email":
+            new_email = v.lower()
+            if new_email != existing["email"]:
+                dupe = await db.users.find_one({"email": new_email, "id": {"$ne": user_id}})
+                if dupe:
+                    raise HTTPException(409, "Email already in use by another user")
+                update["email"] = new_email
         else:
             update[k] = v
     if not update:
@@ -69,6 +81,18 @@ async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(requi
     res = await db.users.update_one({"id": user_id}, {"$set": update})
     if res.matched_count == 0:
         raise HTTPException(404, "User not found")
+
+    # Keep any 'specific person' approval-route steps pointing at this user's old
+    # address in sync, so renaming an approver's email doesn't silently break routing.
+    if "email" in update and existing["email"] != update["email"]:
+        async for route in db.approval_routes.find({"chain.approver_email": existing["email"]}):
+            changed = False
+            for step in route.get("chain", []):
+                if step.get("approver_email") == existing["email"]:
+                    step["approver_email"] = update["email"]
+                    changed = True
+            if changed:
+                await db.approval_routes.update_one({"tier": route["tier"]}, {"$set": {"chain": route["chain"]}})
     return {"ok": True}
 
 

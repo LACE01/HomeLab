@@ -181,7 +181,7 @@ export default function ApprovalRouting() {
       <div style={{ height: 4 * ROW_H + 40 }} className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">
         {tiers && (
           <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView proOptions={{ hideAttribution: true }}
-            nodesDraggable={false} nodesConnectable={false} elementsSelectable={false}>
+            nodesDraggable={false} nodesConnectable={false} elementsSelectable={false} onNodeClick={() => {}}>
             <Background color="#30363D" gap={20} />
             <Controls showInteractive={false} />
           </ReactFlow>

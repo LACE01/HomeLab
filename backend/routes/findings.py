@@ -207,6 +207,62 @@ async def cwe_prevalence(user: dict = Depends(get_current_user)):
 
 
 # --------------------------- THREAT INTEL (OpenCTI) ---------------------------
+async def opencti_ping(cfg: dict) -> dict:
+    """Lightweight live connectivity check against OpenCTI's GraphQL endpoint, sharing
+    the same Cloudflare Access redirect-detection as threat_intel_for_cve below so
+    "Test Connection" on the Integrations page tells the truth instead of just
+    confirming the endpoint/api_key fields are non-empty. Returns {"ok": bool, "message": str}."""
+    import httpx
+    endpoint = cfg.get("endpoint")
+    api_key = cfg.get("api_key")
+    if not endpoint or not api_key:
+        return {"ok": False, "message": "Missing endpoint or api_key."}
+    cf_client_id = cfg.get("cf_access_client_id")
+    cf_client_secret = cfg.get("cf_access_client_secret")
+    cf_headers_sent = bool(cf_client_id) and bool(cf_client_secret)
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    if cf_client_id:
+        headers["CF-Access-Client-Id"] = cf_client_id
+    if cf_client_secret:
+        headers["CF-Access-Client-Secret"] = cf_client_secret
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=False) as c:
+            r = await c.post(endpoint.rstrip("/") + "/graphql", headers=headers,
+                              json={"query": "{ about { version } }"})
+        if r.status_code in (301, 302, 303, 307, 308):
+            loc = r.headers.get("location", "")
+            cf_login = "cloudflareaccess.com" in loc or "/cdn-cgi/access/login" in loc
+            if cf_login and cf_headers_sent:
+                id_hint = f"...{cf_client_id[-10:]}" if len(cf_client_id) > 10 else cf_client_id
+                return {"ok": False, "message": (
+                    f"Still redirecting to Cloudflare Access login even though a service token "
+                    f"(client ID ending '{id_hint}') was sent on this request -- this is a Cloudflare-side "
+                    "policy gap, not a VulnOps config issue. In CF Zero Trust → Access → Applications → "
+                    "your OpenCTI app → Policies, the policy needs an Include rule of type 'Service Auth' "
+                    "that selects this token. The token existing under Access → Service Auth alone isn't enough.")}
+            if cf_login:
+                return {"ok": False, "message": (
+                    "Redirecting to Cloudflare Access login, and no CF-Access service token is saved here -- "
+                    "add cf_access_client_id + cf_access_client_secret and Save, then test again.")}
+            return {"ok": False, "message": f"Unexpected redirect to {loc[:120]}"}
+        if r.status_code != 200:
+            return {"ok": False, "message": f"OpenCTI HTTP {r.status_code}: {r.text[:200]}"}
+        ctype = (r.headers.get("content-type") or "").lower()
+        if "application/json" not in ctype:
+            return {"ok": False, "message": f"OpenCTI returned non-JSON ({ctype or 'no content-type'}) -- endpoint may be wrong or still behind an interstitial page."}
+        data = r.json()
+        if data.get("errors"):
+            return {"ok": False, "message": f"OpenCTI GraphQL error: {data['errors'][0].get('message', data['errors'])}"}
+        version = (data.get("data") or {}).get("about", {}).get("version", "unknown")
+        return {"ok": True, "message": f"Connected — OpenCTI version {version}."}
+    except httpx.TimeoutException:
+        return {"ok": False, "message": "Connection timed out — check the endpoint URL and that the server is reachable from this host."}
+    except httpx.ConnectError as e:
+        return {"ok": False, "message": f"Could not connect: {e}"}
+    except Exception as e:
+        return {"ok": False, "message": f"Unexpected error: {e}"}
+
+
 @router.get("/v1/threat-intel/{cve}")
 async def threat_intel_for_cve(cve: str, user: dict = Depends(get_current_user)):
     integration = await db.integrations.find_one({"name": "OpenCTI"}, {"_id": 0})
@@ -390,10 +446,11 @@ async def attack_path_graph(cve: Optional[str] = None, finding_id: Optional[str]
 # --------------------------- PARAMETERIZED ROUTES (must come AFTER literal /v1/findings-groups etc) ---------------------------
 @router.get("/v1/findings/{finding_id}")
 async def get_finding(finding_id: str, user: dict = Depends(get_current_user)):
+    from mitre_mapping import apply_mitre_mapping
     f = await db.findings.find_one({"id": finding_id}, {"_id": 0})
     if not f:
         raise HTTPException(404, "Finding not found")
-    return f
+    return apply_mitre_mapping(f)
 
 
 @router.get("/v1/findings/{finding_id}/kri")

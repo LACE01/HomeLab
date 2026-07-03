@@ -15,7 +15,7 @@ export default function Users() {
   useEffect(() => { load(); }, []);
 
   const openNew = () => { setEditing("new"); setForm({email:"", name:"", role:"analyst", team:"", department:"", password:""}); };
-  const openEdit = (u) => { setEditing(u); setForm({name:u.name||"", role:u.role, team:u.team||"", department:u.department||"", active:u.active!==false, password:""}); };
+  const openEdit = (u) => { setEditing(u); setForm({email:u.email||"", name:u.name||"", role:u.role, team:u.team||"", department:u.department||"", active:u.active!==false, password:""}); };
   const close = () => setEditing(null);
 
   const save = async () => {
@@ -77,11 +77,10 @@ export default function Users() {
               <button onClick={close}><X size={16}/></button>
             </div>
             <div className="p-4 space-y-3">
-              {editing === "new" && (
-                <div><label className="text-[10px] uppercase font-mono text-slate-500">Email</label>
-                  <input data-testid="u-email" type="email" value={form.email||""} onChange={(e)=>setForm({...form, email:e.target.value})} className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px]"/>
-                </div>
-              )}
+              <div><label className="text-[10px] uppercase font-mono text-slate-500">Email</label>
+                <input data-testid="u-email" type="email" value={form.email||""} onChange={(e)=>setForm({...form, email:e.target.value})} className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px]"/>
+                {editing !== "new" && <div className="text-[10.5px] text-slate-500 mt-1">Changing this updates their login email and any approval-routing steps set to their address.</div>}
+              </div>
               <div><label className="text-[10px] uppercase font-mono text-slate-500">Name</label>
                 <input data-testid="u-name" value={form.name||""} onChange={(e)=>setForm({...form, name:e.target.value})} className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px]"/>
               </div>

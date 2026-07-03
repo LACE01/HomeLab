@@ -60,6 +60,11 @@ async def update_integration(integration_id: str, body: IntegrationConfig, user:
 
 @router.post("/v1/integrations/{integration_id}/test")
 async def test_integration(integration_id: str, user: dict = Depends(require_role("admin"))):
+    """Actually reaches out to the configured endpoint rather than just checking that
+    endpoint/api_key are non-empty -- a prior version of this rubber-stamped "healthy"
+    for any non-blank config, which could report a connector as working when it was
+    actually still failing (e.g. an OpenCTI instance stuck behind a Cloudflare Access
+    redirect)."""
     integration = await db.integrations.find_one({"id": integration_id})
     if not integration:
         raise HTTPException(404, "Integration not found")
@@ -67,10 +72,54 @@ async def test_integration(integration_id: str, user: dict = Depends(require_rol
     if not cfg.get("endpoint") or not cfg.get("api_key"):
         await db.integrations.update_one({"id": integration_id}, {"$set": {"status": "degraded", "sync_errors": (integration.get("sync_errors") or 0) + 1}})
         raise HTTPException(400, "Missing endpoint or api_key — configure the connector first")
-    await db.integrations.update_one({"id": integration_id}, {"$set": {
-        "status": "healthy", "last_sync_at": now_iso(), "sync_errors": 0,
-    }})
-    return {"ok": True, "message": f"Connection to {integration['name']} verified."}
+
+    if integration["name"] == "OpenCTI":
+        from routes.findings import opencti_ping
+        result = await opencti_ping(cfg)
+    else:
+        result = await _generic_reachability_check(cfg)
+
+    if result["ok"]:
+        await db.integrations.update_one({"id": integration_id}, {"$set": {
+            "status": "healthy", "last_sync_at": now_iso(), "sync_errors": 0,
+        }})
+        return {"ok": True, "message": result["message"]}
+    else:
+        await db.integrations.update_one({"id": integration_id}, {"$set": {
+            "status": "degraded", "sync_errors": (integration.get("sync_errors") or 0) + 1,
+        }})
+        raise HTTPException(502, result["message"])
+
+
+async def _generic_reachability_check(cfg: dict) -> dict:
+    """Best-effort live reachability probe for non-OpenCTI connectors: any HTTP
+    response (even 401/403 -- some APIs reject a bare GET but that still proves the
+    host is reachable) counts as reachable; connection failures do not. Detects a
+    Cloudflare Access login redirect the same way the OpenCTI check does, since any
+    connector could sit behind CF Access."""
+    import httpx
+    endpoint = cfg.get("endpoint")
+    headers = {}
+    if cfg.get("api_key"):
+        headers["Authorization"] = f"Bearer {cfg['api_key']}"
+    if cfg.get("cf_access_client_id"):
+        headers["CF-Access-Client-Id"] = cfg["cf_access_client_id"]
+    if cfg.get("cf_access_client_secret"):
+        headers["CF-Access-Client-Secret"] = cfg["cf_access_client_secret"]
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=False) as c:
+            r = await c.get(endpoint, headers=headers)
+        if r.status_code in (301, 302, 303, 307, 308):
+            loc = r.headers.get("location", "")
+            if "cloudflareaccess.com" in loc or "/cdn-cgi/access/login" in loc:
+                return {"ok": False, "message": "Redirecting to Cloudflare Access login — add a CF Access service token (and make sure it's attached to the Application's policy) or disable Access on this route."}
+        return {"ok": True, "message": f"Endpoint reachable (HTTP {r.status_code})."}
+    except httpx.TimeoutException:
+        return {"ok": False, "message": "Connection timed out — check the endpoint URL and that the server is reachable from this host."}
+    except httpx.ConnectError as e:
+        return {"ok": False, "message": f"Could not connect: {e}"}
+    except Exception as e:
+        return {"ok": False, "message": f"Unexpected error: {e}"}
 
 
 # --------------------------- IMPORT JOBS ---------------------------

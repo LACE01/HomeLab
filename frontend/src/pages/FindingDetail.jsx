@@ -283,6 +283,12 @@ export default function FindingDetail() {
           <Section title="MITRE ATT&CK Mapping">
             <KV k="Tactic" v={f.mitre_tactic} />
             <KV k="Technique" v={f.mitre_technique} />
+            {f.mitre_mapping_source === "heuristic" && (
+              <div className="text-[10.5px] text-slate-500 mt-1">Best-fit suggestion based on CWE class — not an authoritative source, verify for this specific finding.</div>
+            )}
+            {!f.mitre_tactic && !f.mitre_technique && (
+              <div className="text-[11.5px] text-slate-500">No mapping available — this finding has no CWE, or its CWE isn't in the current mapping table yet.</div>
+            )}
           </Section>
 
           <Section title="Risk Score Breakdown" testid="section-breakdown">
@@ -665,7 +671,10 @@ export default function FindingDetail() {
                     {comments.length === 0 && <div className="text-[12px] text-slate-500">No comments yet.</div>}
                     {comments.map(c => (
                       <div key={c.id} className="border border-[#30363D] rounded p-2.5 bg-[#161B22]">
-                        <div className="text-[10.5px] font-mono text-slate-500">{c.author} · {fmtDate(c.created_at)}</div>
+                        <div className="text-[10.5px] font-mono text-slate-500 flex items-center gap-1.5">
+                          {c.author} · {fmtDate(c.created_at)}
+                          {c.system && <span className="px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-300 text-[9.5px] font-sans">playbook</span>}
+                        </div>
                         {c.text && <div className="text-[12.5px] text-slate-200 mt-1 whitespace-pre-wrap">{c.text}</div>}
                         {(c.attachments || []).length > 0 && (
                           <div className="mt-2 flex flex-wrap gap-2">
@@ -790,13 +799,24 @@ export default function FindingDetail() {
               tickets: { title: "Tickets", content: (
                 <>
                   {tickets.length === 0 && <div className="text-[12px] text-slate-500">No linked tickets.</div>}
-                  {tickets.map(t => (
-                    <a key={t.id} href={t.url} target="_blank" rel="noopener noreferrer"
-                      className="flex justify-between gap-2 py-1.5 border-b border-[#30363D]/40 last:border-0 hover:text-blue-300">
-                      <span className="font-mono text-[12px] text-blue-300">{t.external_id}</span>
-                      <span className="text-[11px] text-slate-500">{t.system} · {t.status}</span>
-                    </a>
-                  ))}
+                  {tickets.map(t => {
+                    const notes = t.notes || [];
+                    const last = notes[notes.length - 1];
+                    return (
+                      <div key={t.id} className="py-1.5 border-b border-[#30363D]/40 last:border-0">
+                        <a href={t.url} target="_blank" rel="noopener noreferrer" className="flex justify-between gap-2 hover:text-blue-300">
+                          <span className="font-mono text-[12px] text-blue-300">{t.external_id}</span>
+                          <span className="text-[11px] text-slate-500">{t.system} · {t.status}</span>
+                        </a>
+                        {last && (
+                          <div className="text-[11px] text-slate-500 mt-1">
+                            Latest: <span className="text-slate-400 whitespace-pre-wrap">{last.text.split("\n")[0]}</span>
+                            {notes.length > 1 && <span className="text-slate-600"> (+{notes.length - 1} more)</span>}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </>
               ) },
               references: { title: "References", content: (

@@ -148,11 +148,27 @@ async def attach_playbook(finding_id: str, body: PlaybookAttachBody, user: dict 
     return {"ok": True}
 
 
+async def _add_ticket_note(db, ticket_id: str, text: str, actor: str) -> None:
+    """Appends a timestamped note onto an existing ticket's activity feed. Tickets in
+    this app are currently only spawned by the risk-acceptance workflow, but a finding
+    can also be reopened/re-worked while still pointing at that same ticket -- this
+    keeps whoever is watching the ticket (Jira/ServiceNow-side or internal) in the loop
+    on remediation progress without them having to come back into VulnOps to see it."""
+    note = {"id": str(uuid.uuid4()), "text": text, "author": actor, "at": now_iso()}
+    await db.tickets.update_one({"id": ticket_id}, {"$push": {"notes": note}, "$set": {"updated_at": now_iso()}})
+
+
 @router.put("/v1/findings/{finding_id}/playbook-progress")
 async def update_playbook_progress(finding_id: str, body: PlaybookProgressBody, user: dict = Depends(get_current_user)):
     """Persists which steps/validation checks are checked off for this finding's
     playbook, so it survives a page refresh instead of resetting every time (the flow
-    view used to keep this in local component state only)."""
+    view used to keep this in local component state only).
+
+    Every change is captured in three places so remediation work is never siloed
+    inside just the checklist widget: (1) the finding's own playbook_progress field,
+    (2) the finding's Notes/Updates thread (visible right on the vulnerability), and
+    (3) a note on any ticket already linked to this finding, so ticket-side reviewers
+    see the same audit trail."""
     f = await db.findings.find_one({"id": finding_id}, {"_id": 0})
     if not f:
         raise HTTPException(404, "Finding not found")
@@ -163,15 +179,45 @@ async def update_playbook_progress(finding_id: str, body: PlaybookProgressBody, 
     n_checks = len(pb.get("validation_checks") or [])
     steps_done = sorted({i for i in body.steps_done if 0 <= i < n_steps})
     validated_checks = sorted({i for i in body.validated_checks if 0 <= i < n_checks})
+
+    prior = f.get("playbook_progress") or {}
+    prior_steps = set(prior.get("steps_done") or []) if prior.get("playbook_id") == body.playbook_id else set()
+    prior_validated = bool(prior.get("validated")) if prior.get("playbook_id") == body.playbook_id else False
+
     progress = {
         "playbook_id": body.playbook_id, "steps_done": steps_done, "validated_checks": validated_checks,
         "validated": bool(body.validated), "updated_at": now_iso(), "updated_by": user["email"],
     }
     await db.findings.update_one({"id": finding_id}, {"$set": {"playbook_progress": progress}})
+
+    summary = f"Playbook '{pb['title']}': {len(steps_done)}/{n_steps} step(s) checked" + (", marked validated" if body.validated else "")
+    newly_done = sorted(set(steps_done) - prior_steps)
+    detail_lines = [summary]
+    for i in newly_done:
+        if i < len(pb.get("steps") or []):
+            detail_lines.append(f"  ✓ Step {i + 1}: {pb['steps'][i]}")
+    if body.validated and not prior_validated:
+        detail_lines.append("  ✓ Marked as validated")
+    full_note = "\n".join(detail_lines)
+
     await db.activity_log.insert_one({
         "id": str(uuid.uuid4()), "entity_type": "finding", "entity_id": finding_id,
         "action": "playbook_progress_updated", "actor": user["email"],
-        "details": f"{len(steps_done)}/{n_steps} step(s) checked" + (", marked validated" if body.validated else ""),
-        "timestamp": now_iso(),
+        "details": summary, "timestamp": now_iso(),
     })
+
+    # Surface the same update in the finding's own Notes/Updates thread -- this is what
+    # makes it "captured into the vulnerability" rather than only living in an
+    # internal log nobody reads.
+    await db.comments.insert_one({
+        "id": str(uuid.uuid4()), "finding_id": finding_id, "author": user["email"],
+        "text": full_note, "attachments": [], "created_at": now_iso(), "system": True,
+    })
+
+    # And if this finding is already tied to a ticket (e.g. an approved risk
+    # acceptance that got reopened and is now being actively remediated), keep that
+    # ticket's own audit trail in sync too, instead of the two silently diverging.
+    async for ticket in db.tickets.find({"finding_id": finding_id}, {"_id": 0}):
+        await _add_ticket_note(db, ticket["id"], full_note, user["email"])
+
     return progress

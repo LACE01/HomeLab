@@ -265,6 +265,7 @@ export default function PlaybookDetail() {
               nodesConnectable={false}
               elementsSelectable={false}
               zoomOnScroll={true}
+              onNodeClick={() => {}}
             >
               <Background color="#21262d" gap={18} />
               <Controls showInteractive={false} />
