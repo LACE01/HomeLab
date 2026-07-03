@@ -79,6 +79,15 @@ async def _ensure_user(db, now_iso_str: str):
     ])
 
 
+async def _ensure_criticality_defaults(db, now_iso_str: str):
+    if await db.criticality_rules.count_documents({}) == 0:
+        from criticality import _default_rules
+        await db.criticality_rules.insert_many(_default_rules(now_iso_str))
+    if await db.criticality_config.count_documents({}) == 0:
+        from criticality import DEFAULT_THRESHOLDS
+        await db.criticality_config.insert_one({"thresholds": DEFAULT_THRESHOLDS, "created_at": now_iso_str})
+
+
 async def _ensure_assignment_rules(db, now_iso_str: str):
     if await db.assignment_rules.count_documents({}) > 0:
         return
@@ -528,6 +537,7 @@ async def seed_all(db):
     await _ensure_yara_rules(db, now_iso_str)
     await _ensure_products(db, now_iso_str)
     await _ensure_playbooks(db, now_iso_str)
+    await _ensure_criticality_defaults(db, now_iso_str)
 
 
 async def wipe_demo_data(db) -> dict:

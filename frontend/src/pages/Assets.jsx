@@ -4,7 +4,7 @@ import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtDate, fmtRel, isOverdue } from "@/lib/utils-fmt";
-import { MagnifyingGlass, ArrowLeft, Stack, CaretLeft, CaretRight } from "@phosphor-icons/react";
+import { MagnifyingGlass, ArrowLeft, Stack, CaretLeft, CaretRight, LockKey, LockKeyOpen, Info } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const PAGE_SIZE = 50;
@@ -155,6 +155,9 @@ export function AssetDetail() {
   const [products, setProducts] = useState([]);
   const [savingProduct, setSavingProduct] = useState(false);
   const [patchGroups, setPatchGroups] = useState([]);
+  const [editingCrit, setEditingCrit] = useState(false);
+  const [critChoice, setCritChoice] = useState("medium");
+  const [savingCrit, setSavingCrit] = useState(false);
 
   useEffect(() => {
     api.get(`/v1/assets/${id}`).then(r => setA(r.data));
@@ -163,6 +166,31 @@ export function AssetDetail() {
     api.get("/v1/products").then(r => setProducts(r.data.items));
     api.get(`/v1/assets/${id}/patch-groups`).then(r => setPatchGroups(r.data.groups.filter(g => g.count > 1)));
   }, [id]);
+
+  const setManualCriticality = async () => {
+    setSavingCrit(true);
+    try {
+      await api.patch(`/v1/assets/${id}/criticality`, { criticality: critChoice });
+      const r = await api.get(`/v1/assets/${id}`);
+      setA(r.data);
+      setEditingCrit(false);
+      toast.success("Criticality set and locked — auto-scoring won't override it until you unlock.");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to update criticality");
+    } finally { setSavingCrit(false); }
+  };
+
+  const unlockCriticality = async () => {
+    setSavingCrit(true);
+    try {
+      await api.patch(`/v1/assets/${id}/criticality`, { locked: false });
+      const r = await api.get(`/v1/assets/${id}`);
+      setA(r.data);
+      toast.success("Unlocked — resumed auto-scoring from detected ports/services/exposure.");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to unlock");
+    } finally { setSavingCrit(false); }
+  };
 
   const changeProduct = async (e) => {
     const product_id = e.target.value || null;
@@ -206,8 +234,35 @@ export function AssetDetail() {
           <div className="mt-3 flex flex-wrap gap-1">{(a.tags||[]).map(t => <Chip key={t}>{t}</Chip>)}</div>
         </div>
         <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
-          <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500">Criticality</div>
-          <div className="mt-2"><Chip color={a.criticality === "crown_jewel" ? "red" : "orange"}>{a.criticality}</Chip></div>
+          <div className="flex items-center justify-between">
+            <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500">Criticality</div>
+            {a.criticality_locked
+              ? <button onClick={unlockCriticality} disabled={savingCrit} title="Unlock to resume auto-scoring"
+                  className="text-slate-500 hover:text-emerald-300 disabled:opacity-50"><LockKey size={13}/></button>
+              : <button onClick={()=>{ setCritChoice(a.criticality || "medium"); setEditingCrit(true); }} title="Manually override"
+                  className="text-slate-500 hover:text-blue-300"><LockKeyOpen size={13}/></button>}
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <Chip color={a.criticality === "crown_jewel" ? "red" : a.criticality === "critical" ? "orange" : a.criticality === "high" ? "amber" : "slate"}>{a.criticality}</Chip>
+            {a.criticality_score != null && !a.criticality_locked && <span className="text-[10.5px] font-mono text-slate-500">score: {a.criticality_score}</span>}
+            {a.criticality_locked && <span className="text-[10.5px] text-slate-500">manually locked</span>}
+          </div>
+          {editingCrit && (
+            <div className="mt-2 flex items-center gap-1.5">
+              <select value={critChoice} onChange={e=>setCritChoice(e.target.value)}
+                className="h-7 bg-[#161B22] border border-[#30363D] rounded px-1.5 text-[11.5px] text-slate-200">
+                {["crown_jewel","critical","high","medium","low"].map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+              <button onClick={setManualCriticality} disabled={savingCrit} className="h-7 px-2 text-[11px] bg-blue-500 hover:bg-blue-400 text-white rounded disabled:opacity-50">Set</button>
+              <button onClick={()=>setEditingCrit(false)} className="h-7 px-2 text-[11px] border border-[#30363D] rounded text-slate-300">Cancel</button>
+            </div>
+          )}
+          {!a.criticality_locked && a.criticality_rationale?.length > 0 && (
+            <div className="mt-2 text-[10.5px] text-slate-500 leading-relaxed flex items-start gap-1">
+              <Info size={11} className="shrink-0 mt-0.5"/>
+              <span>{a.criticality_rationale.map(r => r.name).join("; ")}</span>
+            </div>
+          )}
           <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500 mt-3">Exposure</div>
           <div className="mt-2"><Chip color={a.exposure === "internet" ? "orange" : "slate"}>{a.exposure}</Chip></div>
         </div>

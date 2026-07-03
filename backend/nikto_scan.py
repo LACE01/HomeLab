@@ -156,6 +156,8 @@ async def _dedup_finding(db, asset_id: str, canonical_key: str) -> bool:
 
 async def import_nikto_results(db, target_url: str, parsed: dict, source_label: str | None = None) -> dict:
     asset = await _find_or_create_web_asset(db, target_url)
+    from criticality import recompute_asset_criticality
+    await recompute_asset_criticality(db, asset["id"])
     started = _now_iso()
     findings_created = 0
     seen_titles = set()

@@ -182,6 +182,8 @@ async def promote_candidate(db, candidate_id: str, user_email: str) -> dict:
             await db.assets.update_one({"id": existing_asset["id"]}, {"$set": {"exposure": "internet"}})
             await sync_internet_facing_for_asset(db, existing_asset["id"], "internet")
             existing_asset["exposure"] = "internet"
+        from criticality import recompute_asset_criticality
+        await recompute_asset_criticality(db, existing_asset["id"])
         await db.easm_candidates.update_one({"id": candidate_id}, {"$set": update})
         return existing_asset
 
@@ -196,6 +198,8 @@ async def promote_candidate(db, candidate_id: str, user_email: str) -> dict:
                                  "promoted from the review queue -- not yet confirmed by an active scan.",
     }
     await db.assets.insert_one(asset)
+    from criticality import recompute_asset_criticality
+    await recompute_asset_criticality(db, asset["id"])
     await db.easm_candidates.update_one({"id": candidate_id}, {"$set": {
         "status": "promoted", "promoted_asset_id": asset["id"], "promoted_by": user_email, "promoted_at": _now_iso(),
     }})

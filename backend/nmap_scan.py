@@ -483,6 +483,9 @@ async def import_nmap_xml(db, content: bytes, vantage: str = "internal", source_
         asset = {**asset, **patch}
         assets_touched += 1
 
+        from criticality import recompute_asset_criticality
+        await recompute_asset_criticality(db, asset["id"])
+
         # Risky/newly-appeared port findings run for internal scans too now -- a Telnet
         # or unauthenticated Redis instance sitting on your own LAN is still a real
         # finding (arguably a worse one, since a foothold anywhere on the network can
