@@ -31,6 +31,7 @@ import Automation from "@/pages/Automation";
 import Exposure from "@/pages/Exposure";
 import NmapUpload from "@/pages/NmapUpload";
 import NiktoScans from "@/pages/NiktoScans";
+import ReconOSINT from "@/pages/ReconOSINT";
 import TlsCerts from "@/pages/TlsCerts";
 import SbomUpload from "@/pages/SbomUpload";
 import Easm from "@/pages/Easm";
@@ -93,6 +94,7 @@ const AppRouter = () => {
       <Route path="/exposure" element={<Protected><Exposure/></Protected>}/>
       <Route path="/admin/nmap-scans" element={<Protected><NmapUpload/></Protected>}/>
       <Route path="/admin/nikto-scans" element={<Protected><NiktoScans/></Protected>}/>
+      <Route path="/admin/recon-osint" element={<Protected><ReconOSINT/></Protected>}/>
       <Route path="/admin/web-scans" element={<Protected><WebScansUpload/></Protected>}/>
       <Route path="/admin/users" element={<Protected><Users/></Protected>}/>
       <Route path="/admin/teams" element={<Protected><Teams/></Protected>}/>

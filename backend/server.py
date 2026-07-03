@@ -33,6 +33,7 @@ from routes.playbooks import router as playbooks_router
 from routes.automation import router as automation_router
 from routes.nmap import router as nmap_router
 from routes.nikto import router as nikto_router
+from routes.reconng import router as reconng_router
 from routes.certs import router as certs_router
 from routes.sbom import router as sbom_router
 from routes.easm import router as easm_router
@@ -65,6 +66,7 @@ api.include_router(playbooks_router)
 api.include_router(automation_router)
 api.include_router(nmap_router)
 api.include_router(nikto_router)
+api.include_router(reconng_router)
 api.include_router(certs_router)
 api.include_router(sbom_router)
 api.include_router(easm_router)
@@ -129,6 +131,7 @@ async def on_startup():
     from qualys_sync import qualys_poll_loop
     from routes.nmap import nmap_scan_loop
     from routes.nikto import nikto_scan_loop
+    from routes.reconng import recon_scheduled_loop
     from cert_monitor import cert_monitor_loop
     from easm import easm_scan_loop
     from backup import backup_loop
@@ -143,6 +146,8 @@ async def on_startup():
     _a.create_task(nmap_scan_loop(db, interval_minutes=15))
     # Scheduled Nikto web-app scan loop (15min poll) — runs at most one scan at a time
     _a.create_task(nikto_scan_loop(db, interval_minutes=15))
+    # Scheduled recon-ng OSINT module loop (30min poll) — runs at most one module at a time
+    _a.create_task(recon_scheduled_loop(db, interval_minutes=30))
     # TLS cert expiry loop (once/day -- certs don't change often)
     _a.create_task(cert_monitor_loop(db, interval_hours=24))
     # EASM passive subdomain discovery loop (once/day)

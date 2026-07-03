@@ -25,6 +25,7 @@ TRIGGERS = [
     "ticket_sla_warning", "ticket_overdue", "ticket_reassigned",
     "comment_mention", "exception_expiring", "finding_reopened", "kev_match",
     "tls_cert_expiring", "exception_revoked", "exception_risk_escalated",
+    "osint_exposure_found",
 ]
 
 CHANNELS = ["email", "discord", "slack", "teams", "webhook"]
@@ -89,6 +90,14 @@ TEMPLATES = {
             "📈 Threat activity around this accepted risk has escalated since it was approved.\n\n"
             "• **Covers:** {title}\n• **What changed:** {escalation_reason}\n"
             "• **Expires:** {expires_at}\n\nConsider revoking or re-confirming this acceptance. Open: {url}"
+        ),
+    },
+    "osint_exposure_found": {
+        "subject": "[VulnOps] OSINT exposure found: {label}",
+        "body": (
+            "🕵️ A recon-ng OSINT module found something worth a look.\n\n"
+            "• **Module:** {module}\n• **Target:** {target}\n• **Finding:** {label}\n"
+            "• **Detail:** {detail}\n\nOpen: {url}"
         ),
     },
     "tls_cert_expiring": {
