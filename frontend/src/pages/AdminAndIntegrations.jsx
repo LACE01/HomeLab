@@ -3,7 +3,7 @@ import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import { fmtDate, fmtRel } from "@/lib/utils-fmt";
-import { CheckCircle, WarningCircle, XCircle, GearSix, Lightning, Info, ArrowsClockwise, Eye, EyeSlash, Trash, Plus, Warning } from "@phosphor-icons/react";
+import { CheckCircle, WarningCircle, XCircle, GearSix, Lightning, Info, ArrowsClockwise, Eye, EyeSlash, Trash, Plus, Warning, ShieldCheck, Target, Bug } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 export function Integrations() {
@@ -12,9 +12,24 @@ export function Integrations() {
   const [form, setForm] = useState({});
   const [testing, setTesting] = useState(null);
   const [qualysScope, setQualysScope] = useState(null);
+  const [tiStatus, setTiStatus] = useState(null);
+  const [tiSyncing, setTiSyncing] = useState(null);
   const load = () => api.get("/v1/integrations").then(r => setItems(r.data.items));
   const loadScope = () => api.get("/v1/admin/qualys/scope").then(r => setQualysScope(r.data)).catch(() => setQualysScope(null));
-  useEffect(() => { load(); loadScope(); }, []);
+  const loadTi = () => api.get("/v1/admin/threat-intel/status").then(r => setTiStatus(r.data)).catch(() => setTiStatus(null));
+  useEffect(() => { load(); loadScope(); loadTi(); }, []);
+
+  const syncFeed = async (feed) => {
+    setTiSyncing(feed);
+    try {
+      const r = await api.post(`/v1/admin/enrich/${feed}`);
+      if (r.data.status === "failed") toast.error(`${feed.toUpperCase()} sync failed: ${r.data.error || "unknown error"}`);
+      else toast.success(`${feed.toUpperCase()} sync complete.`);
+      await loadTi();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || `${feed} sync failed`);
+    } finally { setTiSyncing(null); }
+  };
 
   const Icon = ({ s }) =>
     s === "healthy" ? <CheckCircle size={16} className="text-emerald-400"/> :
@@ -133,6 +148,59 @@ export function Integrations() {
           </button>
         </div>
       )}
+      <div className="mb-4 border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <div className="text-[13.5px] font-medium text-slate-100">Threat Intel Feeds</div>
+            <div className="text-[11px] text-slate-500 mt-0.5">
+              Always-on enrichers (no credentials needed) that run automatically every 12h.
+              {tiStatus?.last_run_at ? <> Last full pass: {fmtRel(tiStatus.last_run_at)}.</> : " Haven't run yet on this deployment."}
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="border border-[#30363D] rounded p-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 text-[12.5px] text-slate-200"><ShieldCheck size={15} className="text-red-400"/> CISA KEV</div>
+              <button disabled={tiSyncing==="kev"} onClick={()=>syncFeed("kev")}
+                className="h-6 px-2 text-[10.5px] border border-[#30363D] hover:border-emerald-500/50 hover:text-emerald-300 rounded disabled:opacity-50">
+                {tiSyncing==="kev" ? "Syncing…" : "Sync now"}
+              </button>
+            </div>
+            <div className="text-[11px] text-slate-500 mt-2">
+              {tiStatus?.kev?.findings_flagged ?? 0} finding(s) flagged actively-exploited
+              {tiStatus?.kev?.catalog_size ? ` · catalog: ${tiStatus.kev.catalog_size} CVEs` : ""}
+            </div>
+            {tiStatus?.kev?.error && <div className="text-[10.5px] text-red-400 mt-1">{tiStatus.kev.error}</div>}
+          </div>
+          <div className="border border-[#30363D] rounded p-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 text-[12.5px] text-slate-200"><Target size={15} className="text-amber-400"/> EPSS</div>
+              <button disabled={tiSyncing==="epss"} onClick={()=>syncFeed("epss")}
+                className="h-6 px-2 text-[10.5px] border border-[#30363D] hover:border-emerald-500/50 hover:text-emerald-300 rounded disabled:opacity-50">
+                {tiSyncing==="epss" ? "Syncing…" : "Sync now"}
+              </button>
+            </div>
+            <div className="text-[11px] text-slate-500 mt-2">{tiStatus?.epss?.findings_scored ?? 0} finding(s) scored</div>
+            {tiStatus?.epss?.error && <div className="text-[10.5px] text-red-400 mt-1">{tiStatus.epss.error}</div>}
+          </div>
+          <div className="border border-[#30363D] rounded p-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 text-[12.5px] text-slate-200"><Bug size={15} className="text-violet-400"/> Exploit-DB</div>
+              <button disabled={tiSyncing==="exploitdb"} onClick={()=>syncFeed("exploitdb")}
+                className="h-6 px-2 text-[10.5px] border border-[#30363D] hover:border-emerald-500/50 hover:text-emerald-300 rounded disabled:opacity-50">
+                {tiSyncing==="exploitdb" ? "Syncing…" : "Sync now"}
+              </button>
+            </div>
+            <div className="text-[11px] text-slate-500 mt-2">
+              {tiStatus?.exploitdb?.findings_with_exploits ?? 0} finding(s) with a public PoC
+              {tiStatus?.exploitdb?.catalog_cves ? ` · catalog: ${tiStatus.exploitdb.catalog_cves} CVEs` : ""}
+            </div>
+            {tiStatus?.exploitdb?.error && <div className="text-[10.5px] text-red-400 mt-1">{tiStatus.exploitdb.error}</div>}
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         {items.map(i => (
           <div key={i.id} data-testid={`integration-${i.id}`} className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">

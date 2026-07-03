@@ -789,6 +789,29 @@ async def exploitdb_status(user: dict = Depends(require_role("admin"))):
             "last_synced_at": (latest or {}).get("synced_at")}
 
 
+@router.get("/v1/admin/threat-intel/status")
+async def threat_intel_status(user: dict = Depends(require_role("admin"))):
+    """Rolls up KEV / EPSS / Exploit-DB feed health in one place -- these are always-on
+    enrichers (no per-integration config, no credentials) that previously had zero
+    visibility in the UI: they only ran silently every 12h via threat_intel_loop, or
+    when an admin happened to know the /v1/admin/enrich/* endpoints existed."""
+    heartbeat = await db.loop_heartbeats.find_one({"name": "threat_intel_loop"}, {"_id": 0})
+    detail = (heartbeat or {}).get("detail") or {}
+    kev_count = await db.findings.count_documents({"kev_flag": True})
+    epss_count = await db.findings.count_documents({"epss_score": {"$gt": 0}})
+    exploitdb_catalog = await db.exploitdb_catalog.count_documents({})
+    exploitdb_findings = await db.findings.count_documents({"exploit_references": {"$exists": True, "$ne": []}})
+    return {
+        "last_run_at": (heartbeat or {}).get("last_run_at"),
+        "last_run_status": (heartbeat or {}).get("status"),
+        "kev": {"findings_flagged": kev_count, "catalog_size": (detail.get("kev") or {}).get("catalog_size"),
+                "last_result": detail.get("kev"), "error": detail.get("kev_error")},
+        "epss": {"findings_scored": epss_count, "last_result": detail.get("epss"), "error": detail.get("epss_error")},
+        "exploitdb": {"catalog_cves": exploitdb_catalog, "findings_with_exploits": exploitdb_findings,
+                       "last_result": detail.get("exploitdb"), "error": detail.get("exploitdb_error")},
+    }
+
+
 # --------------------------- CISA WEB SCAN UPLOAD ---------------------------
 from fastapi import UploadFile, File, Form
 
