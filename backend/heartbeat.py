@@ -16,6 +16,7 @@ KNOWN_LOOPS = {
     "digest_dispatch_loop": {"label": "Notification Digest Dispatch", "expected_interval_hours": 1},
     "qualys_poll_loop": {"label": "Qualys Live Sync", "expected_interval_hours": 1},
     "nmap_scan_loop": {"label": "Nmap Scheduled Scans", "expected_interval_hours": 0.25},
+    "nikto_scan_loop": {"label": "Nikto Web-App Scans", "expected_interval_hours": 0.25},
     "cert_monitor_loop": {"label": "TLS Certificate Monitor", "expected_interval_hours": 24},
     "easm_scan_loop": {"label": "EASM Subdomain Discovery", "expected_interval_hours": 24},
     "backup_loop": {"label": "Database Backups", "expected_interval_hours": 24},

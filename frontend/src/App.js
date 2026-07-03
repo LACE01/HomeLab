@@ -30,6 +30,7 @@ import PlaybookDetail from "@/pages/PlaybookDetail";
 import Automation from "@/pages/Automation";
 import Exposure from "@/pages/Exposure";
 import NmapUpload from "@/pages/NmapUpload";
+import NiktoScans from "@/pages/NiktoScans";
 import TlsCerts from "@/pages/TlsCerts";
 import SbomUpload from "@/pages/SbomUpload";
 import Easm from "@/pages/Easm";
@@ -91,6 +92,7 @@ const AppRouter = () => {
       <Route path="/automation" element={<Protected><Automation/></Protected>}/>
       <Route path="/exposure" element={<Protected><Exposure/></Protected>}/>
       <Route path="/admin/nmap-scans" element={<Protected><NmapUpload/></Protected>}/>
+      <Route path="/admin/nikto-scans" element={<Protected><NiktoScans/></Protected>}/>
       <Route path="/admin/web-scans" element={<Protected><WebScansUpload/></Protected>}/>
       <Route path="/admin/users" element={<Protected><Users/></Protected>}/>
       <Route path="/admin/teams" element={<Protected><Teams/></Protected>}/>

@@ -68,6 +68,7 @@ export default function Sidebar() {
           <NavItem to="/imports" icon={Database} label="Import Jobs" testid="nav-imports" />
           <NavItem to="/admin/web-scans" icon={Database} label="Web Scan Uploads" testid="nav-web-scans" />
           <NavItem to="/admin/nmap-scans" icon={Database} label="Nmap Scan Uploads" testid="nav-nmap-scans" />
+          <NavItem to="/admin/nikto-scans" icon={Globe} label="Web App Scans (Nikto)" testid="nav-nikto-scans" />
           <NavItem to="/admin/sbom" icon={Package} label="SBOM / Dependencies" testid="nav-sbom" />
           <NavItem to="/admin/yara" icon={Virus} label="YARA Scanning" testid="nav-yara" />
         </Group>
