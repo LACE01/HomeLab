@@ -35,6 +35,7 @@ from routes.nmap import router as nmap_router
 from routes.nikto import router as nikto_router
 from routes.reconng import router as reconng_router
 from routes.criticality import router as criticality_router
+from routes.charts import router as charts_router
 from routes.certs import router as certs_router
 from routes.sbom import router as sbom_router
 from routes.easm import router as easm_router
@@ -69,6 +70,7 @@ api.include_router(nmap_router)
 api.include_router(nikto_router)
 api.include_router(reconng_router)
 api.include_router(criticality_router)
+api.include_router(charts_router)
 api.include_router(certs_router)
 api.include_router(sbom_router)
 api.include_router(easm_router)

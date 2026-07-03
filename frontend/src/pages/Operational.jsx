@@ -4,6 +4,7 @@ import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, LineChart, Line } from "recharts";
 import { ArrowLeft, CaretUp, CaretDown } from "@phosphor-icons/react";
+import TrendChart from "@/components/TrendChart";
 
 const Stat = ({ label, value, suffix, onClick, tone }) => {
   const tones = { red: "text-red-300", orange: "text-orange-300", amber: "text-amber-300", slate: "text-slate-100" };
@@ -129,6 +130,10 @@ export default function Operational() {
             ))}</tbody>
           </table>
         </Panel>
+      </div>
+
+      <div className="mb-4">
+        <TrendChart title={`Vulnerabilities Over Time — ${d.team_scope}`} filters={team ? { owner_team: team } : {}} defaultDays={90}/>
       </div>
 
       <Panel title="Throughput — Opened vs Closed (30 days)">

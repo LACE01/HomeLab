@@ -5,6 +5,7 @@ import Layout from "@/components/Layout";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtDate, fmtRel, isOverdue } from "@/lib/utils-fmt";
 import { MagnifyingGlass, ArrowLeft, Stack, CaretLeft, CaretRight, LockKey, LockKeyOpen, Info } from "@phosphor-icons/react";
+import TrendChart from "@/components/TrendChart";
 import { toast } from "sonner";
 
 const PAGE_SIZE = 50;
@@ -327,6 +328,10 @@ export function AssetDetail() {
           </div>
         </div>
       )}
+
+      <div className="mb-4">
+        <TrendChart title="Vulnerabilities on this Host — Over Time" filters={{ asset_id: id }} defaultDays={90}/>
+      </div>
 
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden mb-4">
         <div className="px-4 py-2 border-b border-[#30363D]"><h3 className="text-[11px] uppercase tracking-wider font-mono text-slate-400">Vulnerabilities on this Host ({findings.length})</h3></div>

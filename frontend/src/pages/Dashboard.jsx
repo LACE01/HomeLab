@@ -3,6 +3,7 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { usePreferences } from "@/lib/usePreferences";
 import Layout from "@/components/Layout";
+import TrendChart from "@/components/TrendChart";
 import TimeRangeSelector from "@/components/TimeRangeSelector";
 import TilePicker from "@/components/TilePicker";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
@@ -480,6 +481,8 @@ export default function Dashboard() {
               </table>
             </Panel>
           </div>
+
+          <TrendChart title="Vulnerabilities Over Time — Org-Wide" defaultDays={90}/>
         </div>
       )}
     </Layout>

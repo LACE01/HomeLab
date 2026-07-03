@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import TrendChart from "@/components/TrendChart";
 import { api, API } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
@@ -228,6 +229,17 @@ export default function Reports() {
             className="h-9 px-4 text-[13px] bg-blue-500 hover:bg-blue-400 text-white rounded inline-flex items-center gap-1.5 disabled:opacity-50">
             <FileArrowDown size={14}/> {busy==='custom' ? "Generating…" : `Run & Download ${b.fmt.toUpperCase()}`}
           </button>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <TrendChart
+          title="Visualize — Vulnerabilities Over Time"
+          filters={b.owner_team ? { owner_team: b.owner_team } : {}}
+          defaultDays={90}
+        />
+        <div className="text-[10.5px] text-slate-500 mt-1.5">
+          Scoped to the Team filter above (if set) — an ad-hoc way to look at trends before committing to a full export.
         </div>
       </div>
     </Layout>

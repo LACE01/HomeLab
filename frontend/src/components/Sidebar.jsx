@@ -1,10 +1,17 @@
+import { useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "@/lib/auth";
 import {
   ChartLineUp, ListChecks, HardDrives, Stack, Lightning, Ticket,
   ShieldCheck, PlugsConnected, FileArrowDown, GearSix, SignOut, Database, Bug,
   UsersThree, Bell, ShareNetwork, BookOpen, Robot, Globe, Certificate, Package, MagnifyingGlass, ClipboardText, SlackLogo, Heartbeat, HardDrive, Notepad, Virus, FlowArrow,
+  CaretDown,
 } from "@phosphor-icons/react";
+
+const COLLAPSE_KEY = "vulnops.sidebar.collapsedGroups";
+const loadCollapsed = () => {
+  try { return JSON.parse(localStorage.getItem(COLLAPSE_KEY) || "{}"); } catch { return {}; }
+};
 
 const NavItem = ({ to, icon: Icon, label, testid }) => (
   <NavLink
@@ -24,16 +31,26 @@ const NavItem = ({ to, icon: Icon, label, testid }) => (
   </NavLink>
 );
 
-const Group = ({ title, children }) => (
+const Group = ({ title, children, collapsed, onToggle }) => (
   <div className="mb-4">
-    <div className="px-3 mb-1.5 text-[10px] uppercase tracking-wider text-slate-600 font-mono">{title}</div>
-    <div className="flex flex-col gap-0.5">{children}</div>
+    <button onClick={onToggle}
+      className="w-full flex items-center justify-between px-3 mb-1.5 text-[10px] uppercase tracking-wider text-slate-600 hover:text-slate-400 font-mono">
+      <span>{title}</span>
+      <CaretDown size={10} className={`transition-transform ${collapsed ? "-rotate-90" : ""}`}/>
+    </button>
+    {!collapsed && <div className="flex flex-col gap-0.5">{children}</div>}
   </div>
 );
 
 export default function Sidebar() {
   const { user, logout } = useAuth();
   const nav = useNavigate();
+  const [collapsed, setCollapsed] = useState(loadCollapsed());
+  const toggleGroup = (key) => setCollapsed(prev => {
+    const next = { ...prev, [key]: !prev[key] };
+    localStorage.setItem(COLLAPSE_KEY, JSON.stringify(next));
+    return next;
+  });
   return (
     <aside data-testid="sidebar" className="w-60 shrink-0 bg-[#0D1117] border-r border-[#30363D] flex flex-col h-screen sticky top-0">
       <div className="px-4 py-4 border-b border-[#30363D] flex items-center gap-2">
@@ -45,7 +62,7 @@ export default function Sidebar() {
       </div>
 
       <nav className="flex-1 overflow-y-auto py-3 px-2">
-        <Group title="Operations">
+        <Group title="Operations" collapsed={!!collapsed["Operations"]} onToggle={()=>toggleGroup("Operations")}>
           <NavItem to="/" icon={ChartLineUp} label="Dashboard" testid="nav-dashboard" />
           <NavItem to="/operational" icon={Lightning} label="Team Dashboards" testid="nav-operational" />
           <NavItem to="/findings" icon={ListChecks} label="Findings" testid="nav-findings" />
@@ -58,12 +75,12 @@ export default function Sidebar() {
           <NavItem to="/admin/playbooks" icon={BookOpen} label="Playbooks" testid="nav-playbooks" />
           <NavItem to="/automation" icon={Robot} label="Automation" testid="nav-automation" />
         </Group>
-        <Group title="Inventory">
+        <Group title="Inventory" collapsed={!!collapsed["Inventory"]} onToggle={()=>toggleGroup("Inventory")}>
           <NavItem to="/assets" icon={HardDrives} label="Assets" testid="nav-assets" />
           <NavItem to="/products" icon={Stack} label="Products" testid="nav-products" />
           <NavItem to="/engagements" icon={Lightning} label="Engagements" testid="nav-engagements" />
         </Group>
-        <Group title="Integrations">
+        <Group title="Integrations" collapsed={!!collapsed["Integrations"]} onToggle={()=>toggleGroup("Integrations")}>
           <NavItem to="/integrations" icon={PlugsConnected} label="Connectors" testid="nav-integrations" />
           <NavItem to="/imports" icon={Database} label="Import Jobs" testid="nav-imports" />
           <NavItem to="/admin/web-scans" icon={Database} label="Web Scan Uploads" testid="nav-web-scans" />
@@ -74,7 +91,7 @@ export default function Sidebar() {
           <NavItem to="/admin/sbom" icon={Package} label="SBOM / Dependencies" testid="nav-sbom" />
           <NavItem to="/admin/yara" icon={Virus} label="YARA Scanning" testid="nav-yara" />
         </Group>
-        <Group title="Reports & Admin">
+        <Group title="Reports & Admin" collapsed={!!collapsed["Reports & Admin"]} onToggle={()=>toggleGroup("Reports & Admin")}>
           <NavItem to="/reports" icon={FileArrowDown} label="Reports" testid="nav-reports" />
           <NavItem to="/compliance" icon={ClipboardText} label="Compliance" testid="nav-compliance" />
           <NavItem to="/admin" icon={GearSix} label="Admin" testid="nav-admin" />
