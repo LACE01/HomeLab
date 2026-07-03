@@ -3,7 +3,14 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # Build deps for packages with native extensions (bcrypt, fastuuid, etc.)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# nikto lives in Debian's non-free component, which isn't enabled by default --
+# turn it on (covers both the legacy one-line sources.list format and the newer
+# deb822 sources.list.d/*.sources format, whichever this base image uses) before
+# installing it, so this doesn't silently fail as "Unable to locate package nikto"
+# on a base image where non-free isn't already on.
+RUN (sed -i 's/^Components: main$/Components: main non-free non-free-firmware/' /etc/apt/sources.list.d/*.sources 2>/dev/null || true) \
+    && (sed -i '/^deb /s/$/ non-free non-free-firmware/' /etc/apt/sources.list 2>/dev/null || true) \
+    && apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     nmap \
     nikto \
