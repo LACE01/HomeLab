@@ -48,6 +48,7 @@ async def findings_timeseries(
     product_id: Optional[str] = None,
     severity: Optional[str] = None,
     status: Optional[str] = None,
+    include_patches: bool = False,
 ):
     days = max(1, min(days, 730))
     granularity = granularity if granularity in ("day", "week") else "day"
@@ -156,11 +157,32 @@ async def findings_timeseries(
         dates = [(now_date - timedelta(days=i)).isoformat() for i in range(days + 1)]
         dates.sort()
 
+    # Optional "patches applied" overlay -- a count of patch groups (see
+    # nightly.sweep_patch_completions) that finished resolving on each day/week in
+    # range, so you can visually correlate patch cadence against the vuln-count
+    # trend above it. Only scoped by asset_id (patch-completion events don't carry
+    # owner_team/product_id/severity/status, so those filters just leave this off
+    # rather than silently ignoring them).
+    patches_by_date: dict = {}
+    if include_patches and not (owner_team or product_id or severity or status):
+        patch_flt: dict = {"resolved_at": {"$gte": since}}
+        if asset_id:
+            patch_flt["asset_id"] = asset_id
+        async for p in db.patches_applied.find(patch_flt, {"_id": 0, "resolved_at": 1}):
+            try:
+                r_date = datetime.fromisoformat(p["resolved_at"].replace("Z", "+00:00")).date()
+            except Exception:
+                continue
+            bucket = (r_date - timedelta(days=r_date.weekday())).isoformat() if granularity == "week" else r_date.isoformat()
+            patches_by_date[bucket] = patches_by_date.get(bucket, 0) + 1
+
     series = []
     for date_str in dates:
         row = {"date": date_str}
         for k in keys:
             row[k] = bucketed.get(date_str, {}).get(k, 0)
+        if include_patches:
+            row["patches_applied"] = patches_by_date.get(date_str, 0)
         series.append(row)
 
     if group_by == "severity":
@@ -171,4 +193,5 @@ async def findings_timeseries(
         colors = {k: PALETTE[i % len(PALETTE)] for i, k in enumerate(keys)}
 
     return {"series": series, "keys": keys, "colors": colors, "group_by": group_by, "granularity": granularity,
-            "total": sum(raw_counts.values())}
+            "total": sum(raw_counts.values()),
+            "patches_total": sum(patches_by_date.values()) if include_patches else None}

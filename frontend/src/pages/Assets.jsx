@@ -367,7 +367,7 @@ export function AssetDetail() {
       )}
 
       <div className="mb-4">
-        <TrendChart title="Vulnerabilities on this Host — Over Time" filters={{ asset_id: id }} defaultDays={90}/>
+        <TrendChart title="Vulnerabilities on this Host — Over Time" filters={{ asset_id: id }} defaultDays={90} showPatches/>
       </div>
 
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden mb-4">

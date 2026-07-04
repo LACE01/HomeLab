@@ -35,6 +35,7 @@ const CHART_TYPES = [
 export default function TrendChart({
   filters = {}, title = "Vulnerabilities Over Time", defaultGroupBy = "severity",
   defaultDays = 90, defaultChartType = "area", height = 260, compact = false,
+  showPatches = false,
 }) {
   const [groupBy, setGroupBy] = useState(defaultGroupBy);
   const [days, setDays] = useState(defaultDays);
@@ -46,14 +47,16 @@ export default function TrendChart({
     setLoading(true);
     const range = RANGE_OPTIONS.find(r => r.value === days) || RANGE_OPTIONS[1];
     const params = { days, granularity: range.granularity, group_by: groupBy, ...filters };
+    if (showPatches) params.include_patches = true;
     api.get("/v1/charts/findings-timeseries", { params })
       .then(r => setData(r.data))
       .catch(() => setData(null))
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupBy, days, JSON.stringify(filters)]);
+  }, [groupBy, days, showPatches, JSON.stringify(filters)]);
 
   const tickFmt = (s) => s ? s.slice(5) : s;
+  const patchesAvailable = showPatches && data && data.patches_total != null;
 
   return (
     <div className="border border-[#30363D] bg-[#0D1117] rounded-md">
@@ -88,29 +91,35 @@ export default function TrendChart({
                 <CartesianGrid stroke="#30363D" strokeDasharray="2 2"/>
                 <XAxis dataKey="date" stroke="#8B949E" fontSize={10} tickFormatter={tickFmt}/>
                 <YAxis stroke="#8B949E" fontSize={10}/>
+                {patchesAvailable && <YAxis yAxisId="patches" orientation="right" stroke="#34d399" fontSize={10} allowDecimals={false}/>}
                 <Tooltip contentStyle={{ background: "#0D1117", border: "1px solid #30363D", fontSize: 12 }}/>
                 {!compact && <Legend wrapperStyle={{ fontSize: 11 }}/>}
                 {data.keys.map(k => <Bar key={k} dataKey={k} stackId="s" fill={data.colors[k]}/>)}
+                {patchesAvailable && <Line yAxisId="patches" type="monotone" dataKey="patches_applied" name="Patches applied" stroke="#34d399" strokeDasharray="4 3" dot={false} strokeWidth={2}/>}
               </BarChart>
             ) : chartType === "line" ? (
               <LineChart data={data.series}>
                 <CartesianGrid stroke="#30363D" strokeDasharray="2 2"/>
                 <XAxis dataKey="date" stroke="#8B949E" fontSize={10} tickFormatter={tickFmt}/>
                 <YAxis stroke="#8B949E" fontSize={10}/>
+                {patchesAvailable && <YAxis yAxisId="patches" orientation="right" stroke="#34d399" fontSize={10} allowDecimals={false}/>}
                 <Tooltip contentStyle={{ background: "#0D1117", border: "1px solid #30363D", fontSize: 12 }}/>
                 {!compact && <Legend wrapperStyle={{ fontSize: 11 }}/>}
                 {data.keys.map(k => <Line key={k} type="monotone" dataKey={k} stroke={data.colors[k]} dot={false} strokeWidth={2}/>)}
+                {patchesAvailable && <Line yAxisId="patches" type="monotone" dataKey="patches_applied" name="Patches applied" stroke="#34d399" strokeDasharray="4 3" dot={false} strokeWidth={2}/>}
               </LineChart>
             ) : (
               <AreaChart data={data.series}>
                 <CartesianGrid stroke="#30363D" strokeDasharray="2 2"/>
                 <XAxis dataKey="date" stroke="#8B949E" fontSize={10} tickFormatter={tickFmt}/>
                 <YAxis stroke="#8B949E" fontSize={10}/>
+                {patchesAvailable && <YAxis yAxisId="patches" orientation="right" stroke="#34d399" fontSize={10} allowDecimals={false}/>}
                 <Tooltip contentStyle={{ background: "#0D1117", border: "1px solid #30363D", fontSize: 12 }}/>
                 {!compact && <Legend wrapperStyle={{ fontSize: 11 }}/>}
                 {data.keys.map(k => (
                   <Area key={k} type="monotone" dataKey={k} stackId="s" stroke={data.colors[k]} fill={data.colors[k]} fillOpacity={0.55}/>
                 ))}
+                {patchesAvailable && <Line yAxisId="patches" type="monotone" dataKey="patches_applied" name="Patches applied" stroke="#34d399" strokeDasharray="4 3" dot={false} strokeWidth={2}/>}
               </AreaChart>
             )}
           </ResponsiveContainer>

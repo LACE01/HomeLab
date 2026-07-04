@@ -132,6 +132,16 @@ async def on_startup():
             logger.info(f"Backfilled {n} score snapshot(s).")
     except Exception as e:
         logger.exception(f"Score snapshot backfill failed: {e}")
+    # Same idea for patch-completion events -- backfill once at boot so already-
+    # resolved patch groups show up on the "patches applied" chart overlay
+    # immediately instead of waiting for the next nightly sweep (up to 24h away).
+    try:
+        from nightly import sweep_patch_completions
+        n = await sweep_patch_completions(db)
+        if n.get("patches_recorded"):
+            logger.info(f"Backfilled {n['patches_recorded']} patch-completion event(s).")
+    except Exception as e:
+        logger.exception(f"Patch completion backfill failed: {e}")
 
     # Nightly rescore loop (24h)
     import asyncio as _a

@@ -296,6 +296,62 @@ async def run_verification_sweep(db) -> dict:
     return {"checked": len(pending), "promoted": promoted}
 
 
+TERMINAL_PATCH_STATUSES = ["Fixed validated", "Mitigated", "Closed administratively"]
+
+
+async def sweep_patch_completions(db) -> dict:
+    """Finds patch groups (findings on the same asset sharing the same title -- see
+    routes/findings.py's patch-group endpoints, the "Patch Once, Fix Many" panel on
+    Asset Detail) where every single finding in the group has reached a terminal,
+    confirmed-resolved status, and records a one-time 'patch applied' event the first
+    time that happens for a given (asset, title) pair.
+
+    This exists because patch groups were previously only ever computed live over
+    *open* findings -- there was no record of when a group actually finished, which is
+    exactly what a "patches applied over time" chart needs. Idempotent: a group that
+    was already recorded is never recorded again, even if a finding later reopens and
+    gets re-closed -- re-patching isn't a new event worth charting twice, and this
+    keeps the sweep cheap (it only has to check groups it hasn't already resolved).
+
+    "Fixed pending validation" deliberately does NOT count as terminal here -- that's
+    a provisional state that can still bounce back to Reopened, so a group isn't
+    "done" until every finding in it has a source- or human-confirmed resolution.
+    """
+    already = {(d["asset_id"], d["title"]) async for d in db.patches_applied.find({}, {"_id": 0, "asset_id": 1, "title": 1})}
+
+    groups: dict = {}
+    cursor = db.findings.find(
+        {"title": {"$ne": None}, "asset_id": {"$ne": None}},
+        {"_id": 0, "id": 1, "asset_id": 1, "asset_hostname": 1, "title": 1, "status": 1, "cve": 1, "last_changed_at": 1},
+    )
+    async for f in cursor:
+        key = (f["asset_id"], f["title"])
+        g = groups.setdefault(key, {"statuses": [], "finding_ids": [], "cves": set(), "max_changed": None,
+                                     "asset_hostname": f.get("asset_hostname")})
+        g["statuses"].append(f.get("status"))
+        g["finding_ids"].append(f["id"])
+        if f.get("cve"):
+            g["cves"].add(f["cve"])
+        changed = f.get("last_changed_at")
+        if changed and (g["max_changed"] is None or changed > g["max_changed"]):
+            g["max_changed"] = changed
+
+    recorded = 0
+    for (asset_id, title), g in groups.items():
+        if (asset_id, title) in already:
+            continue
+        if not all(s in TERMINAL_PATCH_STATUSES for s in g["statuses"]):
+            continue
+        await db.patches_applied.insert_one({
+            "id": str(uuid.uuid4()), "asset_id": asset_id, "asset_hostname": g["asset_hostname"], "title": title,
+            "cves": sorted(g["cves"]), "finding_count": len(g["finding_ids"]), "finding_ids": g["finding_ids"],
+            "resolved_at": g["max_changed"] or now_iso_(),
+        })
+        recorded += 1
+
+    return {"groups_checked": len(groups), "patches_recorded": recorded}
+
+
 async def backfill_score_snapshots(db, days: int = 30) -> int:
     """If score_snapshots is empty (fresh install), backfill a short synthetic history
     leading up to today's real computed score, so the Manager/Executive trend charts
@@ -452,5 +508,12 @@ async def nightly_loop(db, interval_hours: int = 24):
         except Exception as e:
             logger.exception(f"Ownership decay failed: {e}")
             ok, detail["ownership_decay_error"] = False, str(e)
+        try:
+            patch_result = await sweep_patch_completions(db)
+            logger.info(f"Patch completion sweep: {patch_result}")
+            detail["patch_completions"] = patch_result
+        except Exception as e:
+            logger.exception(f"Patch completion sweep failed: {e}")
+            ok, detail["patch_completions_error"] = False, str(e)
         await record_heartbeat(db, "nightly_loop", "ok" if ok else "error", detail)
         await asyncio.sleep(interval_hours * 3600)
