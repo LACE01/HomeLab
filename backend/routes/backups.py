@@ -6,6 +6,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from db import db
+from rbac import require_module
 from auth_utils import require_role
 
 router = APIRouter()
@@ -16,7 +17,7 @@ class BackupBody(BaseModel):
 
 
 @router.get("/v1/admin/backups")
-async def list_backups(user: dict = Depends(require_role("admin"))):
+async def list_backups(user: dict = Depends(require_role("admin")), _rbac: dict = Depends(require_module("/admin/backups"))):
     from backup import list_backups as _list
     items = await _list(db)
     return {"items": items}

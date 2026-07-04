@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from db import db
+from rbac import require_module
 from auth_utils import get_current_user, require_role
 from routes.common import now_iso
 
@@ -29,7 +30,7 @@ def _validate(body: CertTargetBody):
 
 
 @router.get("/v1/admin/certs/targets")
-async def list_cert_targets(user: dict = Depends(get_current_user)):
+async def list_cert_targets(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/admin/tls-certs"))):
     targets = await db.cert_watch_targets.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
     keys = [f"{t['hostname']}:{t.get('port', 443)}" for t in targets]
     certs = await db.tls_certificates.find({"id": {"$in": keys}}, {"_id": 0}).to_list(500)

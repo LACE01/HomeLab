@@ -11,7 +11,13 @@ import {
 
 const CATEGORY_META = {
   recon: { label: "Recon / Discovery", color: "blue", desc: "Passive subdomain/host/contact discovery — feeds the EASM candidate queue" },
-  "threat-intel": { label: "Threat Intel", color: "red", desc: "Breach/paste/credential exposure monitoring — notifies on real hits" },
+  "threat-intel": { label: "Threat Intel", color: "red", desc: "Breach/paste/credential exposure monitoring — notifies on real hits, sourced from HIBP and your own OpenCTI instance" },
+};
+
+const TARGET_TYPE_META = {
+  domain: { label: "Domain", placeholder: "company.com" },
+  ip: { label: "IP Address", placeholder: "203.0.113.10" },
+  email: { label: "Email", placeholder: "user@company.com" },
 };
 
 export default function ReconOSINT() {
@@ -58,13 +64,16 @@ function useModules() {
   return { modules, loading };
 }
 
-function ModuleCard({ m, selected, onSelect }) {
+function ModuleCard({ m, selected, onToggle }) {
   const meta = CATEGORY_META[m.category] || CATEGORY_META.recon;
   return (
-    <button onClick={() => onSelect(m)} disabled={!m.ready}
+    <button onClick={() => onToggle(m)} disabled={!m.ready}
       className={`text-left border rounded-md p-3 transition-colors ${selected ? "border-blue-500/60 bg-blue-500/5" : "border-[#30363D] hover:border-[#484F58]"} ${!m.ready ? "opacity-50 cursor-not-allowed" : ""}`}>
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[12.5px] text-slate-100 font-medium">{m.label}</span>
+        <span className="text-[12.5px] text-slate-100 font-medium flex items-center gap-1.5">
+          <input type="checkbox" checked={!!selected} readOnly disabled={!m.ready} className="pointer-events-none"/>
+          {m.label}
+        </span>
         <Chip color={meta.color}>{meta.label}</Chip>
       </div>
       <div className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">{m.description}</div>
@@ -77,29 +86,43 @@ function ModuleCard({ m, selected, onSelect }) {
 
 function RunModule() {
   const { modules, loading } = useModules();
-  const [selected, setSelected] = useState(null);
+  const [targetType, setTargetType] = useState("domain");
+  const [selectedIds, setSelectedIds] = useState(new Set());
   const [target, setTarget] = useState("");
   const [running, setRunning] = useState(false);
-  const [lastResult, setLastResult] = useState(null);
+  const [lastRun, setLastRun] = useState(null);
+
+  const byId = Object.fromEntries(modules.map(m => [m.id, m]));
+  const availableTypes = [...new Set(modules.map(m => m.target_type))];
+
+  const toggleModule = (m) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(m.id)) next.delete(m.id); else next.add(m.id);
+      return next;
+    });
+  };
+
+  const changeType = (t) => { setTargetType(t); setSelectedIds(new Set()); setTarget(""); };
 
   const run = async () => {
-    if (!selected) { toast.error("Pick a module first"); return; }
-    if (!target.trim()) { toast.error("Enter a target (domain or email)"); return; }
+    if (selectedIds.size === 0) { toast.error("Pick at least one module"); return; }
+    if (!target.trim()) { toast.error(`Enter a target ${TARGET_TYPE_META[targetType]?.label.toLowerCase()}`); return; }
     setRunning(true);
-    setLastResult(null);
+    setLastRun(null);
     try {
-      const r = await api.post("/v1/recon/run", { module_id: selected.id, target: target.trim() });
-      toast.success("Run started — this can take a minute or two");
-      // Poll until it finishes
+      const r = await api.post("/v1/recon/run", { module_ids: [...selectedIds], target: target.trim() });
+      toast.success(`Run started (${selectedIds.size} module${selectedIds.size > 1 ? "s" : ""}) — this can take a minute or two`);
       let done = false;
-      for (let i = 0; i < 60 && !done; i++) {
+      for (let i = 0; i < 90 && !done; i++) {
         await new Promise(res => setTimeout(res, 3000));
         const detail = await api.get(`/v1/recon/runs/${r.data.id}`);
+        setLastRun(detail.data);  // show partial progress as each module finishes
         if (detail.data.status !== "running") {
           done = true;
-          setLastResult(detail.data);
           if (detail.data.status === "success") toast.success("Run complete");
-          else toast.error(detail.data.error || "Run failed");
+          else if (detail.data.status === "partial") toast.error("Some modules failed — see results below");
+          else toast.error("Run failed");
         }
       }
     } catch (e) {
@@ -109,53 +132,78 @@ function RunModule() {
 
   if (loading) return <div className="text-[12.5px] text-slate-500 py-8 text-center">Loading modules…</div>;
 
-  const grouped = { recon: modules.filter(m => m.category === "recon"), "threat-intel": modules.filter(m => m.category === "threat-intel") };
+  const filtered = modules.filter(m => m.target_type === targetType);
+  const grouped = { recon: filtered.filter(m => m.category === "recon"), "threat-intel": filtered.filter(m => m.category === "threat-intel") };
 
   return (
     <div className="space-y-5">
-      {Object.entries(grouped).map(([cat, items]) => (
+      <div className="flex gap-1.5">
+        {availableTypes.map(t => (
+          <button key={t} onClick={() => changeType(t)}
+            className={`h-8 px-3 text-[12px] rounded border ${targetType === t ? "border-blue-500/60 bg-blue-500/10 text-blue-300" : "border-[#30363D] text-slate-400 hover:text-slate-200"}`}>
+            {TARGET_TYPE_META[t]?.label || t}
+          </button>
+        ))}
+      </div>
+
+      {Object.entries(grouped).map(([cat, items]) => items.length > 0 && (
         <div key={cat}>
           <div className="text-[11px] uppercase font-mono text-slate-500 tracking-wider mb-2">{CATEGORY_META[cat].label} — {CATEGORY_META[cat].desc}</div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
-            {items.map(m => <ModuleCard key={m.id} m={m} selected={selected?.id === m.id} onSelect={setSelected}/>)}
+            {items.map(m => <ModuleCard key={m.id} m={m} selected={selectedIds.has(m.id)} onToggle={toggleModule}/>)}
           </div>
         </div>
       ))}
+      {filtered.length === 0 && (
+        <div className="text-[12px] text-slate-500 border border-[#30363D] rounded-md py-6 text-center">No modules for this target type yet.</div>
+      )}
 
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4 max-w-xl">
         <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">
-          Target {selected ? `(${selected.target_type})` : ""}
+          Target ({TARGET_TYPE_META[targetType]?.label}) — {selectedIds.size} module{selectedIds.size === 1 ? "" : "s"} selected
         </label>
         <div className="flex gap-2 mt-1">
           <input value={target} onChange={e => setTarget(e.target.value)}
-            placeholder={selected?.target_type === "email" ? "user@company.com" : "company.com"}
+            placeholder={TARGET_TYPE_META[targetType]?.placeholder}
             className="flex-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
-          <button onClick={run} disabled={running || !selected}
+          <button onClick={run} disabled={running || selectedIds.size === 0}
             className="h-9 px-3.5 text-[12.5px] bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-white rounded inline-flex items-center gap-1.5">
-            {running ? <><CircleNotch size={14} className="animate-spin"/> Running…</> : <><Play size={14}/> Run now</>}
+            {running ? <><CircleNotch size={14} className="animate-spin"/> Running…</> : <><Play size={14}/> Run {selectedIds.size > 1 ? `${selectedIds.size} modules` : "now"}</>}
           </button>
         </div>
       </div>
 
-      {lastResult && (
+      {lastRun && (
         <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4 max-w-xl">
-          <div className="text-[12.5px] text-slate-200 font-medium mb-2">Result</div>
-          {lastResult.status === "failed" ? (
-            <div className="text-[12px] text-red-400">{lastResult.error}</div>
-          ) : (
-            <div className="text-[12px] text-slate-300 space-y-1">
-              <div>{lastResult.result?.row_count ?? 0} row(s) returned by the module</div>
-              {lastResult.result?.easm_candidates_created != null && (
-                <div>
-                  {lastResult.result.easm_candidates_created} new host(s) added to{" "}
-                  <Link to="/easm" className="text-blue-300 hover:underline">EASM Candidates</Link> for review.
+          <div className="text-[12.5px] text-slate-200 font-medium mb-2 flex items-center gap-2">
+            Results <Chip color={lastRun.status === "success" ? "green" : lastRun.status === "running" ? "blue" : lastRun.status === "partial" ? "orange" : "red"}>{lastRun.status}</Chip>
+          </div>
+          <div className="space-y-2.5">
+            {(lastRun.results || []).map((res, i) => (
+              <div key={i} className="text-[12px] text-slate-300 border-t border-[#30363D]/60 pt-2 first:border-t-0 first:pt-0">
+                <div className="flex items-center gap-1.5 mb-0.5">
+                  {res.status === "success" ? <CheckCircle size={13} className="text-emerald-400"/> : <XCircle size={13} className="text-red-400"/>}
+                  <span className="font-medium text-slate-200">{byId[res.module_id]?.label || res.module_id}</span>
                 </div>
-              )}
-              {lastResult.result?.osint_findings_created != null && (
-                <div>{lastResult.result.osint_findings_created} new OSINT finding(s) — see the OSINT Findings tab.</div>
-              )}
-            </div>
-          )}
+                {res.status === "failed" ? (
+                  <div className="text-[11.5px] text-red-400 pl-[19px]">{res.error}</div>
+                ) : (
+                  <div className="text-[11.5px] text-slate-400 pl-[19px] space-y-0.5">
+                    <div>{res.result?.row_count ?? 0} row(s) returned</div>
+                    {res.result?.easm_candidates_created != null && (
+                      <div>{res.result.easm_candidates_created} new host(s) added to <Link to="/easm" className="text-blue-300 hover:underline">EASM Candidates</Link></div>
+                    )}
+                    {res.result?.osint_findings_created != null && (
+                      <div>{res.result.osint_findings_created} new OSINT finding(s) — see the OSINT Findings tab</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+            {lastRun.status === "running" && (lastRun.results || []).length === 0 && (
+              <div className="text-[11.5px] text-slate-500">Waiting on the first module…</div>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -269,22 +317,26 @@ function RunHistory() {
         <div key={r.id} className="border border-[#30363D] bg-[#0D1117] rounded-md px-3.5 py-2.5">
           <div className="flex items-center justify-between">
             <div className="text-[12.5px] text-slate-200 flex items-center gap-2">
-              {r.module_label} → <span className="font-mono text-slate-400">{r.target}</span>
+              {(r.module_labels || [r.module_label]).filter(Boolean).join(" + ")} → <span className="font-mono text-slate-400">{r.target}</span>
               {r.scheduled && <Chip color="purple">scheduled</Chip>}
             </div>
-            <Chip color={r.status === "success" ? "green" : r.status === "running" ? "blue" : "red"}>{r.status}</Chip>
+            <Chip color={r.status === "success" ? "green" : r.status === "running" ? "blue" : r.status === "partial" ? "orange" : "red"}>{r.status}</Chip>
           </div>
           <div className="text-[11px] text-slate-500 mt-1">
             {new Date(r.started_at).toLocaleString()} · by {r.triggered_by}
           </div>
-          {r.status === "failed" && <div className="text-[11.5px] text-red-400 mt-1.5">{r.error}</div>}
-          {r.status === "success" && r.result && (
-            <div className="text-[11.5px] text-slate-400 mt-1.5">
-              {r.result.row_count} row(s)
-              {r.result.easm_candidates_created != null ? ` · ${r.result.easm_candidates_created} EASM candidate(s)` : ""}
-              {r.result.osint_findings_created != null ? ` · ${r.result.osint_findings_created} OSINT finding(s)` : ""}
+          {(r.results || []).map((res, i) => (
+            <div key={i} className="text-[11.5px] mt-1.5">
+              <span className={res.status === "success" ? "text-slate-400" : "text-red-400"}>
+                {(r.module_labels && r.module_labels[i]) || res.module_id}:{" "}
+                {res.status === "success"
+                  ? `${res.result?.row_count ?? 0} row(s)`
+                    + (res.result?.easm_candidates_created != null ? ` · ${res.result.easm_candidates_created} EASM candidate(s)` : "")
+                    + (res.result?.osint_findings_created != null ? ` · ${res.result.osint_findings_created} OSINT finding(s)` : "")
+                  : res.error}
+              </span>
             </div>
-          )}
+          ))}
         </div>
       ))}
     </div>

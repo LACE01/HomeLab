@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from db import db
+from rbac import require_module
 from auth_utils import get_current_user, require_role
 from routes.common import now_iso, _clean
 
@@ -109,7 +110,7 @@ def _validate(body: ScanConfigBody) -> dict:
 
 
 @router.get("/v1/admin/nmap/configs")
-async def list_scan_configs(user: dict = Depends(get_current_user)):
+async def list_scan_configs(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/admin/nmap-scans"))):
     items = await db.nmap_scan_configs.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
     return {"items": items, "scan_types": SCAN_TYPES, "port_modes": PORT_MODES,
             "scan_techniques": SCAN_TECHNIQUES, "script_categories": ["default", "safe", "discovery", "version", "vuln"]}

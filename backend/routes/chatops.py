@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from pydantic import BaseModel
 
 from db import db
+from rbac import require_module
 from auth_utils import require_role
 from routes.common import now_iso
 
@@ -21,7 +22,7 @@ class ChatOpsConfigBody(BaseModel):
 
 
 @router.get("/v1/admin/chatops/config")
-async def get_chatops_config(user: dict = Depends(require_role("admin"))):
+async def get_chatops_config(user: dict = Depends(require_role("admin")), _rbac: dict = Depends(require_module("/admin/chatops"))):
     cfg = await db.chatops_config.find_one({"id": CONFIG_ID}, {"_id": 0})
     if not cfg:
         return {"configured": False, "enabled": False}

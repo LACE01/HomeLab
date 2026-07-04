@@ -42,11 +42,30 @@ import OpsHealth from "@/pages/OpsHealth";
 import Backups from "@/pages/Backups";
 import AuditLog from "@/pages/AuditLog";
 import Yara from "@/pages/Yara";
+import RoleAccess from "@/pages/RoleAccess";
 
-const Protected = ({ children }) => {
-  const { user, loading } = useAuth();
+const Protected = ({ children, module }) => {
+  const { user, loading, canAccess } = useAuth();
   if (loading) return <div className="min-h-screen flex items-center justify-center bg-[#090C10] text-slate-500">Loading…</div>;
   if (!user) return <Navigate to="/login" replace />;
+  // Direct/typed URL to a module this role doesn't have -- the Sidebar already hides
+  // the nav link, but the route itself needs its own guard too (nothing stops someone
+  // from just typing the URL). The backend enforces this for real on its main data
+  // endpoint for this module; this is the matching front-end message, not the security
+  // boundary itself.
+  if (module && !canAccess(module)) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#090C10]">
+        <div className="text-center max-w-sm">
+          <div className="text-slate-300 text-[15px] font-medium mb-1.5">Access restricted</div>
+          <div className="text-slate-500 text-[13px] leading-relaxed">
+            Your role ({user.role}) doesn't have access to this module. Ask an admin to grant it under
+            Reports & Admin → Role Access.
+          </div>
+        </div>
+      </div>
+    );
+  }
   return children;
 };
 
@@ -58,49 +77,50 @@ const AppRouter = () => {
     <Routes>
       <Route path="/login" element={<Login/>}/>
       <Route path="/auth/callback" element={<AuthCallback/>}/>
-      <Route path="/" element={<Protected><Dashboard/></Protected>}/>
-      <Route path="/findings" element={<Protected><Findings/></Protected>}/>
-      <Route path="/findings/:id" element={<Protected><FindingDetail/></Protected>}/>
-      <Route path="/assets" element={<Protected><Assets/></Protected>}/>
-      <Route path="/assets/:id" element={<Protected><AssetDetail/></Protected>}/>
-      <Route path="/products" element={<Protected><Products/></Protected>}/>
-      <Route path="/products/:id" element={<Protected><ProductDetail/></Protected>}/>
-      <Route path="/engagements" element={<Protected><Engagements/></Protected>}/>
-      <Route path="/tickets" element={<Protected><Tickets/></Protected>}/>
-      <Route path="/exceptions" element={<Protected><Exceptions/></Protected>}/>
-      <Route path="/exceptions/new" element={<Protected><RequestRiskAcceptance/></Protected>}/>
-      <Route path="/exceptions/:id" element={<Protected><ExceptionDetail/></Protected>}/>
-      <Route path="/admin/approval-routing" element={<Protected><ApprovalRouting/></Protected>}/>
-      <Route path="/integrations" element={<Protected><Integrations/></Protected>}/>
-      <Route path="/imports" element={<Protected><ImportJobs/></Protected>}/>
-      <Route path="/reports" element={<Protected><Reports/></Protected>}/>
-      <Route path="/admin" element={<Protected><Admin/></Protected>}/>
-      <Route path="/operational" element={<Protected><Operational/></Protected>}/>
-      <Route path="/attack-paths" element={<Protected><AttackPaths/></Protected>}/>
-      <Route path="/admin/tls-certs" element={<Protected><TlsCerts/></Protected>}/>
-      <Route path="/admin/sbom" element={<Protected><SbomUpload/></Protected>}/>
-      <Route path="/admin/yara" element={<Protected><Yara/></Protected>}/>
-      <Route path="/easm" element={<Protected><Easm/></Protected>}/>
-      <Route path="/compliance" element={<Protected><Compliance/></Protected>}/>
-      <Route path="/admin/chatops" element={<Protected><ChatOps/></Protected>}/>
-      <Route path="/admin/health" element={<Protected><OpsHealth/></Protected>}/>
-      <Route path="/admin/backups" element={<Protected><Backups/></Protected>}/>
-      <Route path="/admin/audit-log" element={<Protected><AuditLog/></Protected>}/>
-      <Route path="/admin/assignment-rules" element={<Protected><AssignmentRules/></Protected>}/>
-      <Route path="/admin/ownership" element={<Protected><OwnershipMappings/></Protected>}/>
-      <Route path="/admin/sla-policies" element={<Protected><SlaPolicies/></Protected>}/>
-      <Route path="/admin/playbooks" element={<Protected><Playbooks/></Protected>}/>
-      <Route path="/admin/playbooks/:id" element={<Protected><PlaybookDetail/></Protected>}/>
-      <Route path="/automation" element={<Protected><Automation/></Protected>}/>
-      <Route path="/exposure" element={<Protected><Exposure/></Protected>}/>
-      <Route path="/admin/nmap-scans" element={<Protected><NmapUpload/></Protected>}/>
-      <Route path="/admin/nikto-scans" element={<Protected><NiktoScans/></Protected>}/>
-      <Route path="/admin/recon-osint" element={<Protected><ReconOSINT/></Protected>}/>
-      <Route path="/admin/criticality-scoring" element={<Protected><CriticalityScoring/></Protected>}/>
-      <Route path="/admin/web-scans" element={<Protected><WebScansUpload/></Protected>}/>
-      <Route path="/admin/users" element={<Protected><Users/></Protected>}/>
-      <Route path="/admin/teams" element={<Protected><Teams/></Protected>}/>
-      <Route path="/admin/notifications" element={<Protected><Notifications/></Protected>}/>
+      <Route path="/" element={<Protected module="/"><Dashboard/></Protected>}/>
+      <Route path="/findings" element={<Protected module="/findings"><Findings/></Protected>}/>
+      <Route path="/findings/:id" element={<Protected module="/findings"><FindingDetail/></Protected>}/>
+      <Route path="/assets" element={<Protected module="/assets"><Assets/></Protected>}/>
+      <Route path="/assets/:id" element={<Protected module="/assets"><AssetDetail/></Protected>}/>
+      <Route path="/products" element={<Protected module="/products"><Products/></Protected>}/>
+      <Route path="/products/:id" element={<Protected module="/products"><ProductDetail/></Protected>}/>
+      <Route path="/engagements" element={<Protected module="/engagements"><Engagements/></Protected>}/>
+      <Route path="/tickets" element={<Protected module="/tickets"><Tickets/></Protected>}/>
+      <Route path="/exceptions" element={<Protected module="/exceptions"><Exceptions/></Protected>}/>
+      <Route path="/exceptions/new" element={<Protected module="/exceptions"><RequestRiskAcceptance/></Protected>}/>
+      <Route path="/exceptions/:id" element={<Protected module="/exceptions"><ExceptionDetail/></Protected>}/>
+      <Route path="/admin/approval-routing" element={<Protected module="/admin/approval-routing"><ApprovalRouting/></Protected>}/>
+      <Route path="/integrations" element={<Protected module="/integrations"><Integrations/></Protected>}/>
+      <Route path="/imports" element={<Protected module="/imports"><ImportJobs/></Protected>}/>
+      <Route path="/reports" element={<Protected module="/reports"><Reports/></Protected>}/>
+      <Route path="/admin" element={<Protected module="/admin"><Admin/></Protected>}/>
+      <Route path="/operational" element={<Protected module="/operational"><Operational/></Protected>}/>
+      <Route path="/attack-paths" element={<Protected module="/attack-paths"><AttackPaths/></Protected>}/>
+      <Route path="/admin/tls-certs" element={<Protected module="/admin/tls-certs"><TlsCerts/></Protected>}/>
+      <Route path="/admin/sbom" element={<Protected module="/admin/sbom"><SbomUpload/></Protected>}/>
+      <Route path="/admin/yara" element={<Protected module="/admin/yara"><Yara/></Protected>}/>
+      <Route path="/easm" element={<Protected module="/easm"><Easm/></Protected>}/>
+      <Route path="/compliance" element={<Protected module="/compliance"><Compliance/></Protected>}/>
+      <Route path="/admin/chatops" element={<Protected module="/admin/chatops"><ChatOps/></Protected>}/>
+      <Route path="/admin/health" element={<Protected module="/admin/health"><OpsHealth/></Protected>}/>
+      <Route path="/admin/backups" element={<Protected module="/admin/backups"><Backups/></Protected>}/>
+      <Route path="/admin/audit-log" element={<Protected module="/admin/audit-log"><AuditLog/></Protected>}/>
+      <Route path="/admin/assignment-rules" element={<Protected module="/admin/assignment-rules"><AssignmentRules/></Protected>}/>
+      <Route path="/admin/ownership" element={<Protected module="/admin/ownership"><OwnershipMappings/></Protected>}/>
+      <Route path="/admin/sla-policies" element={<Protected module="/admin/sla-policies"><SlaPolicies/></Protected>}/>
+      <Route path="/admin/playbooks" element={<Protected module="/admin/playbooks"><Playbooks/></Protected>}/>
+      <Route path="/admin/playbooks/:id" element={<Protected module="/admin/playbooks"><PlaybookDetail/></Protected>}/>
+      <Route path="/automation" element={<Protected module="/automation"><Automation/></Protected>}/>
+      <Route path="/exposure" element={<Protected module="/exposure"><Exposure/></Protected>}/>
+      <Route path="/admin/nmap-scans" element={<Protected module="/admin/nmap-scans"><NmapUpload/></Protected>}/>
+      <Route path="/admin/nikto-scans" element={<Protected module="/admin/nikto-scans"><NiktoScans/></Protected>}/>
+      <Route path="/admin/recon-osint" element={<Protected module="/admin/recon-osint"><ReconOSINT/></Protected>}/>
+      <Route path="/admin/criticality-scoring" element={<Protected module="/admin/criticality-scoring"><CriticalityScoring/></Protected>}/>
+      <Route path="/admin/web-scans" element={<Protected module="/admin/web-scans"><WebScansUpload/></Protected>}/>
+      <Route path="/admin/users" element={<Protected module="/admin/users"><Users/></Protected>}/>
+      <Route path="/admin/teams" element={<Protected module="/admin/teams"><Teams/></Protected>}/>
+      <Route path="/admin/notifications" element={<Protected module="/admin/notifications"><Notifications/></Protected>}/>
+      <Route path="/admin/rbac" element={<Protected module="/admin/rbac"><RoleAccess/></Protected>}/>
     </Routes>
   );
 };

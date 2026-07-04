@@ -14,6 +14,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends
 
 from db import db
+from rbac import require_module
 from auth_utils import require_role
 
 router = APIRouter()
@@ -42,6 +43,7 @@ async def audit_log(
     limit: int = 100,
     offset: int = 0,
     user: dict = Depends(require_role("admin", "manager")),
+    _rbac: dict = Depends(require_module("/admin/audit-log")),
 ):
     and_clauses: list = []
     flt: dict = {}

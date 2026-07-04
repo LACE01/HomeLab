@@ -3,22 +3,29 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # Build deps for packages with native extensions (bcrypt, fastuuid, etc.)
-# nikto lives in Debian's non-free component, which isn't enabled by default --
-# turn it on (covers both the legacy one-line sources.list format and the newer
-# deb822 sources.list.d/*.sources format, whichever this base image uses) before
-# installing it, so this doesn't silently fail as "Unable to locate package nikto"
-# on a base image where non-free isn't already on.
-RUN (sed -i 's/^Components: main$/Components: main non-free non-free-firmware/' /etc/apt/sources.list.d/*.sources 2>/dev/null || true) \
-    && (sed -i '/^deb /s/$/ non-free non-free-firmware/' /etc/apt/sources.list 2>/dev/null || true) \
-    && apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     nmap \
-    nikto \
     git \
+    perl \
+    libjson-perl \
+    libxml-writer-perl \
+    libnet-ssleay-perl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Nikto -- installed from source (git clone) rather than Debian's packaged version.
+# Debian's `nikto` apt package is a very old 2013-era release (2.1.5) that predates
+# `-Format json` / `-output -` support entirely (JSON output wasn't added to Nikto
+# until 2.5.0) -- that's the real cause of the "Invalid output format" / "produced no
+# output" errors, not a config or non-free-component issue. Cloning upstream gets the
+# current release, which does support what nikto_scan.py actually shells out with.
+RUN git clone --depth 1 https://github.com/sullo/nikto.git /opt/nikto \
+    && chmod +x /opt/nikto/program/nikto.pl \
+    && ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto
 
 # recon-ng has no pip package -- it's installed by cloning the repo and running its
 # own requirements file, then exposing recon-cli on PATH. See backend/reconng.py for

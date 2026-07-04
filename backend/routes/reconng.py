@@ -3,12 +3,13 @@ execution/parsing engine and its up-front caveats about module-version drift."""
 import asyncio
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from db import db
+from rbac import require_module
 from auth_utils import get_current_user, require_role
 from routes.common import now_iso, _clean
 
@@ -16,15 +17,24 @@ router = APIRouter()
 
 
 @router.get("/v1/recon/modules")
-async def list_modules(user: dict = Depends(get_current_user)):
-    from reconng import MODULE_CATALOG, ALL_REQUIRED_KEYS
+async def list_modules(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/admin/recon-osint"))):
+    from reconng import MODULE_CATALOG, ALL_REQUIRED_KEYS, TARGET_TYPES
     integration = await db.integrations.find_one({"name": "recon-ng"}, {"_id": 0})
     cfg = (integration or {}).get("config") or {}
+    opencti_integration = await db.integrations.find_one({"name": "OpenCTI"}, {"_id": 0})
+    opencti_cfg = (opencti_integration or {}).get("config") or {}
+    opencti_ready = bool(opencti_cfg.get("endpoint") and opencti_cfg.get("api_key"))
+
     items = []
     for m in MODULE_CATALOG:
-        missing = [k for k in m["requires_keys"] if not cfg.get(k)]
-        items.append({**m, "ready": not missing, "missing_keys": missing})
-    return {"items": items, "configured_keys": [k for k in ALL_REQUIRED_KEYS if cfg.get(k)]}
+        if m.get("source") == "opencti":
+            ready = opencti_ready
+            missing = [] if ready else ["OpenCTI connection (Integrations → OpenCTI)"]
+        else:
+            missing = [k for k in m["requires_keys"] if not cfg.get(k)]
+            ready = not missing
+        items.append({**m, "ready": ready, "missing_keys": missing})
+    return {"items": items, "configured_keys": [k for k in ALL_REQUIRED_KEYS if cfg.get(k)], "target_types": TARGET_TYPES}
 
 
 class ReconConfigBody(BaseModel):
@@ -58,32 +68,53 @@ async def get_recon_config(user: dict = Depends(require_role("admin"))):
 
 
 class RunBody(BaseModel):
-    module_id: str
+    module_id: Optional[str] = None       # back-compat: a single module
+    module_ids: Optional[List[str]] = None  # preferred: one or more modules run in one batch
     target: str
+
+    def all_ids(self) -> List[str]:
+        ids = list(dict.fromkeys(self.module_ids or []))  # de-dupe, keep order
+        if self.module_id and self.module_id not in ids:
+            ids.insert(0, self.module_id)
+        return ids
 
 
 async def _execute_run(run_id: str):
+    """Runs every module in run['module_ids'] against run['target'], one at a time
+    (recon-cli isn't safe to run concurrently against the same disposable workspace
+    naming scheme), and records a per-module result so a batch of e.g. HackerTarget +
+    WHOIS + OpenCTI in one submission shows what each one individually found/failed."""
     from reconng import run_module
     run = await db.recon_runs.find_one({"id": run_id}, {"_id": 0})
     if not run:
         return
-    try:
-        result = await run_module(db, run["module_id"], run["target"])
-        await db.recon_runs.update_one({"id": run_id}, {"$set": {
-            "status": "success", "finished_at": now_iso(), "result": result,
-        }})
-    except Exception as e:
-        await db.recon_runs.update_one({"id": run_id}, {"$set": {
-            "status": "failed", "finished_at": now_iso(), "error": str(e),
-        }})
+    results = []
+    any_ok = False
+    for module_id in run.get("module_ids", []):
+        try:
+            result = await run_module(db, module_id, run["target"])
+            results.append({"module_id": module_id, "status": "success", "result": result, "error": None})
+            any_ok = True
+        except Exception as e:
+            results.append({"module_id": module_id, "status": "failed", "result": None, "error": str(e)})
+        # Persist incrementally so the UI can poll and show partial progress on a
+        # multi-module batch instead of waiting for the whole thing to finish.
+        await db.recon_runs.update_one({"id": run_id}, {"$set": {"results": results}})
+    final_status = "success" if any_ok and all(r["status"] == "success" for r in results) else                    "partial" if any_ok else "failed"
+    await db.recon_runs.update_one({"id": run_id}, {"$set": {
+        "status": final_status, "finished_at": now_iso(), "results": results,
+    }})
 
 
 @router.post("/v1/recon/run")
 async def start_run(body: RunBody, user: dict = Depends(require_role("admin", "manager"))):
     from reconng import MODULE_BY_ID, validate_target
-    mod = MODULE_BY_ID.get(body.module_id)
-    if not mod:
-        raise HTTPException(404, f"Unknown module '{body.module_id}'")
+    module_ids = body.all_ids()
+    if not module_ids:
+        raise HTTPException(400, "Select at least one module")
+    unknown = [m for m in module_ids if m not in MODULE_BY_ID]
+    if unknown:
+        raise HTTPException(404, f"Unknown module(s): {', '.join(unknown)}")
     try:
         target = validate_target(body.target)
     except ValueError as e:
@@ -93,8 +124,10 @@ async def start_run(body: RunBody, user: dict = Depends(require_role("admin", "m
         raise HTTPException(409, "Another recon-ng run is already in progress -- wait for it to finish")
     run_id = str(uuid.uuid4())
     doc = {
-        "id": run_id, "module_id": body.module_id, "module_label": mod["label"], "target": target,
-        "status": "running", "started_at": now_iso(), "finished_at": None, "result": None, "error": None,
+        "id": run_id, "module_ids": module_ids,
+        "module_labels": [MODULE_BY_ID[m]["label"] for m in module_ids],
+        "target": target,
+        "status": "running", "started_at": now_iso(), "finished_at": None, "results": [], "error": None,
         "triggered_by": user["email"], "scheduled": False,
     }
     await db.recon_runs.insert_one(doc)
@@ -208,8 +241,9 @@ async def run_due_scheduled_recon(db) -> dict:
             if not mod:
                 continue
             await db.recon_runs.insert_one({
-                "id": run_id, "module_id": sched["module_id"], "module_label": mod["label"], "target": sched["target"],
-                "status": "running", "started_at": now_iso(), "finished_at": None, "result": None, "error": None,
+                "id": run_id, "module_ids": [sched["module_id"]], "module_labels": [mod["label"]],
+                "target": sched["target"],
+                "status": "running", "started_at": now_iso(), "finished_at": None, "results": [], "error": None,
                 "triggered_by": "schedule", "scheduled": True,
             })
             await db.recon_schedules.update_one({"id": sched["id"]}, {"$set": {"last_run_at": now_iso()}})

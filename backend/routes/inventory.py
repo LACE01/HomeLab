@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from db import db
+from rbac import require_module
 from auth_utils import get_current_user, require_role
 
 router = APIRouter()
@@ -22,7 +23,8 @@ async def list_assets(user: dict = Depends(get_current_user),
                      q: Optional[str] = None, criticality: Optional[str] = None,
                      environment: Optional[str] = None, exposure: Optional[str] = None,
                      product_id: Optional[str] = None,
-                     limit: int = 100, offset: int = 0):
+                     limit: int = 100, offset: int = 0,
+                     _rbac: dict = Depends(require_module("/assets"))):
     flt: dict = {}
     if criticality:
         flt["criticality"] = criticality
@@ -127,7 +129,7 @@ async def bulk_assign_product(body: BulkAssignProductBody,
 
 # --------------------------- PRODUCTS ---------------------------
 @router.get("/v1/products")
-async def list_products(user: dict = Depends(get_current_user)):
+async def list_products(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/products"))):
     items = await db.products.find({}, {"_id": 0}).to_list(200)
     for p in items:
         p["asset_count"] = await db.assets.count_documents({"product_id": p["id"]})

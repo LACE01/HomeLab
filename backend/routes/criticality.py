@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from db import db
+from rbac import require_module
 from auth_utils import get_current_user, require_role
 from routes.common import now_iso
 
@@ -14,7 +15,7 @@ router = APIRouter()
 
 
 @router.get("/v1/admin/criticality-rules")
-async def list_rules(user: dict = Depends(get_current_user)):
+async def list_rules(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/admin/criticality-scoring"))):
     from criticality import FIELD_META
     items = await db.criticality_rules.find({}, {"_id": 0}).sort("created_at", 1).to_list(500)
     return {"items": items, "field_meta": FIELD_META}

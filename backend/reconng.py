@@ -66,6 +66,20 @@ MODULE_CATALOG = [
         "result_table": "contacts", "label": "WHOIS Contacts",
         "description": "Harvests point-of-contact names/emails from WHOIS registration records.",
     },
+    # --- IP-address targeted modules ---
+    {
+        "id": "reverse_resolve", "module": "recon/hosts-hosts/reverse_resolve",
+        "category": "recon", "target_type": "ip", "requires_keys": [],
+        "result_table": "hosts", "label": "Reverse DNS (PTR) Lookup",
+        "description": "Resolves an IP address back to any hostname(s) pointing at it via a reverse DNS (PTR) query.",
+    },
+    {
+        "id": "hackertarget_reverse", "module": "recon/hosts-hosts/hackertarget_reverse",
+        "category": "recon", "target_type": "ip", "requires_keys": [],
+        "result_table": "hosts", "label": "HackerTarget Reverse IP Search",
+        "description": "Finds other hostnames sharing the same IP address via HackerTarget's free reverse-IP API.",
+    },
+    # --- Threat intel: breach/paste exposure (needs HIBP key) ---
     {
         "id": "hibp_breach", "module": "recon/contacts-credentials/hibp_breach",
         "category": "threat-intel", "target_type": "email", "requires_keys": ["hibp_api_key"],
@@ -78,10 +92,27 @@ MODULE_CATALOG = [
         "result_table": "credentials", "label": "HaveIBeenPwned — Pastes",
         "description": "Checks a contact email against public paste-site exposure via the HIBP API.",
     },
+    # --- Threat intel: sourced from our own OpenCTI instance, not recon-ng at all.
+    # These reuse the OpenCTI connection already configured under Integrations ->
+    # OpenCTI (endpoint/api_key/CF-Access token), so "ready" for these depends on
+    # that integration being configured, not on a recon-ng API key.
+    {
+        "id": "opencti_domain", "module": None, "source": "opencti",
+        "category": "threat-intel", "target_type": "domain", "requires_keys": [],
+        "result_table": "credentials", "label": "OpenCTI — Domain/IOC Lookup",
+        "description": "Checks this domain against observables and indicators already tracked in your OpenCTI instance.",
+    },
+    {
+        "id": "opencti_ip", "module": None, "source": "opencti",
+        "category": "threat-intel", "target_type": "ip", "requires_keys": [],
+        "result_table": "credentials", "label": "OpenCTI — IP/IOC Lookup",
+        "description": "Checks this IP address against observables and indicators already tracked in your OpenCTI instance.",
+    },
 ]
 
 MODULE_BY_ID = {m["id"]: m for m in MODULE_CATALOG}
 ALL_REQUIRED_KEYS = sorted({k for m in MODULE_CATALOG for k in m["requires_keys"]})
+TARGET_TYPES = ["domain", "ip", "email"]
 
 TARGET_RE = re.compile(r"^[a-zA-Z0-9.@_\-]{1,255}$")
 
@@ -139,14 +170,87 @@ async def _cleanup_workspace(workspace: str) -> None:
         pass  # best-effort -- a leftover workspace is harmless clutter, not a failure
 
 
+async def run_opencti_lookup(target: str) -> list:
+    """Queries our existing OpenCTI integration (Integrations -> OpenCTI -- same
+    endpoint/api_key/CF-Access config already used by the CVE-driven threat-intel
+    panel on Finding Detail) for any observable matching `target`, plus whatever
+    indicators/threat actors are linked to it. This is NOT a recon-ng module -- it's
+    a direct GraphQL call against OpenCTI, routed through the same osint_findings
+    pipeline as the other threat-intel modules so results show up in one place
+    regardless of which source found them.
+    Raises ValueError if OpenCTI isn't configured, RuntimeError on a live API error."""
+    import httpx
+    from db import db as _db
+    integration = await _db.integrations.find_one({"name": "OpenCTI"}, {"_id": 0})
+    cfg = (integration or {}).get("config") or {}
+    endpoint, api_key = cfg.get("endpoint"), cfg.get("api_key")
+    if not endpoint or not api_key:
+        raise ValueError("OpenCTI isn't configured yet -- add endpoint + api_key under Integrations → OpenCTI first.")
+
+    query = (
+        '{ stixCyberObservables(filters: {mode: and, filters: [{key: "value", values: ["'
+        + target.replace('"', '')
+        + '"]}], filterGroups: []}) { edges { node { id entity_type observable_value '
+        'indicators { edges { node { name pattern valid_until } } } '
+        'stixCoreRelationships { edges { node { relationship_type to { '
+        '... on ThreatActor { name } ... on IntrusionSet { name } ... on Malware { name } } } } } '
+        '} } } }'
+    )
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    if cfg.get("cf_access_client_id"):
+        headers["CF-Access-Client-Id"] = cfg["cf_access_client_id"]
+    if cfg.get("cf_access_client_secret"):
+        headers["CF-Access-Client-Secret"] = cfg["cf_access_client_secret"]
+
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=False) as c:
+            r = await c.post(endpoint.rstrip("/") + "/graphql", headers=headers, json={"query": query})
+    except httpx.HTTPError as e:
+        raise RuntimeError(f"Could not reach OpenCTI: {e}")
+    if r.status_code in (301, 302, 303, 307, 308):
+        raise RuntimeError("OpenCTI redirected (likely Cloudflare Access) -- check the connection under Integrations → OpenCTI, same as the CVE threat-intel panel.")
+    if r.status_code != 200:
+        raise RuntimeError(f"OpenCTI HTTP {r.status_code}: {r.text[:200]}")
+    data = r.json()
+    if data.get("errors"):
+        raise RuntimeError(f"OpenCTI GraphQL error: {data['errors'][0].get('message', data['errors'])}")
+
+    edges = ((data.get("data") or {}).get("stixCyberObservables") or {}).get("edges") or []
+    rows = []
+    for e in edges:
+        node = e.get("node") or {}
+        indicators = [
+            (i["node"].get("name") or i["node"].get("pattern") or "")
+            for i in (node.get("indicators") or {}).get("edges", [])
+        ]
+        rels = [
+            f"{rr['node'].get('relationship_type')} → {(rr['node'].get('to') or {}).get('name', '?')}"
+            for rr in (node.get("stixCoreRelationships") or {}).get("edges", [])
+        ]
+        if not indicators and not rels:
+            continue  # a bare observable with no linked intel isn't actionable -- skip it
+        rows.append({
+            "table": "credentials",
+            "resource": node.get("observable_value") or target,
+            "name": f"OpenCTI: {node.get('entity_type', 'Observable')}",
+            "password": None,
+            "detail": f"Indicators: {', '.join(indicators) or 'none'}; Relationships: {', '.join(rels) or 'none'}",
+        })
+    return rows
+
+
 async def run_module(db, module_id: str, target: str, timeout_sec: int = 300) -> dict:
-    """Runs one recon-ng module against `target`, routes the results, and returns a
-    summary dict. Raises ValueError for bad input, RuntimeError/TimeoutError for
-    execution problems."""
+    """Runs one recon-ng module (or, for source="opencti" entries, a direct OpenCTI
+    lookup) against `target`, routes the results, and returns a summary dict. Raises
+    ValueError for bad input, RuntimeError/TimeoutError for execution problems."""
     mod = MODULE_BY_ID.get(module_id)
     if not mod:
         raise ValueError(f"Unknown module '{module_id}'")
     target = validate_target(target)
+
+    if mod.get("source") == "opencti":
+        rows = await run_opencti_lookup(target)
+        return await _route_results(db, mod, target, {"credentials": rows})
 
     integration = await db.integrations.find_one({"name": "recon-ng"}, {"_id": 0})
     cfg = (integration or {}).get("config") or {}
@@ -160,10 +264,19 @@ async def run_module(db, module_id: str, target: str, timeout_sec: int = 300) ->
         rc_lines = []
         for key_name in mod["requires_keys"]:
             rc_lines.append(f"keys add {key_name} {shlex.quote(cfg[key_name])}")
+        # Modern recon-ng (4.x) ships with an empty module marketplace by default --
+        # `modules load <path>` silently no-ops if the module was never installed via
+        # `marketplace install <path>` first, which is what was actually causing "did
+        # not produce a report file": the load (and later the reporting/json load)
+        # never ran because the module wasn't there, not because recon-ng was missing
+        # or misconfigured. `marketplace install` is safe to call every run -- it's a
+        # no-op (prints "already installed") if it's already present.
         rc_lines += [
+            f"marketplace install {mod['module']}",
             f"modules load {mod['module']}",
             f"options set SOURCE {shlex.quote(target)}",
             "run",
+            "marketplace install reporting/json",
             "modules load reporting/json",
             f"options set FILENAME {shlex.quote(report_path)}",
             "run",
@@ -172,7 +285,15 @@ async def run_module(db, module_id: str, target: str, timeout_sec: int = 300) ->
         try:
             await _run_recon_cli(workspace, rc_lines, timeout_sec=timeout_sec)
             if not os.path.exists(report_path):
-                raise RuntimeError("recon-ng did not produce a report file -- the module may not be installed (try `marketplace install` for it inside the container) or produced no results.")
+                raise RuntimeError(
+                    "recon-ng did not produce a report file. This run already attempted "
+                    "`marketplace install` for the module and for reporting/json, so this "
+                    "usually means either: the container has no outbound network access to "
+                    "reach recon-ng's module marketplace index, the module path has drifted "
+                    "in a newer recon-ng release, or the module genuinely returned zero rows. "
+                    "Check the container logs for the recon-cli output, or try "
+                    "`recon-cli -m <module> --show` inside the container to confirm it loads."
+                )
             with open(report_path) as f:
                 report = json.load(f)
         finally:
@@ -242,7 +363,12 @@ async def _ingest_osint_rows(db, mod: dict, target: str, rows: list) -> int:
     created = 0
     for row in rows:
         label = row.get("name") or row.get("resource") or row.get("email") or mod["label"]
-        detail = row.get("password") and "credential exposed" or row.get("resource") or json.dumps(row)[:200]
+        # Some sources (e.g. the OpenCTI lookup above) already produce a human-readable
+        # summary string in "detail" -- respect that instead of re-deriving one.
+        if isinstance(row.get("detail"), str) and row["detail"]:
+            detail = row["detail"]
+        else:
+            detail = row.get("password") and "credential exposed" or row.get("resource") or json.dumps(row)[:200]
         key = f"{mod['id']}:{target}:{label}"
         existing = await db.osint_findings.find_one({"key": key}, {"_id": 0})
         if existing:

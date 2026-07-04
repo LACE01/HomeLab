@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useState, Children, isValidElement } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "@/lib/auth";
 import {
   ChartLineUp, ListChecks, HardDrives, Stack, Lightning, Ticket,
   ShieldCheck, PlugsConnected, FileArrowDown, GearSix, SignOut, Database, Bug,
   UsersThree, Bell, ShareNetwork, BookOpen, Robot, Globe, Certificate, Package, MagnifyingGlass, ClipboardText, SlackLogo, Heartbeat, HardDrive, Notepad, Virus, FlowArrow,
-  CaretDown,
+  CaretDown, LockKey,
 } from "@phosphor-icons/react";
 
 const COLLAPSE_KEY = "vulnops.sidebar.collapsedGroups";
@@ -13,34 +13,48 @@ const loadCollapsed = () => {
   try { return JSON.parse(localStorage.getItem(COLLAPSE_KEY) || "{}"); } catch { return {}; }
 };
 
-const NavItem = ({ to, icon: Icon, label, testid }) => (
-  <NavLink
-    to={to}
-    end={to === "/"}
-    data-testid={testid}
-    className={({ isActive }) =>
-      `flex items-center gap-2.5 px-3 py-1.5 rounded-md text-[13px] transition-colors duration-150 ${
-        isActive
-          ? "bg-blue-500/10 text-blue-300 border-l-2 border-blue-400"
-          : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
-      }`
-    }
-  >
-    <Icon size={16} weight="duotone" />
-    {label}
-  </NavLink>
-);
+const NavItem = ({ to, icon: Icon, label, testid }) => {
+  const { canAccess } = useAuth();
+  // Module key == route path (see backend/rbac.py) -- hide nav items a role's Role
+  // Access config doesn't grant, so the sidebar reflects what the backend will
+  // actually let this user do rather than just letting them click into a 403.
+  if (!canAccess(to)) return null;
+  return (
+    <NavLink
+      to={to}
+      end={to === "/"}
+      data-testid={testid}
+      className={({ isActive }) =>
+        `flex items-center gap-2.5 px-3 py-1.5 rounded-md text-[13px] transition-colors duration-150 ${
+          isActive
+            ? "bg-blue-500/10 text-blue-300 border-l-2 border-blue-400"
+            : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+        }`
+      }
+    >
+      <Icon size={16} weight="duotone" />
+      {label}
+    </NavLink>
+  );
+};
 
-const Group = ({ title, children, collapsed, onToggle }) => (
-  <div className="mb-4">
-    <button onClick={onToggle}
-      className="w-full flex items-center justify-between px-3 mb-1.5 text-[10px] uppercase tracking-wider text-slate-600 hover:text-slate-400 font-mono">
-      <span>{title}</span>
-      <CaretDown size={10} className={`transition-transform ${collapsed ? "-rotate-90" : ""}`}/>
-    </button>
-    {!collapsed && <div className="flex flex-col gap-0.5">{children}</div>}
-  </div>
-);
+const Group = ({ title, children, collapsed, onToggle }) => {
+  // NavItem hides itself (returns null) for modules the user's role can't access --
+  // if every item in a group got hidden that way, don't show an empty collapsible
+  // section with nothing under it.
+  const visibleCount = Children.toArray(children).filter(isValidElement).length;
+  if (visibleCount === 0) return null;
+  return (
+    <div className="mb-4">
+      <button onClick={onToggle}
+        className="w-full flex items-center justify-between px-3 mb-1.5 text-[10px] uppercase tracking-wider text-slate-600 hover:text-slate-400 font-mono">
+        <span>{title}</span>
+        <CaretDown size={10} className={`transition-transform ${collapsed ? "-rotate-90" : ""}`}/>
+      </button>
+      {!collapsed && <div className="flex flex-col gap-0.5">{children}</div>}
+    </div>
+  );
+};
 
 export default function Sidebar() {
   const { user, logout } = useAuth();
@@ -106,6 +120,7 @@ export default function Sidebar() {
           <NavItem to="/admin/ownership" icon={GearSix} label="Ownership Map" testid="nav-ownership" />
           <NavItem to="/admin/sla-policies" icon={ShieldCheck} label="SLA Policies" testid="nav-sla" />
           <NavItem to="/admin/approval-routing" icon={FlowArrow} label="Approval Routing" testid="nav-approval-routing" />
+          <NavItem to="/admin/rbac" icon={LockKey} label="Role Access" testid="nav-rbac" />
         </Group>
       </nav>
 

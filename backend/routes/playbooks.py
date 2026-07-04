@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from db import db
+from rbac import require_module
 from auth_utils import get_current_user, require_role
 from routes.common import now_iso, _clean
 
@@ -36,7 +37,8 @@ class PlaybookBody(BaseModel):
 
 
 @router.get("/v1/playbooks")
-async def list_playbooks(user: dict = Depends(get_current_user), q: Optional[str] = None, category: Optional[str] = None):
+async def list_playbooks(user: dict = Depends(get_current_user), q: Optional[str] = None, category: Optional[str] = None,
+                          _rbac: dict = Depends(require_module("/admin/playbooks"))):
     flt = {}
     if q:
         flt["$or"] = [{"title": {"$regex": q, "$options": "i"}}, {"cve": {"$regex": q, "$options": "i"}},

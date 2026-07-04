@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from db import db
+from rbac import require_module
 from auth_utils import get_current_user
 from routes.common import now_iso
 
@@ -12,7 +13,7 @@ router = APIRouter()
 
 
 @router.get("/v1/compliance/summary")
-async def compliance_summary(user: dict = Depends(get_current_user)):
+async def compliance_summary(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/compliance"))):
     from compliance import compute_compliance_summary
     return await compute_compliance_summary(db)
 

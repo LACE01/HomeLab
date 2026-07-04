@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr
 
 from db import db
+from rbac import require_module
 from auth_utils import hash_password, get_current_user, require_role
 from routes.common import now_iso, _clean
 
@@ -16,7 +17,7 @@ router = APIRouter()
 
 # --------------------------- USERS ---------------------------
 @router.get("/v1/admin/users")
-async def list_users(user: dict = Depends(require_role("admin"))):
+async def list_users(user: dict = Depends(require_role("admin")), _rbac: dict = Depends(require_module("/admin/users"))):
     items = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(100)
     return {"items": items}
 
@@ -175,7 +176,7 @@ class RuleIn(BaseModel):
 
 
 @router.get("/v1/admin/notification-rules")
-async def list_rules_notif(user: dict = Depends(get_current_user)):
+async def list_rules_notif(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/admin/notifications"))):
     items = await db.notification_rules.find({}, {"_id": 0}).to_list(200)
     for r in items:
         if r.get("frequency", "immediate") != "immediate":
@@ -347,7 +348,7 @@ async def assignment_rule_field_values(field: str, user: dict = Depends(get_curr
 
 
 @router.get("/v1/admin/assignment-rules")
-async def list_rules(user: dict = Depends(get_current_user)):
+async def list_rules(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/admin/assignment-rules"))):
     items = await db.assignment_rules.find({}, {"_id": 0}).sort("priority", 1).to_list(200)
     return {"items": items}
 
@@ -486,7 +487,8 @@ STALE_OWNERSHIP_DAYS = 90
 
 @router.get("/v1/ownership-mappings")
 async def ownership_mappings(user: dict = Depends(get_current_user), q: Optional[str] = None,
-                              stale_only: bool = False, low_confidence_only: bool = False):
+                              stale_only: bool = False, low_confidence_only: bool = False,
+                              _rbac: dict = Depends(require_module("/admin/ownership"))):
     flt = {}
     if q:
         flt["$or"] = [{"hostname": {"$regex": q, "$options": "i"}}, {"owner_team": {"$regex": q, "$options": "i"}}]
@@ -556,7 +558,7 @@ async def confirm_ownership(asset_id: str, user: dict = Depends(require_role("ad
 
 
 @router.get("/v1/admin/sla-policies")
-async def get_sla_policies(user: dict = Depends(get_current_user)):
+async def get_sla_policies(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/admin/sla-policies"))):
     from scoring import SLA_DAYS
     return {"policies": SLA_DAYS}
 
@@ -934,7 +936,7 @@ class TeamIn(BaseModel):
 
 
 @router.get("/v1/admin/teams")
-async def list_teams(user: dict = Depends(get_current_user)):
+async def list_teams(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/admin/teams"))):
     """List teams. Includes user count + member emails for convenience."""
     teams = await db.teams.find({}, {"_id": 0}).sort("name", 1).to_list(500)
     # Hydrate members → user summaries

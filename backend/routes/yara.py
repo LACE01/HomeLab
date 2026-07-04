@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from db import db
+from rbac import require_module
 from auth_utils import get_current_user, require_role
 from routes.common import now_iso, _clean
 
@@ -26,7 +27,7 @@ class ValidateBody(BaseModel):
 
 
 @router.get("/v1/admin/yara/rules")
-async def list_rules(user: dict = Depends(get_current_user)):
+async def list_rules(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/admin/yara"))):
     items = await db.yara_rules.find({}, {"_id": 0}).sort("name", 1).to_list(500)
     return {"items": items}
 

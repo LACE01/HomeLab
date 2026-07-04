@@ -5,6 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends
 
 from db import db
+from rbac import require_module
 from auth_utils import get_current_user
 from routes.common import now_iso, parse_time_range
 
@@ -85,6 +86,7 @@ async def dashboard_executive(
     range: Optional[str] = "30d",
     start: Optional[str] = None,
     end: Optional[str] = None,
+    _rbac: dict = Depends(require_module("/")),
 ):
     snap_q: dict = {}
     start_iso, end_iso, days = parse_time_range(range, start, end)
@@ -147,7 +149,7 @@ async def dashboard_executive(
 
 
 @router.get("/v1/dashboards/exposure")
-async def dashboard_exposure(user: dict = Depends(get_current_user)):
+async def dashboard_exposure(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/exposure"))):
     """Attack-surface-centric view: what's actually reachable from the internet, and how
     exposed is it -- rather than severity counts across the whole portfolio regardless of
     reachability."""
@@ -202,7 +204,8 @@ async def dashboard_exposure(user: dict = Depends(get_current_user)):
 
 
 @router.get("/v1/dashboards/operational")
-async def dashboard_operational(user: dict = Depends(get_current_user), team: Optional[str] = None):
+async def dashboard_operational(user: dict = Depends(get_current_user), team: Optional[str] = None,
+                                 _rbac: dict = Depends(require_module("/operational"))):
     base_flt: dict = {}
     if team:
         base_flt["owner_team"] = team

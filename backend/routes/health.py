@@ -2,13 +2,14 @@
 from fastapi import APIRouter, Depends
 
 from db import db
+from rbac import require_module
 from auth_utils import get_current_user
 
 router = APIRouter()
 
 
 @router.get("/v1/admin/health")
-async def health_summary(user: dict = Depends(get_current_user)):
+async def health_summary(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/admin/health"))):
     from heartbeat import get_health_summary
     summary = await get_health_summary(db)
     try:

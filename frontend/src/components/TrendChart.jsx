@@ -19,6 +19,7 @@ const GROUP_BY_OPTIONS = [
 ];
 
 const RANGE_OPTIONS = [
+  { value: 7, label: "7 days", granularity: "day" },
   { value: 30, label: "30 days", granularity: "day" },
   { value: 90, label: "90 days", granularity: "day" },
   { value: 180, label: "6 months", granularity: "week" },

@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from db import db
+from rbac import require_module
 from auth_utils import get_current_user
 from routes.common import now_iso
 from routes.dashboards import dashboard_executive
@@ -101,7 +102,7 @@ async def export_executive_pdf(user: dict = Depends(get_current_user)):
 
 # --------------------------- REPORT BUILDER ---------------------------
 @router.get("/v1/reports/catalog")
-async def reports_catalog(user: dict = Depends(get_current_user)):
+async def reports_catalog(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/reports"))):
     return {"items": REPORT_CATALOG, "group_fields": GROUP_FIELDS,
             "filter_fields": ["severity", "status", "kev_flag", "internet_facing", "owner_team", "product_name", "asset_environment"],
             "metrics": [{"id": "count", "label": "Count of Findings"}, {"id": "risk_sum", "label": "Sum of Risk Score"}],

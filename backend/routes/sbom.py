@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from db import db
+from rbac import require_module
 from auth_utils import require_role
 
 router = APIRouter()
@@ -40,6 +41,6 @@ async def upload_sbom(
 
 
 @router.get("/v1/admin/sbom/uploads")
-async def list_sbom_uploads(user: dict = Depends(require_role("admin"))):
+async def list_sbom_uploads(user: dict = Depends(require_role("admin")), _rbac: dict = Depends(require_module("/admin/sbom"))):
     items = await db.sbom_uploads.find({}, {"_id": 0}).sort("uploaded_at", -1).to_list(100)
     return {"items": items}

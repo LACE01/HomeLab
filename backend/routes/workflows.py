@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from db import db
+from rbac import require_module
 from auth_utils import get_current_user, require_role
 from routes.common import now_iso, _clean
 
@@ -97,7 +98,7 @@ class ApprovalRouteBody(BaseModel):
 
 
 @router.get("/v1/admin/approval-routes")
-async def list_approval_routes(user: dict = Depends(get_current_user)):
+async def list_approval_routes(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/admin/approval-routing"))):
     docs = {d["tier"]: d async for d in db.approval_routes.find({}, {"_id": 0})}
     out = []
     for tier in APPROVAL_TIERS:
@@ -143,14 +144,15 @@ async def reset_approval_route(tier: str, user: dict = Depends(require_role("adm
 
 # --------------------------- ENGAGEMENTS ---------------------------
 @router.get("/v1/engagements")
-async def list_engagements(user: dict = Depends(get_current_user)):
+async def list_engagements(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/engagements"))):
     items = await db.engagements.find({}, {"_id": 0}).sort("started_at", -1).to_list(100)
     return {"items": items}
 
 
 # --------------------------- TICKETS ---------------------------
 @router.get("/v1/tickets")
-async def list_tickets(user: dict = Depends(get_current_user), status: Optional[str] = None):
+async def list_tickets(user: dict = Depends(get_current_user), status: Optional[str] = None,
+                        _rbac: dict = Depends(require_module("/tickets"))):
     flt = {}
     if status:
         flt["status"] = status
@@ -224,7 +226,8 @@ async def preview_exception_target(target_type: str = "finding", target_value: s
 
 
 @router.get("/v1/exceptions")
-async def list_exceptions(user: dict = Depends(get_current_user), status: Optional[str] = None):
+async def list_exceptions(user: dict = Depends(get_current_user), status: Optional[str] = None,
+                           _rbac: dict = Depends(require_module("/exceptions"))):
     flt = {}
     if status:
         flt["status"] = status

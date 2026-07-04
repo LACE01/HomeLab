@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from db import db
+from rbac import require_module
 from auth_utils import get_current_user, require_role
 from routes.common import now_iso, _clean
 
@@ -43,7 +44,7 @@ def _validate(body: WebScanConfigBody) -> None:
 
 
 @router.get("/v1/admin/nikto/configs")
-async def list_scan_configs(user: dict = Depends(get_current_user)):
+async def list_scan_configs(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/admin/nikto-scans"))):
     items = await db.nikto_scan_configs.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
     return {"items": items}
 

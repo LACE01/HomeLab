@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from db import db
+from rbac import require_module
 from auth_utils import get_current_user, require_role
 from routes.common import now_iso
 
@@ -79,7 +80,8 @@ async def scan_domain_now(domain_id: str, user: dict = Depends(require_role("adm
 
 
 @router.get("/v1/admin/easm/candidates")
-async def list_candidates(status: Optional[str] = None, user: dict = Depends(get_current_user)):
+async def list_candidates(status: Optional[str] = None, user: dict = Depends(get_current_user),
+                           _rbac: dict = Depends(require_module("/easm"))):
     query = {"status": status} if status else {}
     items = await db.easm_candidates.find(query, {"_id": 0}).sort("first_seen_at", -1).to_list(2000)
     counts = {

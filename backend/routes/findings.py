@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from db import db
+from rbac import require_module
 from auth_utils import get_current_user, require_role
 from scoring import compute_risk
 from routes.common import now_iso, _clean, finding_ctx
@@ -36,6 +37,7 @@ async def list_findings(
     order: str = "desc",
     limit: int = 100,
     offset: int = 0,
+    _rbac: dict = Depends(require_module("/findings")),
 ):
     flt: dict = {}
     # Team scoping: analyst/executive users only see their team's findings.
@@ -438,7 +440,8 @@ async def attack_path_cves(user: dict = Depends(get_current_user)):
 
 @router.get("/v1/attack-paths/graph")
 async def attack_path_graph(cve: Optional[str] = None, finding_id: Optional[str] = None,
-                             user: dict = Depends(get_current_user)):
+                             user: dict = Depends(get_current_user),
+                             _rbac: dict = Depends(require_module("/attack-paths"))):
     from attack_path import build_attack_path
     return await build_attack_path(db, cve=cve, finding_id=finding_id)
 

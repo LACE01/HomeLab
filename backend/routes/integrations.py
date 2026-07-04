@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from db import db
+from rbac import require_module
 from auth_utils import get_current_user, require_role, verify_api_key
 from scoring import compute_risk, compute_sla_days
 from routes.common import now_iso, _clean, finding_ctx
@@ -18,7 +19,7 @@ logger = logging.getLogger("vulnops.integrations")
 
 # --------------------------- INTEGRATIONS ---------------------------
 @router.get("/v1/integrations")
-async def list_integrations(user: dict = Depends(get_current_user)):
+async def list_integrations(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/integrations"))):
     items = await db.integrations.find({}, {"_id": 0}).to_list(100)
     for i in items:
         cfg = i.get("config") or {}
@@ -124,7 +125,7 @@ async def _generic_reachability_check(cfg: dict) -> dict:
 
 # --------------------------- IMPORT JOBS ---------------------------
 @router.get("/v1/import-jobs")
-async def list_import_jobs(user: dict = Depends(get_current_user)):
+async def list_import_jobs(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/imports"))):
     items = await db.import_jobs.find({}, {"_id": 0}).sort("started_at", -1).limit(200).to_list(200)
     return {"items": items}
 

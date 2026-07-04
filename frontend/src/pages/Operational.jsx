@@ -30,7 +30,14 @@ export default function Operational() {
   const [d, setD] = useState(null);
   const [team, setTeam] = useState(initialTeam);
   const [view, setView] = useState(initialTeam ? "team" : "leaderboard"); // "leaderboard" | "team"
+  const [teams, setTeams] = useState([]);
   const navigate = useNavigate();
+  useEffect(() => {
+    // Sourced from the Teams module (Reports & Admin -> Teams) so this dropdown always
+    // reflects whatever teams actually exist, instead of a free-text field where a typo
+    // silently returns an empty dashboard.
+    api.get("/v1/admin/teams").then(r => setTeams(r.data.items || [])).catch(() => setTeams([]));
+  }, []);
   useEffect(() => {
     if (view !== "team") return;
     api.get("/v1/dashboards/operational", { params: team ? {team} : {} }).then(r => setD(r.data));
@@ -60,8 +67,11 @@ export default function Operational() {
           <button onClick={()=>setView("leaderboard")} className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] rounded inline-flex items-center gap-1.5 text-slate-300">
             <ArrowLeft size={13}/> All teams
           </button>
-          <input placeholder="Scope: team name" data-testid="op-team-filter" value={team} onChange={(e)=>setTeam(e.target.value)}
-            className="h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] w-44"/>
+          <select data-testid="op-team-filter" value={team} onChange={(e)=>setTeam(e.target.value)}
+            className="h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] w-52 text-slate-200">
+            <option value="">All teams</option>
+            {teams.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
+          </select>
         </>
       }>
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-3">
