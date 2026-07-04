@@ -37,17 +37,6 @@ def _group_key(f: dict, group_by: str) -> str:
     return "Findings"
 
 
-def _bucket_date(iso_str: str, granularity: str):
-    try:
-        dt = datetime.fromisoformat((iso_str or "").replace("Z", "+00:00"))
-    except Exception:
-        return None
-    if granularity == "week":
-        monday = dt.date() - timedelta(days=dt.weekday())
-        return monday.isoformat()
-    return dt.date().isoformat()
-
-
 @router.get("/v1/charts/findings-timeseries")
 async def findings_timeseries(
     user: dict = Depends(get_current_user),
@@ -64,8 +53,20 @@ async def findings_timeseries(
     granularity = granularity if granularity in ("day", "week") else "day"
     group_by = group_by if group_by in ("severity", "status", "cwe", "source_tool", "none") else "severity"
 
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    flt: dict = {"first_seen_at": {"$gte": since}}
+    now_date = datetime.now(timezone.utc).date()
+    since_date = now_date - timedelta(days=days)
+    since = since_date.isoformat()
+
+    # Scoping filters only -- deliberately NOT filtering by first_seen_at here. This
+    # used to be "first_seen_at >= since", which only counted findings *newly
+    # discovered* in the window -- a long-lived finding (first seen years ago, still
+    # showing up on every rescan) never appeared on the chart at all, even while the
+    # findings table right below it showed it as an active, currently-present finding.
+    # A chart titled "Vulnerabilities Over Time" should show what was present each
+    # day, not just what was new that day, so the DB query fetches every finding that
+    # could possibly overlap the display window and the actual day-by-day presence
+    # check happens below.
+    flt: dict = {}
     if asset_id:
         flt["asset_id"] = asset_id
     if owner_team:
@@ -80,15 +81,46 @@ async def findings_timeseries(
     raw_counts: dict = {}       # {group_key: total_count} -- used to pick top-N for cwe/source_tool
     bucketed: dict = {}         # {date_str: {group_key: count}}
 
-    cursor = db.findings.find(flt, {"_id": 0, "first_seen_at": 1, "severity": 1, "status": 1, "cwe": 1, "source_tool": 1})
+    cursor = db.findings.find(
+        flt, {"_id": 0, "first_seen_at": 1, "last_seen_at": 1, "severity": 1, "status": 1, "cwe": 1, "source_tool": 1}
+    )
     async for f in cursor:
+        try:
+            first_dt = datetime.fromisoformat((f.get("first_seen_at") or "").replace("Z", "+00:00"))
+        except Exception:
+            continue
+        first_date = first_dt.date()
+        # last_seen_at is refreshed every time a rescan reconfirms a finding is still
+        # present, so it's the best available signal for "how long was this actually
+        # open" -- falls back to first_seen_date for a finding that's only ever been
+        # seen once (last_seen_at missing or equal to first_seen_at).
+        last_raw = f.get("last_seen_at") or f.get("first_seen_at")
+        try:
+            last_date = datetime.fromisoformat((last_raw or "").replace("Z", "+00:00")).date()
+        except Exception:
+            last_date = first_date
+        if last_date < first_date:
+            last_date = first_date  # guard against bad/out-of-order data
+        # Skip findings whose entire presence window falls outside the requested
+        # range (e.g. something closed well before `since`, or -- pathological but
+        # cheap to guard -- first seen after "now").
+        if last_date < since_date or first_date > now_date:
+            continue
+
         key = _group_key(f, group_by)
         raw_counts[key] = raw_counts.get(key, 0) + 1
-        bucket = _bucket_date(f.get("first_seen_at"), granularity)
-        if not bucket:
-            continue
-        bucketed.setdefault(bucket, {})
-        bucketed[bucket][key] = bucketed[bucket].get(key, 0) + 1
+
+        window_start = max(first_date, since_date)
+        window_end = min(last_date, now_date)
+        prev_bucket = None
+        d = window_start
+        while d <= window_end:
+            bucket = (d - timedelta(days=d.weekday())).isoformat() if granularity == "week" else d.isoformat()
+            if bucket != prev_bucket:
+                bucketed.setdefault(bucket, {})
+                bucketed[bucket][key] = bucketed[bucket].get(key, 0) + 1
+                prev_bucket = bucket
+            d += timedelta(days=1)
 
     # Keep the legend readable for high-cardinality dimensions (CWE, source tool) --
     # top 6 by volume, everything else rolled into "Other".
@@ -109,9 +141,8 @@ async def findings_timeseries(
 
     # Build a gap-free date axis -- zero-count days still show up as zero, not a
     # missing point, so the trend line doesn't misleadingly jump. For weekly
-    # granularity this must align to the same Monday-of-week convention _bucket_date
-    # uses, or the axis and the data buckets never match up.
-    now_date = datetime.now(timezone.utc).date()
+    # granularity this must align to the same Monday-of-week convention used above,
+    # or the axis and the data buckets never match up.
     if granularity == "week":
         start_date = now_date - timedelta(days=days)
         start_monday = start_date - timedelta(days=start_date.weekday())
