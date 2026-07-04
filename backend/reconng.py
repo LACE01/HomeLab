@@ -66,6 +66,50 @@ MODULE_CATALOG = [
         "result_table": "contacts", "label": "WHOIS Contacts",
         "description": "Harvests point-of-contact names/emails from WHOIS registration records.",
     },
+    # --- Additional free, no-key domain->hosts/contacts sources -- all confirmed
+    # against the real recon-ng-marketplace module catalog (not guessed paths).
+    {
+        "id": "certificate_transparency", "module": "recon/domains-hosts/certificate_transparency",
+        "category": "recon", "target_type": "domain", "requires_keys": [],
+        "result_table": "hosts", "label": "Certificate Transparency Search",
+        "description": "Searches crt.sh certificate transparency logs for hosts on this domain -- recon-ng-native version of the same crt.sh source the EASM page already uses, so it shows up in one place either way.",
+    },
+    {
+        "id": "google_site_web", "module": "recon/domains-hosts/google_site_web",
+        "category": "recon", "target_type": "domain", "requires_keys": [],
+        "result_table": "hosts", "label": "Google Hostname Search",
+        "description": "Harvests hosts from Google.com using the 'site:' search operator.",
+    },
+    {
+        "id": "netcraft", "module": "recon/domains-hosts/netcraft",
+        "category": "recon", "target_type": "domain", "requires_keys": [],
+        "result_table": "hosts", "label": "Netcraft Hostname Search",
+        "description": "Harvests hosts for this domain from Netcraft.com.",
+    },
+    {
+        "id": "threatcrowd", "module": "recon/domains-hosts/threatcrowd",
+        "category": "recon", "target_type": "domain", "requires_keys": [],
+        "result_table": "hosts", "label": "ThreatCrowd DNS Lookup",
+        "description": "Discovers hosts/subdomains via ThreatCrowd's passive DNS API.",
+    },
+    {
+        "id": "threatminer", "module": "recon/domains-hosts/threatminer",
+        "category": "recon", "target_type": "domain", "requires_keys": [],
+        "result_table": "hosts", "label": "ThreatMiner DNS Lookup",
+        "description": "Discovers subdomains via the ThreatMiner passive-DNS API.",
+    },
+    {
+        "id": "ssl_san", "module": "recon/domains-hosts/ssl_san",
+        "category": "recon", "target_type": "domain", "requires_keys": [],
+        "result_table": "hosts", "label": "SSL SAN Lookup",
+        "description": "Reads the Subject Alternative Names off this domain's TLS certificate to find related hostnames.",
+    },
+    {
+        "id": "pgp_search", "module": "recon/domains-contacts/pgp_search",
+        "category": "recon", "target_type": "domain", "requires_keys": [],
+        "result_table": "contacts", "label": "PGP Key Owner Search",
+        "description": "Searches public PGP key servers for email addresses registered under this domain.",
+    },
     # --- IP-address targeted modules ---
     {
         "id": "reverse_resolve", "module": "recon/hosts-hosts/reverse_resolve",
