@@ -3,6 +3,7 @@ import { useSearchParams, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
+import { useAuth } from "@/lib/auth";
 import { categoryMeta, PLAYBOOK_CATEGORY_META } from "@/lib/playbookCategories";
 import { Plus, X, Trash, PencilSimple, CaretRight } from "@phosphor-icons/react";
 import { toast } from "sonner";
@@ -128,6 +129,8 @@ function PlaybookFormModal({ initial, onClose, onSaved }) {
 
 export default function Playbooks() {
   const navigate = useNavigate();
+  const { canEdit } = useAuth();
+  const canEditPlaybooks = canEdit("/admin/playbooks");
   const [items, setItems] = useState([]);
   const [q, setQ] = useState("");
   const [category, setCategory] = useState(null);
@@ -158,10 +161,12 @@ export default function Playbooks() {
 
   return (
     <Layout title="Remediation Playbooks" subtitle="Step-by-step fix guidance, rollback notes, and validation checks by CVE or CWE"
-      actions={<button data-testid="new-playbook-btn" onClick={()=>{setEditing(null); setShowForm(true);}}
-        className="h-8 px-3 text-[12px] bg-blue-500/15 border border-blue-500/40 hover:bg-blue-500/25 text-blue-300 rounded inline-flex items-center gap-1.5">
-        <Plus size={14}/> New playbook
-      </button>}>
+      actions={canEditPlaybooks && (
+        <button data-testid="new-playbook-btn" onClick={()=>{setEditing(null); setShowForm(true);}}
+          className="h-8 px-3 text-[12px] bg-blue-500/15 border border-blue-500/40 hover:bg-blue-500/25 text-blue-300 rounded inline-flex items-center gap-1.5">
+          <Plus size={14}/> New playbook
+        </button>
+      )}>
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-2 mb-3 flex gap-2">
         <input placeholder="Search title, CVE, or CWE…" value={q} onChange={(e)=>setQ(e.target.value)} onKeyDown={(e)=>e.key==='Enter'&&load()}
           className="flex-1 h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px]"/>
@@ -211,8 +216,12 @@ export default function Playbooks() {
                   </div>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
-                  <button onClick={(e)=>{e.stopPropagation(); setEditing(p); setShowForm(true);}} className="text-slate-500 hover:text-slate-200"><PencilSimple size={14}/></button>
-                  <button onClick={(e)=>{e.stopPropagation(); remove(p);}} className="text-slate-500 hover:text-red-400"><Trash size={14}/></button>
+                  {canEditPlaybooks && (
+                    <>
+                      <button onClick={(e)=>{e.stopPropagation(); setEditing(p); setShowForm(true);}} className="text-slate-500 hover:text-slate-200"><PencilSimple size={14}/></button>
+                      <button onClick={(e)=>{e.stopPropagation(); remove(p);}} className="text-slate-500 hover:text-red-400"><Trash size={14}/></button>
+                    </>
+                  )}
                   <CaretRight size={14} className="text-slate-600 group-hover:text-slate-400 ml-0.5"/>
                 </div>
               </div>

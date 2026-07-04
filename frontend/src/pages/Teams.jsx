@@ -3,11 +3,14 @@ import { api } from "@/lib/api";
 import { toast } from "sonner";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
+import { useAuth } from "@/lib/auth";
 import { Plus, Trash, PencilSimple, Users, X, Check } from "@phosphor-icons/react";
 
 const PRESET_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#64748b", "#06b6d4"];
 
 export default function Teams() {
+  const { user, canEdit } = useAuth();
+  const canEditTeams = canEdit("/admin/teams");
   const [teams, setTeams] = useState([]);
   const [users, setUsers] = useState([]);
   const [showCreate, setShowCreate] = useState(false);
@@ -78,11 +81,13 @@ export default function Teams() {
   return (
     <Layout title="Teams" subtitle="Create teams, attach users — only members see their team's findings"
       actions={
-        <button data-testid="teams-new"
-          onClick={() => setShowCreate(true)}
-          className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded inline-flex items-center gap-1.5">
-          <Plus size={14}/> New Team
-        </button>
+        canEditTeams && (
+          <button data-testid="teams-new"
+            onClick={() => setShowCreate(true)}
+            className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded inline-flex items-center gap-1.5">
+            <Plus size={14}/> New Team
+          </button>
+        )
       }>
 
       {showCreate && (
@@ -203,11 +208,12 @@ export default function Teams() {
                     </td>
                     <td>
                       <div className="flex gap-1">
-                        {t.id && (
-                          <>
-                            <button data-testid={`team-edit-${t.name}`} onClick={()=>startEdit(t)} className="h-7 px-2 text-[11.5px] text-slate-300 hover:text-slate-100 inline-flex items-center gap-1"><PencilSimple size={12}/> Edit</button>
-                            <button data-testid={`team-delete-${t.name}`} onClick={()=>deleteTeam(t)} className="h-7 px-2 text-[11.5px] text-red-300 hover:text-red-200 inline-flex items-center gap-1"><Trash size={12}/></button>
-                          </>
+                        {t.id && canEditTeams && (
+                          <button data-testid={`team-edit-${t.name}`} onClick={()=>startEdit(t)} className="h-7 px-2 text-[11.5px] text-slate-300 hover:text-slate-100 inline-flex items-center gap-1"><PencilSimple size={12}/> Edit</button>
+                        )}
+                        {/* Deleting a team is admin-only regardless of Role Access -- unchanged from before this feature existed. */}
+                        {t.id && user?.role === "admin" && (
+                          <button data-testid={`team-delete-${t.name}`} onClick={()=>deleteTeam(t)} className="h-7 px-2 text-[11.5px] text-red-300 hover:text-red-200 inline-flex items-center gap-1"><Trash size={12}/></button>
                         )}
                       </div>
                     </td>

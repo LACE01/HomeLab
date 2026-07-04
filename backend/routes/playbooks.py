@@ -58,14 +58,16 @@ async def get_playbook(playbook_id: str, user: dict = Depends(get_current_user))
 
 
 @router.post("/v1/playbooks")
-async def create_playbook(body: PlaybookBody, user: dict = Depends(require_role("admin", "manager"))):
+async def create_playbook(body: PlaybookBody, user: dict = Depends(require_role("admin", "manager")),
+                           _rbac: dict = Depends(require_module("/admin/playbooks", level="edit"))):
     doc = {"id": str(uuid.uuid4()), **body.model_dump(), "created_at": now_iso(), "created_by": user["email"]}
     await db.playbooks.insert_one(doc)
     return _clean(doc)
 
 
 @router.put("/v1/playbooks/{playbook_id}")
-async def update_playbook(playbook_id: str, body: PlaybookBody, user: dict = Depends(require_role("admin", "manager"))):
+async def update_playbook(playbook_id: str, body: PlaybookBody, user: dict = Depends(require_role("admin", "manager")),
+                           _rbac: dict = Depends(require_module("/admin/playbooks", level="edit"))):
     p = await db.playbooks.find_one({"id": playbook_id}, {"_id": 0})
     if not p:
         raise HTTPException(404, "Playbook not found")
@@ -76,7 +78,8 @@ async def update_playbook(playbook_id: str, body: PlaybookBody, user: dict = Dep
 
 
 @router.delete("/v1/playbooks/{playbook_id}")
-async def delete_playbook(playbook_id: str, user: dict = Depends(require_role("admin", "manager"))):
+async def delete_playbook(playbook_id: str, user: dict = Depends(require_role("admin", "manager")),
+                           _rbac: dict = Depends(require_module("/admin/playbooks", level="edit"))):
     await db.playbooks.delete_one({"id": playbook_id})
     return {"ok": True}
 

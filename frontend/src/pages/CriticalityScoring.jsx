@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
+import { useAuth } from "@/lib/auth";
 import { Plus, Trash, ArrowsClockwise, Info } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -37,6 +38,8 @@ function MultiValueInput({ values, onChange, placeholder }) {
 const EMPTY_DRAFT = { name: "", field: "port", values: [], points: 10, enabled: true };
 
 export default function CriticalityScoring() {
+  const { canEdit } = useAuth();
+  const canEditScoring = canEdit("/admin/criticality-scoring");
   const [rules, setRules] = useState([]);
   const [fieldMeta, setFieldMeta] = useState({});
   const [thresholds, setThresholds] = useState(null);
@@ -101,10 +104,12 @@ export default function CriticalityScoring() {
   return (
     <Layout title="Asset Criticality Scoring" subtitle="Auto-score asset criticality from what's actually detected running on it — fully adjustable per your org"
       actions={
-        <button onClick={recomputeAll} disabled={recomputing}
-          className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-white rounded inline-flex items-center gap-1.5">
-          <ArrowsClockwise size={13} className={recomputing ? "animate-spin" : ""}/> {recomputing ? "Recomputing…" : "Recompute all assets"}
-        </button>
+        canEditScoring && (
+          <button onClick={recomputeAll} disabled={recomputing}
+            className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-white rounded inline-flex items-center gap-1.5">
+            <ArrowsClockwise size={13} className={recomputing ? "animate-spin" : ""}/> {recomputing ? "Recomputing…" : "Recompute all assets"}
+          </button>
+        )
       }>
       <div className="border border-blue-500/30 bg-blue-500/5 rounded-md px-3 py-2.5 mb-4 text-[12px] text-blue-200 leading-relaxed flex items-start gap-2 max-w-3xl">
         <Info size={16} className="shrink-0 mt-0.5"/>

@@ -6,10 +6,10 @@ const AuthCtx = createContext(null);
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  // Which module keys (route paths -- see backend/rbac.py) this user's role can
-  // access. null = "not loaded yet" (treated as "allow" so we never flash a false
-  // access-restricted screen before the real answer comes back); admins always get
-  // full access without waiting on this call.
+  // {moduleKey: "view"|"edit"} for this user's role -- see backend/rbac.py. null =
+  // "not loaded yet / unrestricted" (treated as "allow everything" so we never flash
+  // a false access-restricted screen before the real answer comes back, and so admins
+  // never wait on this call at all).
   const [moduleAccess, setModuleAccess] = useState(null);
 
   const loadModuleAccess = async (u) => {
@@ -17,7 +17,7 @@ export const AuthProvider = ({ children }) => {
     if (u.role === "admin") { setModuleAccess(null); return; } // null = unrestricted for admin
     try {
       const r = await api.get("/v1/me/module-access");
-      setModuleAccess(r.data.modules || []);
+      setModuleAccess(r.data.access || {});
     } catch {
       setModuleAccess(null); // fail open on the client -- the backend guard is the real gate
     }
@@ -60,12 +60,12 @@ export const AuthProvider = ({ children }) => {
     setModuleAccess(null);
   };
 
-  // moduleAccess === null means "unrestricted" (admin, or not loaded yet) -- an array
-  // means "exactly these module keys are allowed".
-  const canAccess = (moduleKey) => !moduleKey || moduleAccess === null || moduleAccess.includes(moduleKey);
+  // moduleAccess === null means "unrestricted" (admin, or not loaded yet).
+  const canAccess = (moduleKey) => !moduleKey || moduleAccess === null || !!moduleAccess[moduleKey];
+  const canEdit = (moduleKey) => !moduleKey || moduleAccess === null || moduleAccess[moduleKey] === "edit";
 
   return (
-    <AuthCtx.Provider value={{ user, loading, login, logout, moduleAccess, canAccess }}>
+    <AuthCtx.Provider value={{ user, loading, login, logout, moduleAccess, canAccess, canEdit }}>
       {children}
     </AuthCtx.Provider>
   );

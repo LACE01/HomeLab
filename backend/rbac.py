@@ -10,21 +10,32 @@ A module's "key" is literally the frontend route path (e.g. "/findings",
 the Sidebar/App.js route list on what a "module" is, instead of a separate id that can
 drift out of sync with the actual page.
 
-Enforcement happens in two places:
-  - Frontend: Sidebar hides nav items for modules a role can't access, and every Route
-    is wrapped in a guard that shows a plain "access restricted" message for direct/
-    typed URLs to a module the current user's role doesn't have.
-  - Backend: `require_module(key)` gates each module's primary data endpoint, so this
-    is real access control, not just a UI hint -- calling the API directly with a
-    valid token doesn't bypass it. Coverage note: this is applied to one representative
-    "main load" endpoint per module (the one the page's initial data fetch hits), not
-    to every single sub-endpoint that module's page might also call -- doing that
-    exhaustively across ~150 endpoints was out of scope for this pass. Treat this as
-    real, but not yet total, backend enforcement.
+Access per (role, module) is one of two levels:
+  - "view": can see the module and its data.
+  - "edit": can see it AND use its create/update/delete actions.
+Not present at all == no access, module is hidden entirely. "edit" implies "view" --
+there's no such thing as edit-without-view here.
 
-"admin" always has access to everything, unconditionally -- this can't be configured
-away, specifically so there's no way to lock every admin out of the one page (Role
-Access) that could undo a mistake here.
+Enforcement happens in two places:
+  - Frontend: Sidebar hides nav items for modules a role can't at least view, every
+    Route is wrapped with a guard that shows a plain "access restricted" message for
+    direct/typed URLs, and a handful of pages hide their create/edit/delete controls
+    behind `canEdit()` (see frontend/src/lib/auth.jsx) -- not yet every page that has
+    one, see the coverage note below.
+  - Backend: `require_module(key)` (view) and `require_module(key, level="edit")`
+    gate real endpoints, so this is actual access control, not just a UI hint --
+    calling the API directly with a valid token doesn't bypass it. Coverage note:
+    "view" is applied to one representative "main load" endpoint per module; "edit" is
+    applied to a representative set of mutating endpoints (the ones already gated by
+    require_role("admin", "manager") -- i.e. where a manager's role alone would
+    otherwise be sufic to act, so the module-level "edit" grant is the thing that
+    still adds a real restriction). Doing this exhaustively across every one of the
+    ~150 routes in the app was out of scope for this pass. Treat this as real, but not
+    yet total, enforcement.
+
+"admin" always has access to everything, unconditionally, at "edit" level -- this
+can't be configured away, specifically so there's no way to lock every admin out of
+the one page (Role Access) that could undo a mistake here.
 """
 from fastapi import Depends, HTTPException
 
@@ -32,6 +43,7 @@ from auth_utils import get_current_user
 
 ALL_ROLES = ["admin", "manager", "analyst", "executive"]
 CONFIGURABLE_ROLES = [r for r in ALL_ROLES if r != "admin"]
+LEVELS = ["view", "edit"]
 
 MODULE_REGISTRY = [
     # --- Operations ---
@@ -60,6 +72,7 @@ MODULE_REGISTRY = [
     {"key": "/admin/criticality-scoring", "label": "Criticality Scoring", "group": "Integrations"},
     {"key": "/admin/sbom", "label": "SBOM / Dependencies", "group": "Integrations"},
     {"key": "/admin/yara", "label": "YARA Scanning", "group": "Integrations"},
+    {"key": "/admin/scan-schedule", "label": "Scan Schedule", "group": "Integrations"},
     # --- Reports & Admin ---
     {"key": "/reports", "label": "Reports", "group": "Reports & Admin"},
     {"key": "/compliance", "label": "Compliance", "group": "Reports & Admin"},
@@ -81,9 +94,9 @@ MODULE_KEYS = [m["key"] for m in MODULE_REGISTRY]
 
 # Modules that default to admin-only until an admin opts other roles in -- mostly the
 # sensitive/config-heavy corners of Reports & Admin. Everything else defaults to
-# available for manager/analyst so turning this feature on doesn't immediately break
-# anyone's current workflow; "executive" defaults to a small, read-oriented set since
-# that's the role most orgs actually want restricted out of the box.
+# "edit" for manager/analyst so turning this feature on doesn't immediately downgrade
+# anyone's current day-to-day capability; "executive" defaults to a small, view-only
+# set since that's the role most orgs actually want restricted out of the box.
 _ADMIN_ONLY_BY_DEFAULT = {
     "/admin/users", "/admin/notifications", "/admin/chatops", "/admin/health",
     "/admin/backups", "/admin/audit-log", "/admin/assignment-rules", "/admin/sla-policies",
@@ -92,37 +105,73 @@ _ADMIN_ONLY_BY_DEFAULT = {
 
 
 def _default_access() -> dict:
-    everyone = [m["key"] for m in MODULE_REGISTRY if m["key"] not in _ADMIN_ONLY_BY_DEFAULT]
-    executive_view = ["/", "/operational", "/reports", "/compliance", "/exposure", "/findings", "/assets"]
+    everyone_edit = {m["key"]: "edit" for m in MODULE_REGISTRY if m["key"] not in _ADMIN_ONLY_BY_DEFAULT}
+    executive_view = {k: "view" for k in ["/", "/operational", "/reports", "/compliance", "/exposure", "/findings", "/assets"]}
     return {
-        "manager": list(everyone),
-        "analyst": list(everyone),
+        "manager": dict(everyone_edit),
+        "analyst": dict(everyone_edit),
         "executive": executive_view,
     }
 
 
+def _normalize_access(cfg: dict) -> dict:
+    """Upgrades the pre-view/edit config shape (role -> [module_key, ...], meaning
+    plain "has access") to the current shape (role -> {module_key: level}) -- treating
+    every legacy entry as "edit" so migrating to this feature never silently downgrades
+    someone's existing capability without an admin deciding to."""
+    out = {}
+    for role, val in (cfg or {}).items():
+        if isinstance(val, list):
+            out[role] = {k: "edit" for k in val}
+        elif isinstance(val, dict):
+            out[role] = {k: (lvl if lvl in LEVELS else "view") for k, lvl in val.items()}
+        else:
+            out[role] = {}
+    return out
+
+
 async def get_access_config(db) -> dict:
     doc = await db.rbac_config.find_one({}, {"_id": 0})
-    return (doc or {}).get("access") or _default_access()
+    raw = (doc or {}).get("access")
+    if not raw:
+        return _default_access()
+    return _normalize_access(raw)
 
 
 async def allowed_modules_for_role(db, role: str) -> list:
+    """Back-compat helper: flat list of module keys this role can at least view."""
     if role == "admin":
         return list(MODULE_KEYS)
     cfg = await get_access_config(db)
-    return cfg.get(role, [])
+    return list(cfg.get(role, {}).keys())
 
 
-def require_module(module_key: str):
+async def access_map_for_role(db, role: str) -> dict:
+    """{module_key: "view"|"edit"} for this role -- what the frontend needs to also
+    know edit permission, not just visibility."""
+    if role == "admin":
+        return {k: "edit" for k in MODULE_KEYS}
+    cfg = await get_access_config(db)
+    return cfg.get(role, {})
+
+
+def _meets(level_required: str, level_granted: str) -> bool:
+    if level_granted == "edit":
+        return True  # edit satisfies both "view" and "edit" requirements
+    return level_required == "view" and level_granted == "view"
+
+
+def require_module(module_key: str, level: str = "view"):
     """FastAPI dependency, same calling convention as auth_utils.require_role -- gates
-    one endpoint behind a module key instead of a fixed role list, so the admin-editable
-    Role Access mapping is what decides who gets through, not a hardcoded role check."""
+    one endpoint behind a module key (+ required level) instead of a fixed role list,
+    so the admin-editable Role Access mapping is what decides who gets through."""
     async def checker(user: dict = Depends(get_current_user)):
         if user.get("role") == "admin":
             return user
         from db import db
-        allowed = await allowed_modules_for_role(db, user.get("role"))
-        if module_key not in allowed:
-            raise HTTPException(status_code=403, detail="Your role doesn't have access to this module. Ask an admin to grant it under Reports & Admin -> Role Access.")
+        granted = (await access_map_for_role(db, user.get("role"))).get(module_key)
+        if not granted or not _meets(level, granted):
+            verb = "edit" if level == "edit" else "access"
+            raise HTTPException(status_code=403, detail=f"Your role doesn't have {verb} permission on this module. Ask an admin under Reports & Admin -> Role Access.")
         return user
     return checker

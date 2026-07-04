@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
+import { useAuth } from "@/lib/auth";
 import {
   Plus, X, Trash, PencilSimple, Play, Eye, Robot, Power, ClockCounterClockwise,
 } from "@phosphor-icons/react";
@@ -259,6 +260,8 @@ function RuleFormModal({ meta, initial, onClose, onSaved }) {
 }
 
 export default function Automation() {
+  const { canEdit } = useAuth();
+  const canEditAutomation = canEdit("/automation");
   const [rules, setRules] = useState([]);
   const [meta, setMeta] = useState(null);
   const [runs, setRuns] = useState([]);
@@ -307,10 +310,12 @@ export default function Automation() {
 
   return (
     <Layout title="Automation" subtitle="Condition-based rules that assign, tag, notify, and re-status findings automatically"
-      actions={<button onClick={()=>{setEditing(null); setShowForm(true);}}
-        className="h-8 px-3 text-[12px] bg-blue-500/15 border border-blue-500/40 hover:bg-blue-500/25 text-blue-300 rounded inline-flex items-center gap-1.5">
-        <Plus size={14}/> New rule
-      </button>}>
+      actions={canEditAutomation && (
+        <button onClick={()=>{setEditing(null); setShowForm(true);}}
+          className="h-8 px-3 text-[12px] bg-blue-500/15 border border-blue-500/40 hover:bg-blue-500/25 text-blue-300 rounded inline-flex items-center gap-1.5">
+          <Plus size={14}/> New rule
+        </button>
+      )}>
 
       <div className="text-[11.5px] text-slate-500 border border-[#30363D] bg-[#0D1117] rounded-md px-3 py-2.5 mb-3 flex items-center gap-2">
         <Robot size={15} className="text-blue-300 shrink-0"/>
@@ -344,11 +349,15 @@ export default function Automation() {
                 </div>
               </div>
               <div className="flex items-center gap-1 shrink-0">
-                <button onClick={()=>toggleEnabled(rule)} title="Enable/disable" className="text-slate-500 hover:text-emerald-400"><Power size={14}/></button>
                 <button onClick={()=>runPreview(rule)} title="Preview matches" className="text-slate-500 hover:text-blue-300"><Eye size={14}/></button>
-                <button onClick={()=>runNow(rule)} title="Run now" className="text-slate-500 hover:text-emerald-400"><Play size={14}/></button>
-                <button onClick={()=>{setEditing(rule); setShowForm(true);}} className="text-slate-500 hover:text-slate-200"><PencilSimple size={14}/></button>
-                <button onClick={()=>remove(rule)} className="text-slate-500 hover:text-red-400"><Trash size={14}/></button>
+                {canEditAutomation && (
+                  <>
+                    <button onClick={()=>toggleEnabled(rule)} title="Enable/disable" className="text-slate-500 hover:text-emerald-400"><Power size={14}/></button>
+                    <button onClick={()=>runNow(rule)} title="Run now" className="text-slate-500 hover:text-emerald-400"><Play size={14}/></button>
+                    <button onClick={()=>{setEditing(rule); setShowForm(true);}} className="text-slate-500 hover:text-slate-200"><PencilSimple size={14}/></button>
+                    <button onClick={()=>remove(rule)} className="text-slate-500 hover:text-red-400"><Trash size={14}/></button>
+                  </>
+                )}
               </div>
             </div>
             {rule.description && <div className="text-[12px] text-slate-500 mt-1.5">{rule.description}</div>}

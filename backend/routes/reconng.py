@@ -107,7 +107,8 @@ async def _execute_run(run_id: str):
 
 
 @router.post("/v1/recon/run")
-async def start_run(body: RunBody, user: dict = Depends(require_role("admin", "manager"))):
+async def start_run(body: RunBody, user: dict = Depends(require_role("admin", "manager")),
+                     _rbac: dict = Depends(require_module("/admin/recon-osint", level="edit"))):
     from reconng import MODULE_BY_ID, validate_target
     module_ids = body.all_ids()
     if not module_ids:

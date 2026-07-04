@@ -299,7 +299,8 @@ async def list_rules(user: dict = Depends(get_current_user), _rbac: dict = Depen
 
 
 @router.post("/v1/automation/rules")
-async def create_rule(body: RuleBody, user: dict = Depends(require_role("admin", "manager"))):
+async def create_rule(body: RuleBody, user: dict = Depends(require_role("admin", "manager")),
+                       _rbac: dict = Depends(require_module("/automation", level="edit"))):
     doc = {"id": str(uuid.uuid4()), **body.model_dump(), "run_count": 0, "last_run_at": None,
            "created_at": now_iso(), "created_by": user["email"]}
     await db.automation_rules.insert_one(doc)
@@ -307,7 +308,8 @@ async def create_rule(body: RuleBody, user: dict = Depends(require_role("admin",
 
 
 @router.put("/v1/automation/rules/{rule_id}")
-async def update_rule(rule_id: str, body: RuleBody, user: dict = Depends(require_role("admin", "manager"))):
+async def update_rule(rule_id: str, body: RuleBody, user: dict = Depends(require_role("admin", "manager")),
+                       _rbac: dict = Depends(require_module("/automation", level="edit"))):
     existing = await db.automation_rules.find_one({"id": rule_id}, {"_id": 0})
     if not existing:
         raise HTTPException(404, "Rule not found")
@@ -318,7 +320,8 @@ async def update_rule(rule_id: str, body: RuleBody, user: dict = Depends(require
 
 
 @router.delete("/v1/automation/rules/{rule_id}")
-async def delete_rule(rule_id: str, user: dict = Depends(require_role("admin", "manager"))):
+async def delete_rule(rule_id: str, user: dict = Depends(require_role("admin", "manager")),
+                       _rbac: dict = Depends(require_module("/automation", level="edit"))):
     await db.automation_rules.delete_one({"id": rule_id})
     return {"ok": True}
 
@@ -332,7 +335,8 @@ async def preview_rule(rule_id: str, user: dict = Depends(get_current_user)):
 
 
 @router.post("/v1/automation/rules/{rule_id}/run")
-async def run_rule_now(rule_id: str, user: dict = Depends(require_role("admin", "manager"))):
+async def run_rule_now(rule_id: str, user: dict = Depends(require_role("admin", "manager")),
+                        _rbac: dict = Depends(require_module("/automation", level="edit"))):
     rule = await db.automation_rules.find_one({"id": rule_id}, {"_id": 0})
     if not rule:
         raise HTTPException(404, "Rule not found")

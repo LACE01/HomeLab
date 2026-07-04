@@ -690,7 +690,8 @@ class OwnerTeamBody(BaseModel):
 
 
 @router.post("/v1/findings/bulk-owner")
-async def bulk_owner(body: OwnerTeamBody, user: dict = Depends(require_role("admin", "manager"))):
+async def bulk_owner(body: OwnerTeamBody, user: dict = Depends(require_role("admin", "manager")),
+                      _rbac: dict = Depends(require_module("/findings", level="edit"))):
     """Bulk-update owner_team for selected findings. Sets ownership_confidence to 1.0
     because a human explicitly assigned them."""
     await db.findings.update_many(

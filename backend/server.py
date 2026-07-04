@@ -37,6 +37,7 @@ from routes.reconng import router as reconng_router
 from routes.criticality import router as criticality_router
 from routes.charts import router as charts_router
 from routes.rbac import router as rbac_router
+from routes.scan_schedule import router as scan_schedule_router
 from routes.certs import router as certs_router
 from routes.sbom import router as sbom_router
 from routes.easm import router as easm_router
@@ -82,6 +83,7 @@ api.include_router(backups_router)
 api.include_router(audit_router)
 api.include_router(yara_router)
 api.include_router(rbac_router)
+api.include_router(scan_schedule_router)
 
 
 @api.get("/")

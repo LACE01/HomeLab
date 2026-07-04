@@ -105,7 +105,8 @@ async def _apply_product_to_assets(asset_ids: List[str], product_id: Optional[st
 
 @router.post("/v1/assets/{asset_id}/product")
 async def assign_asset_product(asset_id: str, body: AssignProductBody,
-                                user: dict = Depends(require_role("admin", "manager"))):
+                                user: dict = Depends(require_role("admin", "manager")),
+                                _rbac: dict = Depends(require_module("/products", level="edit"))):
     a = await db.assets.find_one({"id": asset_id}, {"_id": 0})
     if not a:
         raise HTTPException(404, "Asset not found")
@@ -120,7 +121,8 @@ class BulkAssignProductBody(BaseModel):
 
 @router.post("/v1/assets/bulk-assign-product")
 async def bulk_assign_product(body: BulkAssignProductBody,
-                               user: dict = Depends(require_role("admin", "manager"))):
+                               user: dict = Depends(require_role("admin", "manager")),
+                               _rbac: dict = Depends(require_module("/products", level="edit"))):
     if not body.asset_ids:
         raise HTTPException(400, "asset_ids is required")
     updated = await _apply_product_to_assets(body.asset_ids, body.product_id)
@@ -164,7 +166,8 @@ class ProductBody(BaseModel):
 
 
 @router.post("/v1/products")
-async def create_product(body: ProductBody, user: dict = Depends(require_role("admin", "manager"))):
+async def create_product(body: ProductBody, user: dict = Depends(require_role("admin", "manager")),
+                          _rbac: dict = Depends(require_module("/products", level="edit"))):
     doc = {"id": str(uuid.uuid4()), **body.model_dump(), "created_at": _now_iso()}
     await db.products.insert_one(doc)
     return _clean_out(doc)
@@ -172,7 +175,8 @@ async def create_product(body: ProductBody, user: dict = Depends(require_role("a
 
 @router.put("/v1/products/{product_id}")
 async def update_product(product_id: str, body: ProductBody,
-                          user: dict = Depends(require_role("admin", "manager"))):
+                          user: dict = Depends(require_role("admin", "manager")),
+                          _rbac: dict = Depends(require_module("/products", level="edit"))):
     p = await db.products.find_one({"id": product_id}, {"_id": 0})
     if not p:
         raise HTTPException(404, "Product not found")

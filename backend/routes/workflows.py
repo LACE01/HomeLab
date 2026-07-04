@@ -448,7 +448,8 @@ class RevokeBody(BaseModel):
 
 
 @router.post("/v1/exceptions/{exception_id}/revoke")
-async def revoke_exception(exception_id: str, body: RevokeBody, user: dict = Depends(require_role("admin", "manager"))):
+async def revoke_exception(exception_id: str, body: RevokeBody, user: dict = Depends(require_role("admin", "manager")),
+                            _rbac: dict = Depends(require_module("/exceptions", level="edit"))):
     """Denies an ALREADY-approved (active) risk acceptance -- distinct from reject,
     which only applies before approval. Used when new information (e.g. escalating
     exploitation activity) means the org no longer wants to carry this risk for the

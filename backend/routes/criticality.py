@@ -102,7 +102,8 @@ async def set_thresholds(body: ThresholdsBody, user: dict = Depends(require_role
 
 
 @router.post("/v1/admin/assets/recompute-criticality")
-async def bulk_recompute(user: dict = Depends(require_role("admin", "manager"))):
+async def bulk_recompute(user: dict = Depends(require_role("admin", "manager")),
+                          _rbac: dict = Depends(require_module("/admin/criticality-scoring", level="edit"))):
     from criticality import recompute_all
     return await recompute_all(db)
 
@@ -113,7 +114,8 @@ class CriticalityOverrideBody(BaseModel):
 
 
 @router.patch("/v1/assets/{asset_id}/criticality")
-async def set_asset_criticality(asset_id: str, body: CriticalityOverrideBody, user: dict = Depends(require_role("admin", "manager"))):
+async def set_asset_criticality(asset_id: str, body: CriticalityOverrideBody, user: dict = Depends(require_role("admin", "manager")),
+                                 _rbac: dict = Depends(require_module("/admin/criticality-scoring", level="edit"))):
     from criticality import TIERS, recompute_asset_criticality
     asset = await db.assets.find_one({"id": asset_id}, {"_id": 0})
     if not asset:

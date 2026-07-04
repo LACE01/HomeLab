@@ -5,7 +5,7 @@ import {
   ChartLineUp, ListChecks, HardDrives, Stack, Lightning, Ticket,
   ShieldCheck, PlugsConnected, FileArrowDown, GearSix, SignOut, Database, Bug,
   UsersThree, Bell, ShareNetwork, BookOpen, Robot, Globe, Certificate, Package, MagnifyingGlass, ClipboardText, SlackLogo, Heartbeat, HardDrive, Notepad, Virus, FlowArrow,
-  CaretDown, LockKey,
+  CaretDown, LockKey, CalendarBlank,
 } from "@phosphor-icons/react";
 
 const COLLAPSE_KEY = "vulnops.sidebar.collapsedGroups";
@@ -104,6 +104,7 @@ export default function Sidebar() {
           <NavItem to="/admin/criticality-scoring" icon={Stack} label="Criticality Scoring" testid="nav-criticality-scoring" />
           <NavItem to="/admin/sbom" icon={Package} label="SBOM / Dependencies" testid="nav-sbom" />
           <NavItem to="/admin/yara" icon={Virus} label="YARA Scanning" testid="nav-yara" />
+          <NavItem to="/admin/scan-schedule" icon={CalendarBlank} label="Scan Schedule" testid="nav-scan-schedule" />
         </Group>
         <Group title="Reports & Admin" collapsed={!!collapsed["Reports & Admin"]} onToggle={()=>toggleGroup("Reports & Admin")}>
           <NavItem to="/reports" icon={FileArrowDown} label="Reports" testid="nav-reports" />

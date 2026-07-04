@@ -512,7 +512,8 @@ class ReassignOwnerBody(BaseModel):
 
 
 @router.post("/v1/assets/{asset_id}/reassign-owner")
-async def reassign_owner(asset_id: str, body: ReassignOwnerBody, user: dict = Depends(require_role("admin", "manager"))):
+async def reassign_owner(asset_id: str, body: ReassignOwnerBody, user: dict = Depends(require_role("admin", "manager")),
+                          _rbac: dict = Depends(require_module("/admin/ownership", level="edit"))):
     """Directly set an asset's owner team from the Ownership Mappings page, instead of
     only being able to Confirm whatever a rule already inferred. Counts as a
     confirmation too -- resets confidence/staleness the same way confirm-ownership does."""
@@ -540,7 +541,8 @@ async def reassign_owner(asset_id: str, body: ReassignOwnerBody, user: dict = De
 
 
 @router.post("/v1/assets/{asset_id}/confirm-ownership")
-async def confirm_ownership(asset_id: str, user: dict = Depends(require_role("admin", "manager"))):
+async def confirm_ownership(asset_id: str, user: dict = Depends(require_role("admin", "manager")),
+                             _rbac: dict = Depends(require_module("/admin/ownership", level="edit"))):
     """A human looked at this asset's owner team and confirmed it's correct -- resets the
     staleness clock even if the team assignment itself doesn't change."""
     asset = await db.assets.find_one({"id": asset_id}, {"_id": 0})
@@ -963,7 +965,8 @@ async def list_teams(user: dict = Depends(get_current_user), _rbac: dict = Depen
 
 
 @router.post("/v1/admin/teams")
-async def create_team(body: TeamIn, user: dict = Depends(require_role("admin", "manager"))):
+async def create_team(body: TeamIn, user: dict = Depends(require_role("admin", "manager")),
+                      _rbac: dict = Depends(require_module("/admin/teams", level="edit"))):
     name = body.name.strip()
     if not name:
         raise HTTPException(400, "Name required")
@@ -983,7 +986,8 @@ async def create_team(body: TeamIn, user: dict = Depends(require_role("admin", "
 
 
 @router.patch("/v1/admin/teams/{team_id}")
-async def update_team(team_id: str, body: TeamIn, user: dict = Depends(require_role("admin", "manager"))):
+async def update_team(team_id: str, body: TeamIn, user: dict = Depends(require_role("admin", "manager")),
+                      _rbac: dict = Depends(require_module("/admin/teams", level="edit"))):
     cur = await db.teams.find_one({"id": team_id}, {"_id": 0})
     if not cur:
         raise HTTPException(404, "Team not found")
