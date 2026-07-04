@@ -146,6 +146,39 @@ MODULE_CATALOG = [
         "result_table": "credentials", "label": "OpenCTI — IP/IOC Lookup",
         "description": "Checks this IP address against observables and indicators already tracked in your OpenCTI instance.",
     },
+    # --- Threat intel: three more direct-API lookups, same pattern as OpenCTI above --
+    # not recon-ng modules, "ready" depends on that connector's own config under
+    # Integrations rather than a recon-ng API key.
+    {
+        "id": "greynoise_ip", "module": None, "source": "greynoise",
+        "category": "threat-intel", "target_type": "ip", "requires_keys": [],
+        "result_table": "credentials", "label": "GreyNoise — IP Classification",
+        "description": "Checks whether this IP is known internet-scanning noise or a legitimate business service (GreyNoise RIOT), via GreyNoise's Community API.",
+    },
+    {
+        "id": "otx_domain", "module": None, "source": "otx",
+        "category": "threat-intel", "target_type": "domain", "requires_keys": [],
+        "result_table": "credentials", "label": "AlienVault OTX — Domain Pulses",
+        "description": "Checks this domain against AlienVault OTX threat-intel pulses (community-submitted IOC reports).",
+    },
+    {
+        "id": "otx_ip", "module": None, "source": "otx",
+        "category": "threat-intel", "target_type": "ip", "requires_keys": [],
+        "result_table": "credentials", "label": "AlienVault OTX — IP Pulses",
+        "description": "Checks this IP address against AlienVault OTX threat-intel pulses (community-submitted IOC reports).",
+    },
+    {
+        "id": "abusech_domain", "module": None, "source": "abusech",
+        "category": "threat-intel", "target_type": "domain", "requires_keys": [],
+        "result_table": "credentials", "label": "abuse.ch ThreatFox — Domain IOC Search",
+        "description": "Searches ThreatFox for this domain as a known malware C2/delivery indicator.",
+    },
+    {
+        "id": "abusech_ip", "module": None, "source": "abusech",
+        "category": "threat-intel", "target_type": "ip", "requires_keys": [],
+        "result_table": "credentials", "label": "abuse.ch ThreatFox — IP IOC Search",
+        "description": "Searches ThreatFox for this IP address as a known malware C2/delivery indicator.",
+    },
 ]
 
 MODULE_BY_ID = {m["id"]: m for m in MODULE_CATALOG}
@@ -288,6 +321,126 @@ async def run_opencti_lookup(target: str) -> list:
     return rows
 
 
+async def run_greynoise_lookup(target: str) -> list:
+    """GreyNoise Community API -- classifies an IP as internet-scanning "noise",
+    a known-benign business service (RIOT), or neither. Free tier, no config beyond
+    the API key (a 404 from GreyNoise just means "never observed", not an error)."""
+    import httpx
+    from db import db as _db
+    integration = await _db.integrations.find_one({"name": "GreyNoise"}, {"_id": 0})
+    cfg = (integration or {}).get("config") or {}
+    endpoint, api_key = cfg.get("endpoint") or "https://api.greynoise.io", cfg.get("api_key")
+    if not api_key:
+        raise ValueError("GreyNoise isn't configured yet -- add an API key under Integrations → GreyNoise first.")
+
+    url = f"{endpoint.rstrip('/')}/v3/community/{target}"
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(url, headers={"key": api_key})
+    except httpx.HTTPError as e:
+        raise RuntimeError(f"Could not reach GreyNoise: {e}")
+    if r.status_code == 404:
+        return []  # never observed by GreyNoise -- not an error, just nothing to report
+    if r.status_code == 401:
+        raise RuntimeError("GreyNoise rejected this API key (401) -- check it under Integrations → GreyNoise.")
+    if r.status_code == 429:
+        raise RuntimeError("GreyNoise community-tier rate limit hit (429) -- limited lookups per week on this plan.")
+    if r.status_code != 200:
+        raise RuntimeError(f"GreyNoise HTTP {r.status_code}: {r.text[:200]}")
+    data = r.json()
+    if not data.get("noise") and not data.get("riot"):
+        return []  # explicitly "nothing known" -- don't manufacture a row for silence
+    detail = f"classification={data.get('classification')}; last_seen={data.get('last_seen')}"
+    if data.get("riot"):
+        detail += f"; RIOT business service: {data.get('name')}"
+    if data.get("noise"):
+        detail += "; observed scanning the internet in the last 90 days"
+    return [{
+        "table": "credentials", "resource": target,
+        "name": f"GreyNoise: {'RIOT/' if data.get('riot') else ''}{data.get('classification', 'unknown')}",
+        "password": None, "detail": detail,
+    }]
+
+
+async def run_otx_lookup(target: str, target_type: str) -> list:
+    """AlienVault OTX -- checks a domain/IP against community-submitted threat-intel
+    "pulses" (IOC reports). Works unauthenticated at low rate limits, but reads the
+    key from Integrations -> AlienVault OTX for better limits when configured."""
+    import httpx
+    from db import db as _db
+    integration = await _db.integrations.find_one({"name": "AlienVault OTX"}, {"_id": 0})
+    cfg = (integration or {}).get("config") or {}
+    endpoint = cfg.get("endpoint") or "https://otx.alienvault.com"
+    api_key = cfg.get("api_key")
+
+    section = "domain" if target_type == "domain" else "IPv4"
+    url = f"{endpoint.rstrip('/')}/api/v1/indicators/{section}/{target}/general"
+    headers = {"X-OTX-API-KEY": api_key} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(url, headers=headers)
+    except httpx.HTTPError as e:
+        raise RuntimeError(f"Could not reach AlienVault OTX: {e}")
+    if r.status_code == 403:
+        raise RuntimeError("AlienVault OTX rejected this request (403) -- check the API key under Integrations → AlienVault OTX.")
+    if r.status_code == 404:
+        return []
+    if r.status_code != 200:
+        raise RuntimeError(f"AlienVault OTX HTTP {r.status_code}: {r.text[:200]}")
+    data = r.json()
+    pulse_info = data.get("pulse_info") or {}
+    pulses = pulse_info.get("pulses") or []
+    if not pulses:
+        return []
+    names = [p.get("name") for p in pulses[:10] if p.get("name")]
+    return [{
+        "table": "credentials", "resource": target,
+        "name": f"AlienVault OTX: {pulse_info.get('count', len(pulses))} pulse(s)",
+        "password": None,
+        "detail": f"Referenced in threat-intel pulses: {', '.join(names) or 'unnamed'}",
+    }]
+
+
+async def run_abusech_lookup(target: str) -> list:
+    """abuse.ch ThreatFox -- searches for a domain/IP as a known malware C2/delivery
+    indicator. Requires an Auth-Key (abuse.ch moved to mandatory keys in 2023 --
+    free to obtain, but no longer keyless like their older feeds)."""
+    import httpx
+    from db import db as _db
+    integration = await _db.integrations.find_one({"name": "abuse.ch (ThreatFox)"}, {"_id": 0})
+    cfg = (integration or {}).get("config") or {}
+    endpoint = cfg.get("endpoint") or "https://threatfox-api.abuse.ch"
+    auth_key = cfg.get("api_key")
+    if not auth_key:
+        raise ValueError("abuse.ch (ThreatFox) isn't configured yet -- add an Auth-Key under Integrations → abuse.ch "
+                          "(get one free at https://auth.abuse.ch/) first.")
+
+    url = f"{endpoint.rstrip('/')}/api/v1/"
+    body = {"query": "search_ioc", "search_term": target, "exact_match": True}
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.post(url, headers={"Auth-Key": auth_key}, json=body)
+    except httpx.HTTPError as e:
+        raise RuntimeError(f"Could not reach abuse.ch ThreatFox: {e}")
+    if r.status_code == 401:
+        raise RuntimeError("abuse.ch rejected this Auth-Key (401) -- check it under Integrations → abuse.ch (ThreatFox).")
+    if r.status_code != 200:
+        raise RuntimeError(f"abuse.ch ThreatFox HTTP {r.status_code}: {r.text[:200]}")
+    data = r.json()
+    if data.get("query_status") != "ok":
+        return []  # "no_result" -- clean, not an error
+    rows = []
+    for ioc in (data.get("data") or [])[:10]:
+        rows.append({
+            "table": "credentials", "resource": ioc.get("ioc", target),
+            "name": f"ThreatFox: {ioc.get('malware_printable') or ioc.get('threat_type', 'IOC')}",
+            "password": None,
+            "detail": f"threat_type={ioc.get('threat_type')}; confidence={ioc.get('confidence_level')}; "
+                      f"first_seen={ioc.get('first_seen')}",
+        })
+    return rows
+
+
 async def run_module(db, module_id: str, target: str, timeout_sec: int = 300) -> dict:
     """Runs one recon-ng module (or, for source="opencti" entries, a direct OpenCTI
     lookup) against `target`, routes the results, and returns a summary dict. Raises
@@ -299,6 +452,15 @@ async def run_module(db, module_id: str, target: str, timeout_sec: int = 300) ->
 
     if mod.get("source") == "opencti":
         rows = await run_opencti_lookup(target)
+        return await _route_results(db, mod, target, {"credentials": rows})
+    if mod.get("source") == "greynoise":
+        rows = await run_greynoise_lookup(target)
+        return await _route_results(db, mod, target, {"credentials": rows})
+    if mod.get("source") == "otx":
+        rows = await run_otx_lookup(target, mod["target_type"])
+        return await _route_results(db, mod, target, {"credentials": rows})
+    if mod.get("source") == "abusech":
+        rows = await run_abusech_lookup(target)
         return await _route_results(db, mod, target, {"credentials": rows})
 
     integration = await db.integrations.find_one({"name": "recon-ng"}, {"_id": 0})

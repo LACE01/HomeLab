@@ -16,20 +16,36 @@ from routes.common import now_iso, _clean
 router = APIRouter()
 
 
+# Non-recon-ng "source" lookups -- each needs its own connector configured under
+# Integrations rather than a recon-ng API key. GreyNoise's endpoint doesn't strictly
+# require a key (there's a tiny unauthenticated allowance) but the connector is meant
+# to be configured, so it's still gated on having one, same as the others.
+SOURCE_INTEGRATION = {
+    "opencti": "OpenCTI",
+    "greynoise": "GreyNoise",
+    "otx": "AlienVault OTX",
+    "abusech": "abuse.ch (ThreatFox)",
+}
+
+
 @router.get("/v1/recon/modules")
 async def list_modules(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/admin/recon-osint"))):
     from reconng import MODULE_CATALOG, ALL_REQUIRED_KEYS, TARGET_TYPES
     integration = await db.integrations.find_one({"name": "recon-ng"}, {"_id": 0})
     cfg = (integration or {}).get("config") or {}
-    opencti_integration = await db.integrations.find_one({"name": "OpenCTI"}, {"_id": 0})
-    opencti_cfg = (opencti_integration or {}).get("config") or {}
-    opencti_ready = bool(opencti_cfg.get("endpoint") and opencti_cfg.get("api_key"))
+
+    source_ready: dict = {}
+    for source, name in SOURCE_INTEGRATION.items():
+        src_integration = await db.integrations.find_one({"name": name}, {"_id": 0})
+        src_cfg = (src_integration or {}).get("config") or {}
+        source_ready[source] = bool(src_cfg.get("endpoint") and src_cfg.get("api_key"))
 
     items = []
     for m in MODULE_CATALOG:
-        if m.get("source") == "opencti":
-            ready = opencti_ready
-            missing = [] if ready else ["OpenCTI connection (Integrations → OpenCTI)"]
+        source = m.get("source")
+        if source:
+            ready = source_ready.get(source, False)
+            missing = [] if ready else [f"{SOURCE_INTEGRATION.get(source, source)} connection (Integrations → {SOURCE_INTEGRATION.get(source, source)})"]
         else:
             missing = [k for k in m["requires_keys"] if not cfg.get(k)]
             ready = not missing
