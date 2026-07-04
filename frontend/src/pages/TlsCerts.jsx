@@ -38,6 +38,7 @@ export default function TlsCerts() {
   const [checkingAll, setCheckingAll] = useState(false);
   const [checkingIds, setCheckingIds] = useState(new Set());
   const [detailTargetId, setDetailTargetId] = useState(null);
+  const [statusFilter, setStatusFilter] = useState(null); // null | "healthy" | "expiring" | "expired" | "unreachable"
   const pollRef = useRef(null);
   const detailTarget = targets.find(t => t.id === detailTargetId) || null;
 
@@ -119,26 +120,43 @@ export default function TlsCerts() {
     return acc;
   }, { expired: 0, expiring: 0, unreachable: 0, healthy: 0 });
 
+  // Which bucket a single target falls into -- same logic as the summary reduce above,
+  // factored out so the "click a stat card to filter" behavior stays in lockstep with
+  // the counts shown on those cards.
+  const bucketOf = (t) => {
+    const d = t.latest?.days_until_expiry;
+    if (t.latest?.reachable === false) return "unreachable";
+    if (d != null && d < 0) return "expired";
+    if (d != null && d <= 30) return "expiring";
+    if (t.latest) return "healthy";
+    return null;
+  };
+  const visibleTargets = statusFilter ? targets.filter(t => bucketOf(t) === statusFilter) : targets;
+
   return (
     <Layout title="TLS Certificates" subtitle="Tracks certificate expiry across your internet-facing services — catches the outage before the calendar does">
       <div className="grid grid-cols-4 gap-3 mb-5">
-        <div className="border border-[#30363D] bg-[#0D1117] rounded-md px-4 py-3">
-          <div className="text-[10px] uppercase tracking-wider font-mono text-slate-500">Healthy</div>
-          <div className="text-[22px] text-emerald-400 font-mono mt-0.5">{summary.healthy}</div>
-        </div>
-        <div className="border border-[#30363D] bg-[#0D1117] rounded-md px-4 py-3">
-          <div className="text-[10px] uppercase tracking-wider font-mono text-slate-500">Expiring ≤30d</div>
-          <div className="text-[22px] text-orange-400 font-mono mt-0.5">{summary.expiring}</div>
-        </div>
-        <div className="border border-[#30363D] bg-[#0D1117] rounded-md px-4 py-3">
-          <div className="text-[10px] uppercase tracking-wider font-mono text-slate-500">Expired</div>
-          <div className="text-[22px] text-red-400 font-mono mt-0.5">{summary.expired}</div>
-        </div>
-        <div className="border border-[#30363D] bg-[#0D1117] rounded-md px-4 py-3">
-          <div className="text-[10px] uppercase tracking-wider font-mono text-slate-500">Unreachable</div>
-          <div className="text-[22px] text-slate-400 font-mono mt-0.5">{summary.unreachable}</div>
-        </div>
+        {[
+          { key: "healthy", label: "Healthy", color: "text-emerald-400" },
+          { key: "expiring", label: "Expiring ≤30d", color: "text-orange-400" },
+          { key: "expired", label: "Expired", color: "text-red-400" },
+          { key: "unreachable", label: "Unreachable", color: "text-slate-400" },
+        ].map(({ key, label, color }) => (
+          <button key={key} onClick={() => setStatusFilter(prev => prev === key ? null : key)}
+            className={`text-left border rounded-md px-4 py-3 transition-colors ${
+              statusFilter === key ? "border-blue-500/60 bg-blue-500/5" : "border-[#30363D] bg-[#0D1117] hover:border-[#484F58]"
+            }`}>
+            <div className="text-[10px] uppercase tracking-wider font-mono text-slate-500">{label}</div>
+            <div className={`text-[22px] font-mono mt-0.5 ${color}`}>{summary[key]}</div>
+          </button>
+        ))}
       </div>
+      {statusFilter && (
+        <div className="mb-3 flex items-center gap-2 text-[11.5px] text-slate-400">
+          Showing only <span className="text-slate-200 capitalize">{statusFilter}</span> certificates.
+          <button onClick={() => setStatusFilter(null)} className="text-blue-300 hover:underline">Clear filter</button>
+        </div>
+      )}
 
       <div className="flex justify-between items-center mb-3 flex-wrap gap-2">
         <div className="flex gap-2">
@@ -163,9 +181,13 @@ export default function TlsCerts() {
         <div className="border border-[#30363D] bg-[#0D1117] rounded-md py-10 text-center text-[12.5px] text-slate-500">
           No certificates being watched yet. Add a hostname or import your internet-facing assets.
         </div>
+      ) : visibleTargets.length === 0 ? (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md py-10 text-center text-[12.5px] text-slate-500">
+          No {statusFilter} certificates. <button onClick={() => setStatusFilter(null)} className="text-blue-300 hover:underline">Clear filter</button>
+        </div>
       ) : (
         <div className="border border-[#30363D] bg-[#0D1117] rounded-md divide-y divide-[#30363D]">
-          {targets.map(t => (
+          {visibleTargets.map(t => (
             <div key={t.id} onClick={() => setDetailTargetId(t.id)}
               className="px-4 py-3 flex items-start justify-between gap-3 cursor-pointer hover:bg-[#161B22] transition-colors">
               <div className="min-w-0">
