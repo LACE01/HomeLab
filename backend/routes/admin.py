@@ -283,9 +283,15 @@ async def set_assignment_settings(body: AssignmentSettingsBody, user: dict = Dep
 # sidebar) without a code change/redeploy. Unknown page keys just get an empty
 # default -- the frontend falls back to its own hardcoded order in that case.
 DEFAULT_LAYOUTS = {
+    # Must stay in sync with DEFAULT_SIDEBAR_ORDER in frontend/src/pages/FindingDetail.jsx --
+    # this is the backend's copy of the same default, served to anyone who hasn't saved a
+    # custom order yet. (Missed updating this the first time "playbook"/"mitigations" were
+    # added as sidebar sections, which silently dropped them from the page entirely --
+    # get_ui_layout's "append missing keys" safety net only helps once this list itself
+    # actually lists them.)
     "finding_detail_sidebar": [
-        "status", "exception", "comments", "risk_score", "identifiers", "scoring",
-        "exploits", "asset", "sla", "source", "tickets", "references",
+        "status", "exception", "comments", "playbook", "mitigations", "risk_score",
+        "identifiers", "scoring", "exploits", "asset", "sla", "source", "tickets", "references",
     ],
 }
 
