@@ -46,6 +46,25 @@ WORKFLOW_CONNECTORS = [
     {"name": "OpenCTI",       "type": "threat_intel", "logo": "opencti"},
 ]
 
+# Exposure/threat-intel enrichment connectors -- Shodan/Censys enrich asset exposure
+# data (ports/services/flagged vulns) for internet-facing IPs; GreyNoise/AlienVault
+# OTX/abuse.ch (ThreatFox) are on-demand lookup sources surfaced in the Recon & OSINT
+# hub (see reconng.py's run_greynoise_lookup/run_otx_lookup/run_abusech_lookup),
+# mirroring how OpenCTI is already wired up there. All need their own API key, entered
+# here under Integrations, same as every other connector card.
+ENRICHMENT_CONNECTORS = [
+    {"name": "Shodan",   "type": "exposure_intel", "logo": "shodan",
+     "default_config": {"endpoint": "https://api.shodan.io"}},
+    {"name": "Censys",   "type": "exposure_intel", "logo": "censys",
+     "default_config": {"endpoint": "https://api.platform.censys.io"}},
+    {"name": "GreyNoise", "type": "threat_intel", "logo": "greynoise",
+     "default_config": {"endpoint": "https://api.greynoise.io"}},
+    {"name": "AlienVault OTX", "type": "threat_intel", "logo": "otx",
+     "default_config": {"endpoint": "https://otx.alienvault.com"}},
+    {"name": "abuse.ch (ThreatFox)", "type": "threat_intel", "logo": "abusech",
+     "default_config": {"endpoint": "https://threatfox-api.abuse.ch"}},
+]
+
 
 # Demo data collections we must NEVER repopulate after wiping.
 _DEMO_COLLECTIONS = (
@@ -447,14 +466,15 @@ async def _ensure_integrations(db, now_iso_str: str):
     """Insert any missing connector cards; do NOT clobber existing config rows."""
     existing = {i["name"] async for i in db.integrations.find({}, {"_id": 0, "name": 1})}
     to_insert = []
-    for sc in SCANNERS + WORKFLOW_CONNECTORS:
+    for sc in SCANNERS + WORKFLOW_CONNECTORS + ENRICHMENT_CONNECTORS:
         if sc["name"] in existing:
             continue
         to_insert.append({
             "id": _id(), "name": sc["name"], "type": sc["type"], "logo": sc["logo"],
             "status": "not_configured",
             "last_sync_at": None, "sync_errors": 0, "retry_count": 0,
-            "config": {},  # user fills in via Integrations UI
+            # A pre-filled default endpoint (fixed, public API hosts) saves the user
+            "config": dict(sc.get("default_config") or {}),
             "created_at": now_iso_str,
         })
     if to_insert:

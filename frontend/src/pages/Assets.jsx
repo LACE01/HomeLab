@@ -248,6 +248,18 @@ export function AssetDetail() {
                 <User size={12} className="text-slate-500"/><span className="text-slate-500">Last logged in:</span> {a.last_logged_on_user}
               </div>
             )}
+            {(a.shodan_ports?.length > 0 || a.censys_ports?.length > 0) && (
+              <div className="col-span-2 text-[11px] text-slate-500 flex flex-wrap gap-x-4 gap-y-1 mt-1">
+                {a.shodan_ports?.length > 0 && (
+                  <span>Shodan sees: <span className="font-mono text-slate-300">{a.shodan_ports.join(", ")}</span>
+                    {a.shodan_vulns?.length > 0 && <span className="text-red-300"> · {a.shodan_vulns.length} flagged vuln(s)</span>}
+                  </span>
+                )}
+                {a.censys_ports?.length > 0 && (
+                  <span>Censys sees: <span className="font-mono text-slate-300">{a.censys_ports.join(", ")}</span></span>
+                )}
+              </div>
+            )}
             <div className="flex items-center gap-1.5">
               <span className="text-slate-500">Product:</span>
               <select data-testid="asset-product-select" value={a.product_id || ""} onChange={changeProduct} disabled={savingProduct}

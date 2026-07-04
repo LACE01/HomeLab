@@ -82,6 +82,21 @@ export function Integrations() {
     } finally { setTesting(null); }
   };
 
+  // Connectors with real (non-Qualys) sync jobs wired up -- see backend
+  // routes/integrations.py's _dispatch_sync for the full list.
+  const GENERIC_SYNC_CONNECTORS = ["Shodan", "Censys"];
+  const syncGeneric = async (i) => {
+    setTesting(i.id);
+    try {
+      const r = await api.post(`/v1/integrations/${i.id}/sync`);
+      const res = r.data?.result || {};
+      toast.success(`${i.name}: checked ${res.assets_checked ?? 0} asset(s), enriched ${res.assets_enriched ?? 0}.`);
+      await load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || `${i.name} sync failed`);
+    } finally { setTesting(null); }
+  };
+
   const openEdit = (i) => {
     setEditing(i);
     setForm({
@@ -245,6 +260,12 @@ export function Integrations() {
               <div className="flex gap-1.5">
                 {i.name === "Qualys VMDR" && i.status !== "not_configured" && (
                   <button data-testid={`sync-${i.id}`} disabled={testing===i.id} onClick={()=>sync(i)}
+                    className="h-7 px-2.5 text-[11px] bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25 rounded inline-flex items-center gap-1 disabled:opacity-50">
+                    <Lightning size={12}/> {testing===i.id ? "Syncing…" : "Sync now"}
+                  </button>
+                )}
+                {GENERIC_SYNC_CONNECTORS.includes(i.name) && i.status !== "not_configured" && (
+                  <button data-testid={`sync-${i.id}`} disabled={testing===i.id} onClick={()=>syncGeneric(i)}
                     className="h-7 px-2.5 text-[11px] bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25 rounded inline-flex items-center gap-1 disabled:opacity-50">
                     <Lightning size={12}/> {testing===i.id ? "Syncing…" : "Sync now"}
                   </button>

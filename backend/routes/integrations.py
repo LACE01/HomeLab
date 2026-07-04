@@ -123,6 +123,41 @@ async def _generic_reachability_check(cfg: dict) -> dict:
         return {"ok": False, "message": f"Unexpected error: {e}"}
 
 
+# Connectors with real sync logic wired up (beyond the generic reachability "Test")
+# -- dispatch by integration name, same pattern test_integration already uses for
+# OpenCTI. Qualys VMDR has its own dedicated /v1/admin/qualys/sync/run endpoint
+# (it needs a long-running background job + its own run-history collection), so
+# it's deliberately not listed here.
+async def _dispatch_sync(name: str, db):
+    if name == "Shodan":
+        from shodan_sync import sync_shodan_assets
+        return await sync_shodan_assets(db)
+    if name == "Censys":
+        from censys_sync import sync_censys_assets
+        return await sync_censys_assets(db)
+    raise HTTPException(400, f"'{name}' doesn't have a sync job -- only Test (reachability) is available for it yet.")
+
+
+@router.post("/v1/integrations/{integration_id}/sync")
+async def sync_integration(integration_id: str, user: dict = Depends(require_role("admin"))):
+    integration = await db.integrations.find_one({"id": integration_id}, {"_id": 0})
+    if not integration:
+        raise HTTPException(404, "Integration not found")
+    try:
+        result = await _dispatch_sync(integration["name"], db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.integrations.update_one({"id": integration_id}, {"$set": {
+            "status": "degraded", "sync_errors": (integration.get("sync_errors") or 0) + 1,
+        }})
+        raise HTTPException(502, str(e))
+    await db.integrations.update_one({"id": integration_id}, {"$set": {
+        "status": "healthy", "last_sync_at": now_iso(), "sync_errors": 0,
+    }})
+    return {"ok": True, "result": result}
+
+
 # --------------------------- IMPORT JOBS ---------------------------
 @router.get("/v1/import-jobs")
 async def list_import_jobs(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/imports"))):
