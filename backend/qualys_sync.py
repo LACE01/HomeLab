@@ -20,6 +20,11 @@ from scoring import compute_risk, compute_sla_days
 
 logger = logging.getLogger("vulnops.qualys")
 
+# Findings in any of these states are still "open" from Qualys's perspective -- a
+# Fixed-status detection is only meaningful to act on if it's closing something that
+# was actually still tracked as unresolved. Mirrors automation.py's OPEN_STATES.
+OPEN_LIKE_STATUSES = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+
 
 # Qualys severity (1–5) → our normalized severity
 _QUALYS_SEV = {5: "Critical", 4: "High", 3: "Medium", 2: "Low", 1: "Info"}
@@ -396,6 +401,55 @@ async def _upsert_finding(db, det: dict, kb: dict, nvd_cache: dict | None = None
     return "created"
 
 
+async def _reconcile_fixed_detections(db, endpoint: str, username: str, password: str, kb: dict) -> dict:
+    """Fetches Qualys detections explicitly reported as STATUS=Fixed -- a rescan-
+    confirmed signal Qualys only sends once it has positively re-checked and found the
+    vulnerability gone, not an inference from "this finding didn't show up in today's
+    Active/Re-Opened page" (which could just mean the host wasn't in this run's window,
+    a much weaker signal). Every finding this closes gets an activity-log entry AND a
+    visible comment on the finding explaining exactly why, so "why did this get closed"
+    is never a mystery."""
+    xml_body = await _fetch_qualys_detections(endpoint, username, password, statuses="Fixed", truncation_limit=1000)
+    fixed_dets, _ = _parse_detections(xml_body)
+    if not fixed_dets:
+        return {"fixed_detections": 0, "auto_closed": 0}
+
+    missing_qids = sorted({d["qid"] for d in fixed_dets if d.get("qid") and d["qid"] not in kb})
+    if missing_qids:
+        try:
+            for i in range(0, len(missing_qids), 100):
+                kb.update(await _fetch_knowledgebase(endpoint, username, password, missing_qids[i:i + 100]))
+        except Exception:
+            pass  # best-effort -- falls back to QID-keyed matching below for these
+
+    closed = 0
+    for det in fixed_dets:
+        qid = det.get("qid")
+        cve = (kb.get(qid) or {}).get("cve")
+        canonical = f"{cve or qid}::{det['hostname']}"
+        existing = await db.findings.find_one({"canonical_key": canonical}, {"_id": 0})
+        if not existing or existing["status"] not in OPEN_LIKE_STATUSES:
+            continue
+        when = det.get("last_found") or _now_iso()
+        note = f"Qualys VMDR reports this vulnerability as Fixed (rescan-confirmed) as of {when} -- auto-closed."
+        await db.findings.update_one({"id": existing["id"]}, {"$set": {
+            "status": "Fixed validated", "last_changed_at": _now_iso(),
+            "verification_status": "passed", "verification_note": note,
+        }})
+        await db.activity_log.insert_one({
+            "id": str(uuid.uuid4()), "entity_type": "finding", "entity_id": existing["id"],
+            "action": "status_changed", "actor": "qualys_auto_close", "timestamp": _now_iso(),
+            "details": note,
+        })
+        await db.comments.insert_one({
+            "id": str(uuid.uuid4()), "finding_id": existing["id"], "author": "Qualys VMDR (auto)",
+            "text": f"Marked Fixed validated automatically -- {note}",
+            "attachments": [], "created_at": _now_iso(),
+        })
+        closed += 1
+    return {"fixed_detections": len(fixed_dets), "auto_closed": closed}
+
+
 async def run_qualys_sync(db) -> dict:
     """Pull detections from Qualys, upsert findings + assets, write a job + run record."""
     integration = await _get_integration(db)
@@ -534,6 +588,23 @@ async def run_qualys_sync(db) -> dict:
         summary["epss"] = {"matched": epss_res.get("matched"), "cves_with_score": epss_res.get("cves_with_score")}
     except Exception as e:
         errors.append({"stage": "enrichment", "error": str(e)})
+
+    # Stage 5 — Auto-close findings Qualys has explicitly confirmed as Fixed via rescan.
+    try:
+        summary["auto_closed"] = await _reconcile_fixed_detections(db, endpoint, username, password, kb)
+    except Exception as e:
+        errors.append({"stage": "fixed_reconciliation", "error": str(e)})
+
+    # Stage 6 — Qualys GAV/CSAM hardware + last-logged-in-user enrichment. This is a
+    # separately licensed Qualys module from the VM API the rest of this file uses, so
+    # a failure here (e.g. not licensed, wrong gateway URL) is recorded distinctly
+    # instead of failing the whole sync -- see qualys_gav.py for why.
+    try:
+        from qualys_gav import sync_qualys_asset_inventory
+        summary["asset_inventory"] = await sync_qualys_asset_inventory(db)
+    except Exception as e:
+        summary["asset_inventory_error"] = str(e)
+
     status = "success" if created or updated else ("failed" if errors else "success")
     await db.integrations.update_one(
         {"id": integration["id"]},

@@ -54,7 +54,20 @@ export function Integrations() {
         // Stop when we see a completed run that's newer than ours OR the same one finished
         if (latest && latest.status !== "running" && latest.id !== startId) {
           const s = latest.summary || {};
-          toast.success(`${i.name}: +${s.created || 0} new · ↻${s.updated || 0} updated · ${s.detections || 0} detections`, { id: toastId });
+          const autoClosed = s.auto_closed?.auto_closed || 0;
+          toast.success(
+            `${i.name}: +${s.created || 0} new · ↻${s.updated || 0} updated · ${s.detections || 0} detections` +
+            (autoClosed ? ` · ${autoClosed} auto-closed (Qualys confirmed fixed)` : ""),
+            { id: toastId }
+          );
+          // Hardware/last-logged-in-user enrichment (GAV/CSAM) is a separate, best-effort,
+          // separately-licensed Qualys module -- surfaced as its own info/success toast so
+          // a licensing gap there never looks like the main sync failed.
+          if (s.asset_inventory_error) {
+            toast(`Asset hardware/last-logged-in-user sync skipped: ${s.asset_inventory_error}`, { duration: 10000 });
+          } else if (s.asset_inventory?.assets_enriched) {
+            toast.success(`Hardware + last-logged-in-user data updated for ${s.asset_inventory.assets_enriched} asset(s).`);
+          }
           break;
         }
         if (latest && latest.id === startId && latest.status === "failed") {
