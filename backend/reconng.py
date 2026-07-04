@@ -73,12 +73,6 @@ MODULE_CATALOG = [
         "result_table": "hosts", "label": "Reverse DNS (PTR) Lookup",
         "description": "Resolves an IP address back to any hostname(s) pointing at it via a reverse DNS (PTR) query.",
     },
-    {
-        "id": "hackertarget_reverse", "module": "recon/hosts-hosts/hackertarget_reverse",
-        "category": "recon", "target_type": "ip", "requires_keys": [],
-        "result_table": "hosts", "label": "HackerTarget Reverse IP Search",
-        "description": "Finds other hostnames sharing the same IP address via HackerTarget's free reverse-IP API.",
-    },
     # --- Threat intel: breach/paste exposure (needs HIBP key) ---
     {
         "id": "hibp_breach", "module": "recon/contacts-credentials/hibp_breach",
@@ -111,6 +105,10 @@ MODULE_CATALOG = [
 ]
 
 MODULE_BY_ID = {m["id"]: m for m in MODULE_CATALOG}
+# Maps our config key name -> the key name recon-ng's own modules actually look up.
+# recon-ng doesn't validate `keys add <name>` against anything, so a mismatched name
+# here fails silently at module-run time instead of at config time.
+RECON_KEY_NAME = {"hibp_api_key": "hibp_api"}
 ALL_REQUIRED_KEYS = sorted({k for m in MODULE_CATALOG for k in m["requires_keys"]})
 TARGET_TYPES = ["domain", "ip", "email"]
 
@@ -130,9 +128,14 @@ def validate_target(target: str) -> str:
     return target
 
 
-async def _run_recon_cli(workspace: str, rc_lines: list, timeout_sec: int = 300) -> None:
+async def _run_recon_cli(workspace: str, rc_lines: list, timeout_sec: int = 300) -> str:
     """The one function that actually shells out to recon-ng. Kept tiny and isolated
-    so tests can mock just this and exercise the real parsing/routing logic around it."""
+    so tests can mock just this and exercise the real parsing/routing logic around it.
+    Returns the combined stdout+stderr text -- previously this was captured and then
+    thrown away entirely, so a failed run (bad module path, no network egress to the
+    marketplace index, a crash on startup) produced zero diagnostic information: just
+    a guessed list of possible causes with nothing to tell you which one it actually
+    was. Callers should fold this into any error they raise."""
     with tempfile.NamedTemporaryFile("w", suffix=".rc", delete=False) as f:
         f.write("\n".join(rc_lines) + "\n")
         rc_path = f.name
@@ -147,11 +150,13 @@ async def _run_recon_cli(workspace: str, rc_lines: list, timeout_sec: int = 300)
             proc.kill()
             await proc.wait()
             raise TimeoutError(f"recon-ng module exceeded {timeout_sec}s and was killed")
+        combined = (stdout or b"").decode(errors="replace") + (stderr or b"").decode(errors="replace")
         if proc.returncode not in (0, None):
             # recon-ng returns non-zero on plenty of benign conditions (module warns,
             # zero results) -- only surface this as a hint, don't hard-fail on it,
             # since the real signal is whether the report file below is readable.
             pass
+        return combined
     finally:
         try:
             os.unlink(rc_path)
@@ -263,7 +268,8 @@ async def run_module(db, module_id: str, target: str, timeout_sec: int = 300) ->
         report_path = os.path.join(tmpdir, "report.json")
         rc_lines = []
         for key_name in mod["requires_keys"]:
-            rc_lines.append(f"keys add {key_name} {shlex.quote(cfg[key_name])}")
+            recon_key_name = RECON_KEY_NAME.get(key_name, key_name)
+            rc_lines.append(f"keys add {recon_key_name} {shlex.quote(cfg[key_name])}")
         # Modern recon-ng (4.x) ships with an empty module marketplace by default --
         # `modules load <path>` silently no-ops if the module was never installed via
         # `marketplace install <path>` first, which is what was actually causing "did
@@ -283,16 +289,17 @@ async def run_module(db, module_id: str, target: str, timeout_sec: int = 300) ->
             "exit",
         ]
         try:
-            await _run_recon_cli(workspace, rc_lines, timeout_sec=timeout_sec)
+            cli_output = await _run_recon_cli(workspace, rc_lines, timeout_sec=timeout_sec)
             if not os.path.exists(report_path):
+                # Surface recon-cli's actual output instead of guessing -- this is what
+                # was silently discarded before. The last ~40 lines are almost always
+                # enough to see the real cause (e.g. "invalid module name", a Python
+                # traceback from a missing dependency, or a network timeout reaching
+                # the marketplace index) without needing container log access.
+                tail = "\n".join(cli_output.strip().splitlines()[-40:]) or "(no output at all -- recon-cli may have failed to start)"
                 raise RuntimeError(
-                    "recon-ng did not produce a report file. This run already attempted "
-                    "`marketplace install` for the module and for reporting/json, so this "
-                    "usually means either: the container has no outbound network access to "
-                    "reach recon-ng's module marketplace index, the module path has drifted "
-                    "in a newer recon-ng release, or the module genuinely returned zero rows. "
-                    "Check the container logs for the recon-cli output, or try "
-                    "`recon-cli -m <module> --show` inside the container to confirm it loads."
+                    "recon-ng did not produce a report file. Last recon-cli output:\n"
+                    f"{tail}"
                 )
             with open(report_path) as f:
                 report = json.load(f)
