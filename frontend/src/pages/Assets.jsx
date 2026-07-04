@@ -4,11 +4,22 @@ import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtDate, fmtRel, isOverdue } from "@/lib/utils-fmt";
-import { MagnifyingGlass, ArrowLeft, Stack, CaretLeft, CaretRight, LockKey, LockKeyOpen, Info } from "@phosphor-icons/react";
+import { MagnifyingGlass, ArrowLeft, Stack, CaretLeft, CaretRight, LockKey, LockKeyOpen, Info, WindowsLogo, LinuxLogo, AppleLogo, Desktop, User } from "@phosphor-icons/react";
 import TrendChart from "@/components/TrendChart";
 import { toast } from "sonner";
 
 const PAGE_SIZE = 50;
+
+// Small platform badge next to the OS text -- Windows/Linux/macOS get their own logo,
+// anything else (or "unknown") falls back to a generic desktop icon rather than
+// guessing.
+function PlatformIcon({ platform, size = 15 }) {
+  const p = (platform || "").toLowerCase();
+  if (p.includes("windows")) return <WindowsLogo size={size} className="text-blue-400 shrink-0"/>;
+  if (p.includes("linux")) return <LinuxLogo size={size} className="text-amber-400 shrink-0"/>;
+  if (p.includes("mac") || p.includes("darwin") || p.includes("osx")) return <AppleLogo size={size} className="text-slate-300 shrink-0"/>;
+  return <Desktop size={size} className="text-slate-500 shrink-0"/>;
+}
 
 export function Assets() {
   const [items, setItems] = useState([]);
@@ -106,7 +117,11 @@ export function Assets() {
             {items.map(a => (
               <tr key={a.id} className="border-t border-[#30363D] hover:bg-slate-800/30">
                 <td><input type="checkbox" checked={selected.has(a.id)} onChange={()=>toggle(a.id)} data-testid={`select-asset-${a.id}`}/></td>
-                <td><Link to={`/assets/${a.id}`} data-testid={`asset-${a.id}`} className="text-blue-300 hover:underline font-mono text-[12px]">{a.hostname}</Link></td>
+                <td>
+                  <Link to={`/assets/${a.id}`} data-testid={`asset-${a.id}`} className="text-blue-300 hover:underline font-mono text-[12px] inline-flex items-center gap-1.5">
+                    <PlatformIcon platform={a.platform} size={13}/> {a.hostname}
+                  </Link>
+                </td>
                 <td className="font-mono text-[11.5px] text-slate-400">{a.ip || "—"}</td>
                 <td className="text-slate-400 text-[11.5px]">{a.asset_type}</td>
                 <td className="text-slate-400 capitalize">{a.environment}</td>
@@ -211,7 +226,11 @@ export function AssetDetail() {
   if (!a) return <Layout title="Asset…"><div className="text-slate-500">Loading…</div></Layout>;
 
   return (
-    <Layout title={a.hostname} subtitle={`${a.platform} · ${a.operating_system} · ${a.environment}`}
+    <Layout title={
+        <span className="inline-flex items-center gap-2">
+          <PlatformIcon platform={a.platform}/> {a.hostname}
+        </span>
+      } subtitle={`${a.platform} · ${a.operating_system} · ${a.environment}`}
       actions={<Link to="/assets" className="h-8 px-3 text-[12px] border border-[#30363D] rounded inline-flex items-center gap-1.5 text-slate-300"><ArrowLeft size={14}/> Back</Link>}>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-3 mb-4">
@@ -223,6 +242,12 @@ export function AssetDetail() {
             <div><span className="text-slate-500">Type:</span> {a.asset_type}</div>
             <div><span className="text-slate-500">Status:</span> {a.status}</div>
             <div><span className="text-slate-500">Owner Team:</span> {a.owner_team}</div>
+            {a.hardware_info && <div><span className="text-slate-500">Hardware:</span> {a.hardware_info}</div>}
+            {a.last_logged_on_user && (
+              <div className="flex items-center gap-1">
+                <User size={12} className="text-slate-500"/><span className="text-slate-500">Last logged in:</span> {a.last_logged_on_user}
+              </div>
+            )}
             <div className="flex items-center gap-1.5">
               <span className="text-slate-500">Product:</span>
               <select data-testid="asset-product-select" value={a.product_id || ""} onChange={changeProduct} disabled={savingProduct}
