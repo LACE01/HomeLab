@@ -15,13 +15,21 @@ inside the container if a specific module errors out, since the exact option nam
 recon-ng expects can vary by version.
 
 Every module run happens in its own disposable workspace (named after the run id),
-scripted via a one-shot .rc resource file so nothing depends on interactive prompts:
-  1. (optional) `keys add <name> <value>` for any API keys the module needs
-  2. `modules load <module_path>`
-  3. `options set SOURCE <target>`
-  4. `run`
-  5. `modules load reporting/json` + `options set FILENAME <path>` + `run` -- dumps
-     the whole workspace db (hosts/contacts/credentials/etc.) to JSON
+driven via recon-cli's real non-interactive flags -- NOT a `.rc` resource file passed
+with `-r`, which was this module's original approach and is flatly wrong: `-r` is a
+flag on the separate interactive `recon-ng` binary, not on `recon-cli` at all (confirmed
+by reading recon-cli's actual argument parser). recon-cli's real flags, and the fixed
+order it applies them in regardless of how they're interleaved on the command line:
+`-C` global command (repeatable, runs before module load -- used here for `keys add`
+and `marketplace install`) -> `-m` module (loads exactly ONE module per invocation,
+so a module run and a report export are two separate recon-cli calls) -> `-c` module
+command (repeatable) -> `-o name=value` module option (repeatable) -> `-x` execute.
+So each module run is:
+  1. Call 1: `-C keys add <name> <value>` (per required key) + `-C marketplace install
+     <module_path>` + `-m <module_path>` + `-o SOURCE=<target>` + `-x`
+  2. Call 2: `-C marketplace install reporting/json` + `-m reporting/json` +
+     `-o FILENAME=<path>` + `-x` -- dumps the whole workspace db (hosts/contacts/
+     credentials/etc.) to JSON
 The workspace is deleted after the report is read back, win or lose.
 
 Results get routed by which recon-ng db table the module populates:
@@ -205,40 +213,33 @@ def validate_target(target: str) -> str:
     return target
 
 
-async def _run_recon_cli(workspace: str, rc_lines: list, timeout_sec: int = 300) -> str:
-    """The one function that actually shells out to recon-ng. Kept tiny and isolated
-    so tests can mock just this and exercise the real parsing/routing logic around it.
-    Returns the combined stdout+stderr text -- previously this was captured and then
-    thrown away entirely, so a failed run (bad module path, no network egress to the
-    marketplace index, a crash on startup) produced zero diagnostic information: just
-    a guessed list of possible causes with nothing to tell you which one it actually
-    was. Callers should fold this into any error they raise."""
-    with tempfile.NamedTemporaryFile("w", suffix=".rc", delete=False) as f:
-        f.write("\n".join(rc_lines) + "\n")
-        rc_path = f.name
+async def _run_recon_cli(args: list, timeout_sec: int = 300) -> str:
+    """The one function that actually shells out to recon-ng, via `recon-cli <args>`.
+    Kept tiny and isolated so tests can mock just this and exercise the real parsing/
+    routing logic around it. Returns the combined stdout+stderr text -- previously
+    this was captured and then thrown away entirely, so a failed run (bad module path,
+    no network egress to the marketplace index, a crash on startup) produced zero
+    diagnostic information: just a guessed list of possible causes with nothing to
+    tell you which one it actually was. Callers should fold this into any error they
+    raise. NOTE: `args` are real recon-cli flags (-w/-C/-m/-c/-o/-x) -- there is no
+    `-r` resource-file flag on recon-cli (that's an interactive-`recon-ng`-only flag)."""
+    cmd = ["recon-cli"] + args
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
     try:
-        cmd = ["recon-cli", "-w", workspace, "-r", rc_path]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            raise TimeoutError(f"recon-ng module exceeded {timeout_sec}s and was killed")
-        combined = (stdout or b"").decode(errors="replace") + (stderr or b"").decode(errors="replace")
-        if proc.returncode not in (0, None):
-            # recon-ng returns non-zero on plenty of benign conditions (module warns,
-            # zero results) -- only surface this as a hint, don't hard-fail on it,
-            # since the real signal is whether the report file below is readable.
-            pass
-        return combined
-    finally:
-        try:
-            os.unlink(rc_path)
-        except OSError:
-            pass
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise TimeoutError(f"recon-ng module exceeded {timeout_sec}s and was killed")
+    combined = (stdout or b"").decode(errors="replace") + (stderr or b"").decode(errors="replace")
+    if proc.returncode not in (0, None):
+        # recon-ng returns non-zero on plenty of benign conditions (module warns,
+        # zero results) -- only surface this as a hint, don't hard-fail on it,
+        # since the real signal is whether the report file below is readable.
+        pass
+    return combined
 
 
 async def _cleanup_workspace(workspace: str) -> None:
@@ -472,30 +473,34 @@ async def run_module(db, module_id: str, target: str, timeout_sec: int = 300) ->
     workspace = f"vulnops-{uuid.uuid4().hex[:12]}"
     with tempfile.TemporaryDirectory() as tmpdir:
         report_path = os.path.join(tmpdir, "report.json")
-        rc_lines = []
+        # Call 1: install (if needed) + load + configure + run the actual module.
+        # `-m` only loads a single module per recon-cli invocation, so this has to be
+        # a separate call from the reporting/json export below. `-C` commands (keys,
+        # marketplace install) run before the module load regardless of flag order,
+        # per recon-cli's own fixed execution order. `marketplace install` is safe to
+        # call every run -- it's a no-op (prints "already installed") if already present.
+        run_args = ["-w", workspace]
         for key_name in mod["requires_keys"]:
             recon_key_name = RECON_KEY_NAME.get(key_name, key_name)
-            rc_lines.append(f"keys add {recon_key_name} {shlex.quote(cfg[key_name])}")
-        # Modern recon-ng (4.x) ships with an empty module marketplace by default --
-        # `modules load <path>` silently no-ops if the module was never installed via
-        # `marketplace install <path>` first, which is what was actually causing "did
-        # not produce a report file": the load (and later the reporting/json load)
-        # never ran because the module wasn't there, not because recon-ng was missing
-        # or misconfigured. `marketplace install` is safe to call every run -- it's a
-        # no-op (prints "already installed") if it's already present.
-        rc_lines += [
-            f"marketplace install {mod['module']}",
-            f"modules load {mod['module']}",
-            f"options set SOURCE {shlex.quote(target)}",
-            "run",
-            "marketplace install reporting/json",
-            "modules load reporting/json",
-            f"options set FILENAME {shlex.quote(report_path)}",
-            "run",
-            "exit",
+            run_args += ["-C", f"keys add {recon_key_name} {shlex.quote(cfg[key_name])}"]
+        run_args += [
+            "-C", f"marketplace install {mod['module']}",
+            "-m", mod["module"],
+            "-o", f"SOURCE={target}",
+            "-x",
+        ]
+        # Call 2: load the reporting/json module and export the whole workspace db.
+        report_args = [
+            "-w", workspace,
+            "-C", "marketplace install reporting/json",
+            "-m", "reporting/json",
+            "-o", f"FILENAME={report_path}",
+            "-x",
         ]
         try:
-            cli_output = await _run_recon_cli(workspace, rc_lines, timeout_sec=timeout_sec)
+            out1 = await _run_recon_cli(run_args, timeout_sec=timeout_sec)
+            out2 = await _run_recon_cli(report_args, timeout_sec=timeout_sec)
+            cli_output = out1 + "\n" + out2
             if not os.path.exists(report_path):
                 # Surface recon-cli's actual output instead of guessing -- this is what
                 # was silently discarded before. The last ~40 lines are almost always
