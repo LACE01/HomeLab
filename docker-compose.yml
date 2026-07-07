@@ -1,11 +1,17 @@
 services:
   mongo:
-    image: mongo:7
+    # Pinned to 4.4, not a newer 5.0+/7 tag -- MongoDB's official images from 5.0
+    # onward require a CPU with AVX support and crash on startup (SIGILL / exit
+    # code 132, restart-looping) on hardware/VMs without it. 4.4 is the last
+    # official line built without that requirement, which matters for older or
+    # virtualized home-lab hosts. Uses the legacy `mongo` shell for the healthcheck
+    # (not `mongosh`, which isn't bundled in the 4.4 image).
+    image: mongo:4.4
     restart: unless-stopped
     volumes:
       - mongo_data:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD", "mongo", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 5s
       retries: 5
