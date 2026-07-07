@@ -360,15 +360,24 @@ def _default_wizard_config() -> dict:
 
 DEFAULT_TOOL_CATALOG = [
     {"name": "Endpoint Detection & Response (EDR)", "applicable_categories": ["malware", "ransomware", "other_suspicious_activity"],
-     "description": "Console used to isolate a host from the network and pull process/file details.", "location": ""},
+     "description": "Console used to isolate a host from the network and pull process/file details.", "location": "",
+     "linked_integration": "CrowdStrike Falcon Spotlight", "vendor": ""},
+    {"name": "Vulnerability Management (VMDR)", "applicable_categories": ["malware", "ransomware", "other_suspicious_activity"],
+     "description": "Confirms whether the exploited vulnerability is already known/tracked and whether it's patched elsewhere.", "location": "",
+     "linked_integration": "Qualys VMDR", "vendor": ""},
     {"name": "Email Security / Phishing Report Button", "applicable_categories": ["phishing"],
-     "description": "Where suspicious emails get reported and quarantined org-wide.", "location": ""},
+     "description": "Where suspicious emails get reported and quarantined org-wide.", "location": "", "linked_integration": None, "vendor": ""},
     {"name": "Identity Provider / SSO Admin Console", "applicable_categories": ["compromised_credentials", "phishing"],
-     "description": "Used to reset passwords, revoke sessions, and review sign-in logs.", "location": ""},
+     "description": "Used to reset passwords, revoke sessions, and review sign-in logs.", "location": "",
+     "linked_integration": None, "vendor": "Google Workspace Admin Console"},
     {"name": "Backup / Recovery System", "applicable_categories": ["ransomware"],
-     "description": "Where clean restore points live -- confirm it's not reachable from affected systems.", "location": ""},
+     "description": "Where clean restore points live -- confirm it's not reachable from affected systems.", "location": "",
+     "linked_integration": None, "vendor": ""},
     {"name": "Network Firewall / Segmentation Console", "applicable_categories": ["ransomware", "malware", "other_suspicious_activity"],
-     "description": "Used to isolate affected network segments quickly.", "location": ""},
+     "description": "Used to isolate affected network segments quickly.", "location": "", "linked_integration": None, "vendor": "Palo Alto"},
+    {"name": "On-Prem Domain Controllers", "applicable_categories": ["compromised_credentials", "ransomware", "malware"],
+     "description": "Check for suspicious account/group changes, unusual authentication events, or new scheduled tasks pushed via GPO.", "location": "",
+     "linked_integration": None, "vendor": "Active Directory"},
 ]
 
 
@@ -490,3 +499,212 @@ def build_closure_report(case: dict, phase_progress: list, events: list, evidenc
         "follow_up_actions": case.get("follow_up_actions") or [],
         "generated_at": _now_iso(),
     }
+
+
+# --------------------------------------------------------------------------------
+# Mandatory reporting obligations -- modeled on a real trigger-based routing table
+# (which agency/stakeholder gets told what, on what legal/contractual deadline, for
+# a given kind of incident) an operator shared as a baseline. Kept fully admin-
+# editable (a real CRUD collection, not a fixed list) since every org's actual
+# regulatory footprint differs -- what's seeded below is a reasonable starting set
+# covering common categories (federal critical-infrastructure/ransomware reporting,
+# sector-specific regulators, health/payment/criminal-justice data rules, state
+# breach-notification law, and plain internal/stakeholder notification) but every
+# entry can be edited, disabled, or removed, and orgs should always confirm current
+# requirements with legal/compliance -- these are starting points, not legal advice.
+# --------------------------------------------------------------------------------
+def _default_reporting_obligations() -> list:
+    obligations = [
+        {"name": "Ransomware Payment (CISA/CIRCIA)",
+         "trigger_description": "Your org executes or facilitates a ransomware payment following an extortion demand.",
+         "reporting_target": "Cybersecurity and Infrastructure Security Agency (CISA) via CIRCIA",
+         "timeline_hours": 24, "timeline_text": "Within 24 hours of payment", "contacts": []},
+        {"name": "Critical Infrastructure Incident (CISA/CIRCIA)",
+         "trigger_description": "A substantial cyber incident affecting critical infrastructure you operate (e.g. water/wastewater, emergency services/911, public health, power).",
+         "reporting_target": "Cybersecurity and Infrastructure Security Agency (CISA) via CIRCIA",
+         "timeline_hours": 72, "timeline_text": "Within 72 hours of reasonable belief an incident occurred", "contacts": []},
+        {"name": "Transportation / Airport Security Incident",
+         "trigger_description": "A cyber incident impacting airport networks, air traffic control interfaces, security screening infrastructure, or credentialing systems.",
+         "reporting_target": "Internal airport security team / TSA / FAA",
+         "timeline_hours": 24, "timeline_text": "Immediate notification (typically within 24 hours per applicable security directives)", "contacts": []},
+        {"name": "Elections Infrastructure Incident",
+         "trigger_description": "A cyber incident or unauthorized access involving voting systems, voter registration databases, or election-night reporting software.",
+         "reporting_target": "Secretary of State / State elections office / EI-ISAC",
+         "timeline_hours": None, "timeline_text": "Immediate (per state election security protocols)", "contacts": []},
+        {"name": "State Government Mandate",
+         "trigger_description": "Operational disruption of public services, administrative networks, or government information systems.",
+         "reporting_target": "State CIO / State cyber command / State Attorney General",
+         "timeline_hours": 72, "timeline_text": "Typically 24-72 hours (varies by state statute)", "contacts": []},
+        {"name": "Health Data Breach — 500+ records (HIPAA)",
+         "trigger_description": "Breach of unsecured Protected Health Information (PHI) affecting 500 or more individuals.",
+         "reporting_target": "HHS Office for Civil Rights (OCR) and prominent media outlets",
+         "timeline_hours": 24 * 60, "timeline_text": "Without unreasonable delay, no later than 60 days from discovery", "contacts": []},
+        {"name": "Health Data Breach — under 500 records (HIPAA)",
+         "trigger_description": "Breach of unsecured PHI affecting fewer than 500 individuals.",
+         "reporting_target": "HHS Office for Civil Rights (OCR)",
+         "timeline_hours": None, "timeline_text": "No later than 60 days after the end of the calendar year", "contacts": []},
+        {"name": "Criminal Justice Information Incident (CJIS)",
+         "trigger_description": "A security incident impacting systems housing Criminal Justice Information (CJI).",
+         "reporting_target": "State CJIS Systems Officer (CSO) / FBI CJIS",
+         "timeline_hours": None, "timeline_text": "Immediate upon identification", "contacts": []},
+        {"name": "Payment Card Data Breach (PCI-DSS)",
+         "trigger_description": "Breach of a Cardholder Data Environment (CDE) used for payments.",
+         "reporting_target": "Merchant acquiring bank / payment card brands",
+         "timeline_hours": None, "timeline_text": "Immediate (per merchant agreement)", "contacts": []},
+        {"name": "PII Breach (State Breach-Notification Law)",
+         "trigger_description": "Unauthorized acquisition or compromise of residents' or employees' personally identifiable information (SSNs, driver's licenses, financial accounts).",
+         "reporting_target": "Affected individuals / State Attorney General",
+         "timeline_hours": None, "timeline_text": "Varies by state law (typically 30-45 days; some require immediate disclosure)", "contacts": []},
+        {"name": "Cyber Insurance Carrier Notification",
+         "trigger_description": "Any incident that may give rise to a claim under your cyber insurance policy.",
+         "reporting_target": "Cyber insurance carrier / broker",
+         "timeline_hours": None, "timeline_text": "Per your policy's notice provisions -- confirm with your broker", "contacts": []},
+        {"name": "Internal Leadership & Stakeholder Notification",
+         "trigger_description": "Any incident classified Moderate or above -- your own org's leadership and affected-department stakeholders need to know, independent of any external regulator.",
+         "reporting_target": "Executive leadership / affected department heads",
+         "timeline_hours": None, "timeline_text": "Per your internal escalation policy", "contacts": []},
+    ]
+    now = _now_iso()
+    return [{"id": _id(), **o, "auto_notify": False, "active": True, "created_at": now} for o in obligations]
+
+
+async def send_obligation_notification(db, case: dict, instance: dict) -> dict:
+    """Emails every contact on an attached obligation that has an email address, and
+    posts to a webhook if one is set. Best-effort per-contact -- one bad address
+    shouldn't block the rest from being notified. Returns a summary dict the caller
+    logs onto the case timeline."""
+    from notifier import _send_email
+    import httpx
+    import logging
+    logger = logging.getLogger("vulnops.ir_notify")
+
+    subject = f"[VulnOps IR] {instance['name']} — {case.get('case_number')}: {case.get('title')}"
+    body = (
+        f"This is a notification for a reporting obligation attached to IR case {case.get('case_number')}.\n\n"
+        f"Obligation: {instance['name']}\n"
+        f"Trigger: {instance.get('trigger_description','')}\n"
+        f"Reporting target: {instance.get('reporting_target','')}\n"
+        f"Timeline: {instance.get('timeline_text','')}\n\n"
+        f"Case: {case.get('title')} ({case.get('classification')})\n"
+        f"Summary: {case.get('initial_intake','')[:500]}\n"
+    )
+    sent, failed = [], []
+    for contact in (instance.get("contacts") or []):
+        email = contact.get("email")
+        if not email:
+            continue
+        try:
+            await _send_email(email, subject, body)
+            sent.append(email)
+        except Exception as e:
+            logger.warning(f"Obligation notify email failed for {email}: {e}")
+            failed.append(email)
+    webhook_url = instance.get("notify_webhook_url")
+    if webhook_url:
+        try:
+            async with httpx.AsyncClient(timeout=15) as c:
+                await c.post(webhook_url, json={
+                    "case_number": case.get("case_number"), "case_title": case.get("title"),
+                    "obligation": instance["name"], "reporting_target": instance.get("reporting_target"),
+                    "timeline": instance.get("timeline_text"), "subject": subject, "body": body,
+                })
+            sent.append(webhook_url)
+        except Exception as e:
+            logger.warning(f"Obligation notify webhook failed: {e}")
+            failed.append(webhook_url)
+    return {"sent": sent, "failed": failed}
+
+
+def build_case_docx(case: dict, phase_progress: list, events: list, evidence: list,
+                     obligations: list, report: dict = None):
+    """Builds a real .docx of the case -- opens natively in Word, and Google Docs
+    converts .docx on upload/open, so this one export covers both "give it to us as
+    a Word doc" and "give it to us as a Google Doc to import" without needing any
+    Google OAuth/service-account plumbing. Returns raw bytes (io.BytesIO contents).
+    Replaces the earlier Google-Sheets-webhook-as-the-only-option approach, which
+    turned out to be more setup than most orgs wanted for what they actually needed:
+    something they can just open and read/edit."""
+    from docx import Document
+    from docx.shared import Pt, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    import io
+
+    doc = Document()
+    style = doc.styles["Normal"]
+    style.font.name = "Calibri"
+    style.font.size = Pt(10.5)
+
+    title = doc.add_heading(f"{case.get('case_number','')} — {case.get('title','')}", level=0)
+    meta = doc.add_paragraph()
+    meta.add_run(
+        f"Classification: {case.get('classification')}   |   Status: {case.get('status')}   |   "
+        f"Opened: {(case.get('opened_at') or '')[:19]}"
+        + (f"   |   Closed: {(case.get('closed_at') or '')[:19]}" if case.get("closed_at") else "")
+    ).italic = True
+
+    doc.add_heading("Summary", level=1)
+    doc.add_paragraph(case.get("initial_intake") or "(no initial intake notes recorded)")
+
+    if case.get("recommended_actions"):
+        doc.add_heading("Recommended Actions", level=1)
+        for a in case["recommended_actions"]:
+            doc.add_paragraph(a, style="List Bullet")
+
+    doc.add_heading("Phase Checklist", level=1)
+    for p in sorted(phase_progress, key=lambda x: x.get("order", 0)):
+        n_tasks = len(p.get("tasks") or [])
+        n_done = len(p.get("tasks_done") or [])
+        hd = doc.add_heading(f"{p.get('order', 0) + 1}. {p.get('phase_name')} ({n_done}/{n_tasks})", level=2)
+        for i, t in enumerate(p.get("tasks") or []):
+            mark = "[x]" if i in (p.get("tasks_done") or []) else "[ ]"
+            doc.add_paragraph(f"{mark} {t}", style="List Bullet")
+
+    if obligations:
+        doc.add_heading("Reporting Obligations", level=1)
+        table = doc.add_table(rows=1, cols=4)
+        table.style = "Light Grid Accent 1"
+        hdr = table.rows[0].cells
+        for i, h in enumerate(["Obligation", "Reporting Target", "Timeline", "Status"]):
+            hdr[i].text = h
+        for o in obligations:
+            row = table.add_row().cells
+            row[0].text = o.get("name", "")
+            row[1].text = o.get("reporting_target", "")
+            row[2].text = o.get("timeline_text", "")
+            row[3].text = o.get("status", "")
+
+    doc.add_heading("Evidence Manifest", level=1)
+    if evidence:
+        table = doc.add_table(rows=1, cols=3)
+        table.style = "Light Grid Accent 1"
+        hdr = table.rows[0].cells
+        for i, h in enumerate(["#", "Description", "Location"]):
+            hdr[i].text = h
+        for ev in evidence:
+            row = table.add_row().cells
+            row[0].text = str(ev.get("item_no", ""))
+            row[1].text = ev.get("description", "")
+            row[2].text = ev.get("location", "")
+    else:
+        doc.add_paragraph("(no evidence logged)")
+
+    doc.add_heading("Timeline & Activity", level=1)
+    for e in sorted(events, key=lambda e: e.get("created_at") or ""):
+        p = doc.add_paragraph()
+        p.add_run(f"{(e.get('created_at') or '')[:19]} — {e.get('author','system')} ").bold = True
+        p.add_run(f"({e.get('type','note').replace('_',' ')}): ").italic = True
+        p.add_run(e.get("text", ""))
+
+    if report:
+        doc.add_heading("Closure Report", level=1)
+        doc.add_paragraph(f"Status: {report.get('status')}")
+        doc.add_heading("Root Cause", level=2)
+        doc.add_paragraph(report.get("root_cause") or "(not recorded)")
+        doc.add_heading("Follow-up Actions", level=2)
+        for a in (report.get("follow_up_actions") or []):
+            doc.add_paragraph(a, style="List Bullet")
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf

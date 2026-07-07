@@ -2,10 +2,10 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
-import { Plus, X, Trash, CaretUp, CaretDown, FloppyDisk } from "@phosphor-icons/react";
+import { Plus, X, Trash, CaretUp, CaretDown, FloppyDisk, PencilSimple, Megaphone } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
-const TABS = ["Plan Phases", "Roles", "Classification", "Wizard Questions", "Tool Catalog"];
+const TABS = ["Plan Phases", "Roles", "Classification", "Wizard Questions", "Reporting Obligations", "Tool Catalog"];
 
 function StepListInput({ items, onChange, placeholder }) {
   const update = (i, v) => { const next = [...items]; next[i] = v; onChange(next); };
@@ -315,44 +315,206 @@ function WizardTab() {
   );
 }
 
+function ContactsEditor({ contacts, onChange }) {
+  const update = (i, patch) => { const next = [...contacts]; next[i] = { ...next[i], ...patch }; onChange(next); };
+  const remove = (i) => onChange(contacts.filter((_, idx) => idx !== i));
+  const add = () => onChange([...contacts, { name: "", team: "", email: "", phone: "", portal_url: "" }]);
+  return (
+    <div className="space-y-1.5">
+      {contacts.map((c, i) => (
+        <div key={i} className="grid grid-cols-1 md:grid-cols-[1fr_1fr_1fr_1fr_auto] gap-1.5">
+          <input value={c.name || ""} onChange={e => update(i, { name: e.target.value })} placeholder="Contact/agency name"
+            className="h-7 bg-[#161B22] border border-[#30363D] rounded px-1.5 text-[11px] text-slate-200" />
+          <input value={c.team || ""} onChange={e => update(i, { team: e.target.value })} placeholder="Team/dept"
+            className="h-7 bg-[#161B22] border border-[#30363D] rounded px-1.5 text-[11px] text-slate-200" />
+          <input value={c.email || ""} onChange={e => update(i, { email: e.target.value })} placeholder="Email"
+            className="h-7 bg-[#161B22] border border-[#30363D] rounded px-1.5 text-[11px] text-slate-200" />
+          <input value={c.phone || ""} onChange={e => update(i, { phone: e.target.value })} placeholder="Phone"
+            className="h-7 bg-[#161B22] border border-[#30363D] rounded px-1.5 text-[11px] text-slate-200" />
+          <button onClick={() => remove(i)} className="text-slate-500 hover:text-red-400"><X size={13} /></button>
+        </div>
+      ))}
+      <button onClick={add} className="text-[11px] text-blue-300 hover:text-blue-200 inline-flex items-center gap-1"><Plus size={11} /> Add contact</button>
+    </div>
+  );
+}
+
+const EMPTY_OBLIGATION = {
+  name: "", trigger_description: "", reporting_target: "", timeline_hours: "", timeline_text: "",
+  contacts: [], auto_notify: false, notify_webhook_url: "", active: true,
+};
+
+function ObligationsTab() {
+  const [items, setItems] = useState([]);
+  const [form, setForm] = useState(EMPTY_OBLIGATION);
+  const [editingId, setEditingId] = useState(null);
+
+  const load = () => api.get("/v1/admin/ir/obligations").then(r => setItems(r.data.items));
+  useEffect(() => { load(); }, []);
+
+  const startEdit = (o) => {
+    setEditingId(o.id);
+    setForm({ ...EMPTY_OBLIGATION, ...o, timeline_hours: o.timeline_hours ?? "" });
+  };
+  const cancelEdit = () => { setEditingId(null); setForm(EMPTY_OBLIGATION); };
+
+  const save = async () => {
+    if (!form.name.trim()) { toast.error("Name is required"); return; }
+    const body = { ...form, timeline_hours: form.timeline_hours === "" ? null : Number(form.timeline_hours) };
+    try {
+      if (editingId) { await api.put(`/v1/admin/ir/obligations/${editingId}`, body); toast.success("Obligation updated."); }
+      else { await api.post("/v1/admin/ir/obligations", body); toast.success("Obligation added."); }
+      cancelEdit();
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed to save"); }
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm("Remove this reporting obligation from the library? Cases that already attached it keep their own copy.")) return;
+    await api.delete(`/v1/admin/ir/obligations/${id}`);
+    if (editingId === id) cancelEdit();
+    load();
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="text-[12px] text-slate-500 flex items-start gap-1.5">
+        <Megaphone size={14} className="text-slate-500 shrink-0 mt-0.5"/>
+        <span>Mandatory and internal reporting/notification requirements -- who needs to be told, on what deadline, when an incident happens.
+        Add or remove frameworks freely (CISA/CIRCIA, HIPAA, PCI, CJIS, state breach law, airport/TSA, elections, insurance, your own
+        internal leadership notification, or anything else specific to your org). Attached to a case under "Reporting obligations" --
+        each one can be notified manually ("Notify now") or automatically the moment it's attached, per obligation.</span>
+      </div>
+
+      <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-3.5 space-y-2">
+        {editingId && <div className="text-[11px] text-amber-300">Editing existing obligation — <button onClick={cancelEdit} className="underline">cancel</button></div>}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Framework / obligation name (e.g. HIPAA Breach — 500+ records)"
+            className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200" />
+          <input value={form.reporting_target} onChange={e => setForm({ ...form, reporting_target: e.target.value })} placeholder="Who gets notified (agency/target)"
+            className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200" />
+        </div>
+        <textarea rows={2} value={form.trigger_description} onChange={e => setForm({ ...form, trigger_description: e.target.value })} placeholder="What triggers this obligation"
+          className="w-full bg-[#161B22] border border-[#30363D] rounded px-2 py-1.5 text-[12px] text-slate-200" />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <input type="number" value={form.timeline_hours} onChange={e => setForm({ ...form, timeline_hours: e.target.value })} placeholder="Deadline in hours (for a due-date countdown; leave blank if not fixed)"
+            className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200" />
+          <input value={form.timeline_text} onChange={e => setForm({ ...form, timeline_text: e.target.value })} placeholder="Human-readable deadline (e.g. Within 72 hours)"
+            className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200" />
+        </div>
+        <div>
+          <label className="text-[10.5px] uppercase font-mono text-slate-500">Contacts</label>
+          <div className="mt-1"><ContactsEditor contacts={form.contacts} onChange={v => setForm({ ...form, contacts: v })} /></div>
+        </div>
+        <div className="flex items-center gap-4 flex-wrap">
+          <label className="text-[11.5px] text-slate-400 flex items-center gap-1.5">
+            <input type="checkbox" checked={!!form.auto_notify} onChange={e => setForm({ ...form, auto_notify: e.target.checked })} />
+            Auto-notify contacts the moment this is attached to a case
+          </label>
+          <input value={form.notify_webhook_url || ""} onChange={e => setForm({ ...form, notify_webhook_url: e.target.value })} placeholder="Optional webhook URL (chat/Teams/Slack) to also notify"
+            className="flex-1 min-w-[220px] h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200" />
+          <label className="text-[11.5px] text-slate-400 flex items-center gap-1.5">
+            <input type="checkbox" checked={form.active !== false} onChange={e => setForm({ ...form, active: e.target.checked })} /> Active
+          </label>
+        </div>
+        <button onClick={save} className="h-8 px-3 text-[12px] bg-blue-500/20 border border-blue-500/40 text-blue-200 rounded inline-flex items-center gap-1.5">
+          <Plus size={13} /> {editingId ? "Save changes" : "Add obligation"}
+        </button>
+      </div>
+
+      <div className="border border-[#30363D] bg-[#0D1117] rounded-md divide-y divide-[#30363D]">
+        {items.map(o => (
+          <div key={o.id} className="p-3 flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-[12.5px] text-slate-200 flex items-center gap-1.5">
+                {o.name}
+                {!o.active && <Chip color="slate">disabled</Chip>}
+                {o.auto_notify && <Chip color="amber">auto-notify</Chip>}
+              </div>
+              <div className="text-[11px] text-slate-500">{o.reporting_target} — {o.timeline_text}</div>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button onClick={() => startEdit(o)} className="text-slate-500 hover:text-blue-300"><PencilSimple size={14} /></button>
+              <button onClick={() => remove(o.id)} className="text-slate-500 hover:text-red-400"><Trash size={14} /></button>
+            </div>
+          </div>
+        ))}
+        {items.length === 0 && <div className="p-4 text-center text-[11.5px] text-slate-600">No reporting obligations configured yet.</div>}
+      </div>
+    </div>
+  );
+}
+
+
+const EMPTY_TOOL = { name: "", description: "", location: "", applicable_categories: [], linked_integration: "", vendor: "" };
+
 function ToolsTab() {
   const [items, setItems] = useState([]);
   const [categories, setCategories] = useState([]);
-  const [form, setForm] = useState({ name: "", description: "", location: "", applicable_categories: [] });
+  const [integrations, setIntegrations] = useState([]);
+  const [form, setForm] = useState(EMPTY_TOOL);
+  const [editingId, setEditingId] = useState(null);
 
   const load = () => api.get("/v1/admin/ir/tools").then(r => setItems(r.data.items));
-  useEffect(() => { load(); api.get("/v1/admin/ir/wizard-config").then(r => setCategories(r.data.categories)); }, []);
+  useEffect(() => {
+    load();
+    api.get("/v1/admin/ir/wizard-config").then(r => setCategories(r.data.categories));
+    api.get("/v1/integrations").then(r => setIntegrations(r.data.items)).catch(() => setIntegrations([]));
+  }, []);
 
   const toggleCat = (catId) => {
     const has = form.applicable_categories.includes(catId);
     setForm({ ...form, applicable_categories: has ? form.applicable_categories.filter(c => c !== catId) : [...form.applicable_categories, catId] });
   };
 
-  const create = async () => {
+  const startEdit = (t) => {
+    setEditingId(t.id);
+    setForm({ name: t.name, description: t.description || "", location: t.location || "", applicable_categories: t.applicable_categories || [],
+      linked_integration: t.linked_integration || "", vendor: t.vendor || "" });
+  };
+  const cancelEdit = () => { setEditingId(null); setForm(EMPTY_TOOL); };
+
+  const save = async () => {
     if (!form.name.trim()) { toast.error("Name is required"); return; }
     try {
-      await api.post("/v1/admin/ir/tools", form);
-      setForm({ name: "", description: "", location: "", applicable_categories: [] });
-      toast.success("Tool added.");
+      if (editingId) {
+        await api.put(`/v1/admin/ir/tools/${editingId}`, form);
+        toast.success("Tool updated.");
+      } else {
+        await api.post("/v1/admin/ir/tools", form);
+        toast.success("Tool added.");
+      }
+      cancelEdit();
       load();
-    } catch (e) { toast.error("Failed to add tool"); }
+    } catch (e) { toast.error("Failed to save tool"); }
   };
 
   const remove = async (id) => {
     if (!window.confirm("Remove this tool?")) return;
     await api.delete(`/v1/admin/ir/tools/${id}`);
+    if (editingId === id) cancelEdit();
     load();
   };
 
   return (
     <div className="space-y-4">
-      <div className="text-[12px] text-slate-500">What tools/resources responders have available, tagged by which incident category they help with. Surfaced automatically on the wizard's result screen.</div>
+      <div className="text-[12px] text-slate-500">What tools/resources responders have available, tagged by which incident category they help with, and optionally linked to a real connector (Qualys, CrowdStrike, etc.) or a vendor name (Palo Alto, Google Workspace Admin Console, on-prem Domain Controllers…) so people know exactly what system to check. Surfaced automatically on the wizard's result screen.</div>
 
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-3.5 space-y-2">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+        {editingId && <div className="text-[11px] text-amber-300">Editing existing tool — <button onClick={cancelEdit} className="underline">cancel</button></div>}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
           <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Tool/resource name"
             className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200" />
           <input value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Description"
+            className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200" />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+          <select value={form.linked_integration || ""} onChange={e => setForm({ ...form, linked_integration: e.target.value })}
+            className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200">
+            <option value="">Not a configured connector…</option>
+            {integrations.map(i => <option key={i.id} value={i.name}>{i.name}</option>)}
+          </select>
+          <input value={form.vendor} onChange={e => setForm({ ...form, vendor: e.target.value })} placeholder="Or vendor/product name (e.g. Palo Alto)"
             className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200" />
           <input value={form.location} onChange={e => setForm({ ...form, location: e.target.value })} placeholder="URL / location / instructions"
             className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200" />
@@ -365,8 +527,8 @@ function ToolsTab() {
             </button>
           ))}
         </div>
-        <button onClick={create} className="h-8 px-3 text-[12px] bg-blue-500/20 border border-blue-500/40 text-blue-200 rounded inline-flex items-center gap-1.5">
-          <Plus size={13} /> Add tool
+        <button onClick={save} className="h-8 px-3 text-[12px] bg-blue-500/20 border border-blue-500/40 text-blue-200 rounded inline-flex items-center gap-1.5">
+          <Plus size={13} /> {editingId ? "Save changes" : "Add tool"}
         </button>
       </div>
 
@@ -374,7 +536,10 @@ function ToolsTab() {
         {items.map(t => (
           <div key={t.id} className="p-3 flex items-center justify-between gap-2">
             <div className="min-w-0">
-              <div className="text-[12.5px] text-slate-200">{t.name}</div>
+              <div className="text-[12.5px] text-slate-200 flex items-center gap-1.5">
+                {t.name}
+                {(t.linked_integration || t.vendor) && <Chip color="blue">{t.linked_integration || t.vendor}</Chip>}
+              </div>
               <div className="text-[11px] text-slate-500">{t.description}</div>
               <div className="flex flex-wrap gap-1 mt-1">
                 {(t.applicable_categories || []).map(cid => {
@@ -383,7 +548,10 @@ function ToolsTab() {
                 })}
               </div>
             </div>
-            <button onClick={() => remove(t.id)} className="text-slate-500 hover:text-red-400 shrink-0"><Trash size={14} /></button>
+            <div className="flex items-center gap-1 shrink-0">
+              <button onClick={() => startEdit(t)} className="text-slate-500 hover:text-blue-300"><PencilSimple size={14} /></button>
+              <button onClick={() => remove(t.id)} className="text-slate-500 hover:text-red-400"><Trash size={14} /></button>
+            </div>
           </div>
         ))}
         {items.length === 0 && <div className="p-4 text-center text-[11.5px] text-slate-600">No tools configured yet.</div>}
@@ -408,6 +576,7 @@ export default function IRAdminSetup() {
       {tab === "Roles" && <RolesTab />}
       {tab === "Classification" && <ClassificationTab />}
       {tab === "Wizard Questions" && <WizardTab />}
+      {tab === "Reporting Obligations" && <ObligationsTab />}
       {tab === "Tool Catalog" && <ToolsTab />}
     </Layout>
   );

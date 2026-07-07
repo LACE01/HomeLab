@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { api } from "@/lib/api";
+import { api, API } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import { useAuth } from "@/lib/auth";
 import {
   Plus, X, ArrowLeft, CheckSquare, Square, Notepad, Camera, Package as PackageIcon,
-  UsersThree, FileArrowDown, Lock, CaretRight, Link as LinkIcon,
+  UsersThree, FileArrowDown, Lock, CaretRight, Megaphone, Bell, ClockCountdown,
+  Flag, PencilSimple, DownloadSimple, UserPlus,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -171,6 +172,207 @@ function PhaseChecklist({ caseId, phases, canEditCase, onChanged }) {
   );
 }
 
+function ObligationsPanel({ caseId, canEditCase, onChanged }) {
+  const [library, setLibrary] = useState([]);
+  const [attached, setAttached] = useState([]);
+  const [pickerId, setPickerId] = useState("");
+
+  const load = useCallback(() => {
+    api.get("/v1/ir/obligations-lite").then(r => setLibrary(r.data.items));
+    api.get(`/v1/ir/cases/${caseId}/obligations`).then(r => setAttached(r.data.items));
+  }, [caseId]);
+  useEffect(() => { load(); }, [load]);
+
+  const attach = async () => {
+    if (!pickerId) return;
+    try {
+      await api.post(`/v1/ir/cases/${caseId}/obligations`, { obligation_id: pickerId });
+      setPickerId("");
+      load(); onChanged?.();
+      toast.success("Reporting obligation attached.");
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed to attach"); }
+  };
+
+  const notifyNow = async (instanceId) => {
+    try {
+      const r = await api.post(`/v1/ir/cases/${caseId}/obligations/${instanceId}/notify`);
+      toast.success(`Notified — sent to ${r.data.sent.length}${r.data.failed.length ? `, ${r.data.failed.length} failed` : ""}.`);
+      load(); onChanged?.();
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed to send notification"); }
+  };
+
+  const markDone = async (instanceId) => {
+    try {
+      await api.put(`/v1/ir/cases/${caseId}/obligations/${instanceId}`, { status: "done" });
+      load(); onChanged?.();
+    } catch (e) { toast.error("Failed to update"); }
+  };
+
+  const remove = async (instanceId) => {
+    if (!window.confirm("Remove this obligation from the case?")) return;
+    await api.delete(`/v1/ir/cases/${caseId}/obligations/${instanceId}`);
+    load(); onChanged?.();
+  };
+
+  const attachedIds = new Set(attached.map(a => a.obligation_id));
+  const available = library.filter(o => !attachedIds.has(o.id));
+
+  return (
+    <div className="border border-[#30363D] bg-[#0D1117] rounded-md">
+      <div className="px-4 py-3 border-b border-[#30363D] text-[13px] font-medium text-slate-100 flex items-center gap-1.5">
+        <Megaphone size={15}/> Reporting obligations
+      </div>
+      {canEditCase && (
+        <div className="p-3.5 border-b border-[#30363D] flex gap-2">
+          <select value={pickerId} onChange={e=>setPickerId(e.target.value)}
+            className="flex-1 h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200">
+            <option value="">Add a reporting/notification obligation…</option>
+            {available.map(o => <option key={o.id} value={o.id}>{o.name} — {o.reporting_target}</option>)}
+          </select>
+          <button onClick={attach} className="h-8 px-3 text-[12px] bg-blue-500/20 border border-blue-500/40 text-blue-200 rounded">Attach</button>
+        </div>
+      )}
+      <div className="divide-y divide-[#30363D]">
+        {attached.map(a => {
+          const overdue = a.due_at && a.status !== "done" && new Date(a.due_at) < new Date();
+          return (
+            <div key={a.id} className="p-3.5">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-[12.5px] text-slate-200">{a.name}</div>
+                  <div className="text-[11px] text-slate-500">{a.reporting_target}</div>
+                  <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                    <Chip color={a.status === "done" ? "green" : a.status === "notified" ? "blue" : overdue ? "red" : "slate"}>
+                      {overdue ? "overdue" : a.status}
+                    </Chip>
+                    {a.due_at && (
+                      <span className="text-[10.5px] text-slate-500 inline-flex items-center gap-1">
+                        <ClockCountdown size={11}/> due {new Date(a.due_at).toLocaleString()}
+                      </span>
+                    )}
+                    {!a.due_at && a.timeline_text && <span className="text-[10.5px] text-slate-500">{a.timeline_text}</span>}
+                  </div>
+                </div>
+                {canEditCase && (
+                  <div className="flex items-center gap-1 shrink-0">
+                    {a.status !== "done" && (
+                      <button onClick={()=>notifyNow(a.id)} title="Notify now" className="h-7 px-2 text-[11px] border border-[#30363D] hover:border-blue-500/50 text-slate-300 rounded inline-flex items-center gap-1">
+                        <Bell size={12}/> Notify
+                      </button>
+                    )}
+                    {a.status !== "done" && (
+                      <button onClick={()=>markDone(a.id)} title="Mark done" className="h-7 px-2 text-[11px] border border-emerald-500/40 text-emerald-300 rounded">Done</button>
+                    )}
+                    <button onClick={()=>remove(a.id)} className="text-slate-500 hover:text-red-400"><X size={13}/></button>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {attached.length === 0 && <div className="p-4 text-center text-[11.5px] text-slate-600">No reporting obligations attached yet.</div>}
+      </div>
+    </div>
+  );
+}
+
+const EVENT_ICON = {
+  case_opened: { Icon: Flag, color: "text-blue-400" },
+  case_updated: { Icon: PencilSimple, color: "text-slate-400" },
+  case_closed: { Icon: Lock, color: "text-amber-400" },
+  note: { Icon: Notepad, color: "text-slate-400" },
+  screenshot: { Icon: Camera, color: "text-blue-400" },
+  task_checked: { Icon: CheckSquare, color: "text-emerald-400" },
+  task_unchecked: { Icon: Square, color: "text-slate-500" },
+  evidence_added: { Icon: PackageIcon, color: "text-violet-400" },
+  roles_assigned: { Icon: UsersThree, color: "text-blue-400" },
+  obligation_attached: { Icon: Megaphone, color: "text-amber-400" },
+  obligation_notified: { Icon: Bell, color: "text-orange-400" },
+  obligation_done: { Icon: CheckSquare, color: "text-emerald-400" },
+};
+
+function VisualTimeline({ events }) {
+  const sorted = [...events].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  return (
+    <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+      <div className="text-[13px] font-medium text-slate-100 mb-3">Full incident timeline</div>
+      {sorted.length === 0 ? (
+        <div className="text-[12px] text-slate-600 text-center py-6">Nothing recorded yet.</div>
+      ) : (
+        <div className="relative pl-6">
+          <div className="absolute left-[9px] top-1 bottom-1 w-px bg-[#30363D]"/>
+          <div className="space-y-4">
+            {sorted.map(ev => {
+              const { Icon, color } = EVENT_ICON[ev.type] || { Icon: Notepad, color: "text-slate-400" };
+              return (
+                <div key={ev.id} className="relative flex items-start gap-3">
+                  <div className={`absolute -left-6 top-0 rounded-full bg-[#0D1117] border border-[#30363D] p-1 ${color}`}>
+                    <Icon size={12} weight="bold"/>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[11px] text-slate-500">
+                      <span className="text-slate-300">{ev.author}</span> • {new Date(ev.created_at).toLocaleString()}
+                    </div>
+                    <div className="text-[12px] text-slate-300 whitespace-pre-wrap">{ev.text}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RoleAssignRow({ role, assigned, users, canEditCase, onAssign }) {
+  const isKnownUser = assigned?.email && users.some(u => u.email === assigned.email) && !assigned?.external;
+  const [mode, setMode] = useState(assigned?.external ? "external" : "user");
+  const [extName, setExtName] = useState(assigned?.external ? assigned.name || "" : "");
+  const [extContact, setExtContact] = useState(assigned?.external ? assigned.contact || "" : "");
+
+  const pickUser = (email) => {
+    if (!email) { onAssign(role.id, { name: "", contact: "", external: false }); return; }
+    const u = users.find(x => x.email === email);
+    onAssign(role.id, { name: u.name, contact: u.email, external: false });
+  };
+  const saveExternal = () => onAssign(role.id, { name: extName, contact: extContact, external: true });
+
+  if (!canEditCase) {
+    return (
+      <div className="text-[11.5px]">
+        <div className="text-slate-400">{role.name} <span className="text-slate-600">({role.kind})</span></div>
+        <div className="text-slate-300">{assigned?.name ? `${assigned.name}${assigned.external ? " (external)" : ""}` : "—"}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="text-[11.5px]">
+      <div className="flex items-center justify-between">
+        <div className="text-slate-400">{role.name} <span className="text-slate-600">({role.kind})</span></div>
+        <button onClick={()=>setMode(mode === "user" ? "external" : "user")} className="text-blue-300 hover:text-blue-200 inline-flex items-center gap-1 text-[10.5px]">
+          <UserPlus size={11}/> {mode === "user" ? "external?" : "use a user"}
+        </button>
+      </div>
+      {mode === "user" ? (
+        <select value={isKnownUser ? assigned.email : ""} onChange={e=>pickUser(e.target.value)}
+          className="w-full h-7 mt-0.5 bg-[#161B22] border border-[#30363D] rounded px-1.5 text-[11.5px] text-slate-200">
+          <option value="">Unassigned</option>
+          {users.map(u => <option key={u.id} value={u.email}>{u.name} — {u.email}</option>)}
+        </select>
+      ) : (
+        <div className="flex gap-1 mt-0.5">
+          <input value={extName} onChange={e=>setExtName(e.target.value)} onBlur={saveExternal} placeholder="Name (external)"
+            className="flex-1 h-7 bg-[#161B22] border border-[#30363D] rounded px-1.5 text-[11px] text-slate-200"/>
+          <input value={extContact} onChange={e=>setExtContact(e.target.value)} onBlur={saveExternal} placeholder="Email/phone"
+            className="flex-1 h-7 bg-[#161B22] border border-[#30363D] rounded px-1.5 text-[11px] text-slate-200"/>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function IRCaseDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -178,16 +380,18 @@ export function IRCaseDetail() {
   const canEditCase = canEdit("/ir/cases");
   const [data, setData] = useState(null);
   const [report, setReport] = useState(null);
+  const [users, setUsers] = useState([]);
   const [noteText, setNoteText] = useState("");
   const [noteAttachments, setNoteAttachments] = useState([]);
+  const [dragOver, setDragOver] = useState(false);
   const [evidenceForm, setEvidenceForm] = useState({ description: "", location: "" });
-  const [sheetsUrl, setSheetsUrl] = useState("");
 
   const load = useCallback(() => {
-    api.get(`/v1/ir/cases/${id}`).then(r => { setData(r.data); setSheetsUrl(r.data.case.sheets_webhook_url || ""); }).catch(() => setData(false));
+    api.get(`/v1/ir/cases/${id}`).then(r => setData(r.data)).catch(() => setData(false));
     api.get(`/v1/ir/cases/${id}/report`).then(r => setReport(r.data)).catch(() => setReport(null));
   }, [id]);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { api.get("/v1/ir/users-lite").then(r => setUsers(r.data.items)).catch(() => setUsers([])); }, []);
 
   // Auto-refresh so simultaneous responders see each other's updates without a
   // realtime backend -- matches the rest of the app's collaboration model.
@@ -209,6 +413,11 @@ export function IRCaseDetail() {
     setNoteAttachments(out);
   };
 
+  const onDrop = (e) => {
+    e.preventDefault(); e.stopPropagation(); setDragOver(false);
+    handleFiles(e.dataTransfer.files);
+  };
+
   const addNote = async () => {
     if (!noteText.trim() && noteAttachments.length === 0) return;
     try {
@@ -223,13 +432,8 @@ export function IRCaseDetail() {
     catch (e) { toast.error("Failed to update classification"); }
   };
 
-  const saveSheetsUrl = async () => {
-    try { await api.patch(`/v1/ir/cases/${id}`, { sheets_webhook_url: sheetsUrl }); toast.success("Sheets link saved."); load(); }
-    catch (e) { toast.error("Failed to save"); }
-  };
-
-  const assignRole = async (roleId, name, contact) => {
-    const next = { ...(data.case.assigned_roles || {}), [roleId]: { name, contact } };
+  const assignRole = async (roleId, assignment) => {
+    const next = { ...(data.case.assigned_roles || {}), [roleId]: assignment };
     try { await api.put(`/v1/ir/cases/${id}/roles`, { assigned_roles: next }); load(); }
     catch (e) { toast.error("Failed to assign role"); }
   };
@@ -260,6 +464,20 @@ export function IRCaseDetail() {
     catch (e) { toast.error(e.response?.data?.detail || "Failed to approve"); }
   };
 
+  const exportDocx = () => {
+    const token = localStorage.getItem("vulnops_token");
+    fetch(`${API}/v1/ir/cases/${id}/export.docx`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then(r => r.blob())
+      .then(blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = `${data.case.case_number}.docx`;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+      })
+      .catch(() => toast.error("Failed to export"));
+  };
+
   if (data === false) return <Layout title="IR Case"><div className="text-slate-500 text-center py-10">Not found.</div></Layout>;
   if (!data) return <Layout title="IR Case"><div className="text-slate-500 text-center py-10">Loading…</div></Layout>;
 
@@ -267,7 +485,14 @@ export function IRCaseDetail() {
 
   return (
     <Layout title={c.title} subtitle={`${c.case_number} — opened ${new Date(c.opened_at).toLocaleString()}`}
-      actions={<button onClick={()=>navigate("/ir/cases")} className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] rounded inline-flex items-center gap-1.5 text-slate-300"><ArrowLeft size={14}/> Back</button>}>
+      actions={
+        <div className="flex items-center gap-2">
+          <button onClick={exportDocx} className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] rounded inline-flex items-center gap-1.5 text-slate-300">
+            <DownloadSimple size={14}/> Export Word doc
+          </button>
+          <button onClick={()=>navigate("/ir/cases")} className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] rounded inline-flex items-center gap-1.5 text-slate-300"><ArrowLeft size={14}/> Back</button>
+        </div>
+      }>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 space-y-4">
@@ -277,8 +502,14 @@ export function IRCaseDetail() {
             <div className="px-4 py-3 border-b border-[#30363D] text-[13px] font-medium text-slate-100">Timeline &amp; activity</div>
             {canEditCase && c.status === "open" && (
               <div className="p-3.5 border-b border-[#30363D] space-y-2">
-                <textarea value={noteText} onChange={e=>setNoteText(e.target.value)} rows={2} placeholder="Add a note, action taken, or update…"
-                  className="w-full bg-[#161B22] border border-[#30363D] rounded px-2 py-1.5 text-[12.5px] text-slate-200"/>
+                <div
+                  onDragOver={(e)=>{e.preventDefault(); setDragOver(true);}}
+                  onDragLeave={()=>setDragOver(false)}
+                  onDrop={onDrop}
+                  className={`rounded border-2 border-dashed transition-colors ${dragOver ? "border-blue-500/60 bg-blue-500/5" : "border-transparent"}`}>
+                  <textarea value={noteText} onChange={e=>setNoteText(e.target.value)} rows={2} placeholder="Add a note, action taken, or update… (drag & drop screenshots anywhere here)"
+                    className="w-full bg-[#161B22] border border-[#30363D] rounded px-2 py-1.5 text-[12.5px] text-slate-200"/>
+                </div>
                 {noteAttachments.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">
                     {noteAttachments.map((a, i) => (
@@ -292,7 +523,7 @@ export function IRCaseDetail() {
                 )}
                 <div className="flex items-center justify-between">
                   <label className="text-[11.5px] text-blue-300 hover:underline cursor-pointer inline-flex items-center gap-1">
-                    <Camera size={13}/> Attach screenshot/PDF
+                    <Camera size={13}/> Attach screenshot/PDF (or drag &amp; drop above)
                     <input type="file" accept="image/*,application/pdf" multiple className="hidden" onChange={e=>handleFiles(e.target.files)}/>
                   </label>
                   <button onClick={addNote} className="h-7 px-3 text-[11.5px] bg-blue-500/20 border border-blue-500/40 text-blue-200 rounded">Post</button>
@@ -323,9 +554,7 @@ export function IRCaseDetail() {
             </div>
           </div>
 
-          <PhaseChecklist caseId={id} phases={phase_progress} canEditCase={canEditCase && c.status === "open"} onChanged={load}/>
-
-          {/* Evidence manifest */}
+          {/* Evidence manifest -- moved here, right below Timeline & Activity */}
           <div className="border border-[#30363D] bg-[#0D1117] rounded-md">
             <div className="px-4 py-3 border-b border-[#30363D] text-[13px] font-medium text-slate-100 flex items-center gap-1.5"><PackageIcon size={15}/> Evidence manifest</div>
             {canEditCase && c.status === "open" && (
@@ -347,6 +576,10 @@ export function IRCaseDetail() {
               {evidence.length === 0 && <div className="p-4 text-center text-[11.5px] text-slate-600">No evidence logged yet.</div>}
             </div>
           </div>
+
+          <ObligationsPanel caseId={id} canEditCase={canEditCase && c.status === "open"} onChanged={load}/>
+
+          <PhaseChecklist caseId={id} phases={phase_progress} canEditCase={canEditCase && c.status === "open"} onChanged={load}/>
         </div>
 
         <div className="space-y-4">
@@ -388,33 +621,14 @@ export function IRCaseDetail() {
             )}
           </div>
 
-          {/* Google Sheets link */}
-          <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
-            <div className="text-[11px] uppercase font-mono text-slate-500 mb-1.5 flex items-center gap-1.5"><LinkIcon size={13}/> Google Sheets export (optional)</div>
-            <div className="text-[11px] text-slate-500 mb-2">Override the default connector to push this case's timeline to its own sheet. Leave blank to use Integrations → Google Sheets.</div>
-            <div className="flex gap-1.5">
-              <input disabled={!canEditCase} value={sheetsUrl} onChange={e=>setSheetsUrl(e.target.value)} placeholder="Apps Script Web App URL"
-                className="flex-1 h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[11.5px] text-slate-200"/>
-              {canEditCase && <button onClick={saveSheetsUrl} className="h-8 px-2.5 text-[11.5px] border border-[#30363D] rounded text-slate-300">Save</button>}
-            </div>
-          </div>
-
           {/* Roles */}
           <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
             <div className="text-[11px] uppercase font-mono text-slate-500 mb-2 flex items-center gap-1.5"><UsersThree size={13}/> Assigned roles</div>
-            <div className="space-y-2">
-              {roles.map(r => {
-                const assigned = (c.assigned_roles || {})[r.id] || {};
-                return (
-                  <div key={r.id} className="text-[11.5px]">
-                    <div className="text-slate-400">{r.name} <span className="text-slate-600">({r.kind})</span></div>
-                    {canEditCase ? (
-                      <input defaultValue={assigned.name || ""} placeholder="Assign a name…" onBlur={e=>assignRole(r.id, e.target.value, assigned.contact||"")}
-                        className="w-full h-7 mt-0.5 bg-[#161B22] border border-[#30363D] rounded px-1.5 text-[11.5px] text-slate-200"/>
-                    ) : <div className="text-slate-300">{assigned.name || "—"}</div>}
-                  </div>
-                );
-              })}
+            <div className="space-y-2.5">
+              {roles.map(r => (
+                <RoleAssignRow key={r.id} role={r} assigned={(c.assigned_roles || {})[r.id]} users={users}
+                  canEditCase={canEditCase} onAssign={assignRole}/>
+              ))}
             </div>
           </div>
 
@@ -458,6 +672,10 @@ export function IRCaseDetail() {
             )}
           </div>
         </div>
+      </div>
+
+      <div className="mt-4">
+        <VisualTimeline events={events}/>
       </div>
     </Layout>
   );
