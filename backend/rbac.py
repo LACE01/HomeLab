@@ -89,6 +89,10 @@ MODULE_REGISTRY = [
     {"key": "/admin/sla-policies", "label": "SLA Policies", "group": "Reports & Admin"},
     {"key": "/admin/approval-routing", "label": "Approval Routing", "group": "Reports & Admin"},
     {"key": "/admin/rbac", "label": "Role Access", "group": "Reports & Admin"},
+    # --- Incident Response ---
+    {"key": "/ir/wizard", "label": "Triage Wizard", "group": "Incident Response"},
+    {"key": "/ir/cases", "label": "IR Cases", "group": "Incident Response"},
+    {"key": "/admin/ir-setup", "label": "IR Setup", "group": "Incident Response"},
 ]
 MODULE_KEYS = [m["key"] for m in MODULE_REGISTRY]
 
@@ -100,13 +104,13 @@ MODULE_KEYS = [m["key"] for m in MODULE_REGISTRY]
 _ADMIN_ONLY_BY_DEFAULT = {
     "/admin/users", "/admin/notifications", "/admin/chatops", "/admin/health",
     "/admin/backups", "/admin/audit-log", "/admin/assignment-rules", "/admin/sla-policies",
-    "/admin/approval-routing", "/admin/rbac",
+    "/admin/approval-routing", "/admin/rbac", "/admin/ir-setup",
 }
 
 
 def _default_access() -> dict:
     everyone_edit = {m["key"]: "edit" for m in MODULE_REGISTRY if m["key"] not in _ADMIN_ONLY_BY_DEFAULT}
-    executive_view = {k: "view" for k in ["/", "/operational", "/reports", "/compliance", "/exposure", "/findings", "/assets"]}
+    executive_view = {k: "view" for k in ["/", "/operational", "/reports", "/compliance", "/exposure", "/findings", "/assets", "/ir/cases"]}
     return {
         "manager": dict(everyone_edit),
         "analyst": dict(everyone_edit),

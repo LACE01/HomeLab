@@ -25,7 +25,7 @@ TRIGGERS = [
     "ticket_sla_warning", "ticket_overdue", "ticket_reassigned",
     "comment_mention", "exception_expiring", "finding_reopened", "kev_match",
     "tls_cert_expiring", "exception_revoked", "exception_risk_escalated",
-    "osint_exposure_found",
+    "osint_exposure_found", "ir_case_opened",
 ]
 
 CHANNELS = ["email", "discord", "slack", "teams", "webhook"]
@@ -108,6 +108,15 @@ TEMPLATES = {
             "• **Days left:** {days_left}\n• **Reason:** {reason}\n\nOpen: {url}"
         ),
     },
+    "ir_case_opened": {
+        "subject": "[VulnOps] IR case opened: {case_number} — {title}",
+        "body": (
+            "\U0001F6A8 A new incident response case was opened.\n\n"
+            "• **Case:** {case_number}\n• **Title:** {title}\n"
+            "• **Classification:** {classification}\n• **Likely category:** {category}\n"
+            "• **Confidence:** {confidence_pct}%\n\nOpen: {url}"
+        ),
+    },
     "digest_list": {
         "subject": "[VulnOps] {cadence} digest — {rule_name} ({count})",
         "body": (
@@ -126,6 +135,7 @@ def render(template_id: str, ctx: dict) -> dict:
         "url", "days_left", "days_overdue", "date", "open_critical", "new_today",
         "closed_today", "overdue", "kev", "approver", "expires_at",
         "cadence", "rule_name", "count", "items_text",
+        "case_number", "classification", "category", "confidence_pct",
     ]}
     return {"subject": tpl["subject"].format(**safe), "body": tpl["body"].format(**safe)}
 

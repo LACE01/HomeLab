@@ -44,6 +44,13 @@ WORKFLOW_CONNECTORS = [
     {"name": "GitLab",        "type": "vcs",          "logo": "gitlab"},
     {"name": "Azure DevOps",  "type": "vcs",          "logo": "azure"},
     {"name": "OpenCTI",       "type": "threat_intel", "logo": "opencti"},
+    # One-way IR case timeline export -- "endpoint" is a Google Apps Script Web App
+    # URL the org deploys against their own sheet (bound script that appends a row
+    # per POST); "api_key" is an optional shared secret the script can check, since
+    # Apps Script Web Apps are unauthenticated-by-URL otherwise. Deliberately not the
+    # full Sheets API/OAuth/service-account flow -- see incident_response.py's
+    # push_case_event_to_sheet for why.
+    {"name": "Google Sheets", "type": "collaboration", "logo": "google-sheets"},
 ]
 
 # Exposure/threat-intel enrichment connectors -- Shodan/Censys enrich asset exposure

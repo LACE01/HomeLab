@@ -47,6 +47,7 @@ from routes.health import router as health_router
 from routes.backups import router as backups_router
 from routes.audit import router as audit_router
 from routes.yara import router as yara_router
+from routes.incident_response import router as incident_response_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("vulnops")
@@ -84,6 +85,7 @@ api.include_router(audit_router)
 api.include_router(yara_router)
 api.include_router(rbac_router)
 api.include_router(scan_schedule_router)
+api.include_router(incident_response_router)
 
 
 @api.get("/")
