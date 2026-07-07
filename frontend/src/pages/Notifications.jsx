@@ -2,11 +2,11 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
-import { Plus, Trash, Lightning, PaperPlaneTilt, EnvelopeSimple, DiscordLogo, SlackLogo, MicrosoftTeamsLogo, Globe } from "@phosphor-icons/react";
+import { Plus, Trash, Lightning, PaperPlaneTilt, EnvelopeSimple, DiscordLogo, SlackLogo, MicrosoftTeamsLogo, Globe, DeviceMobile } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const CHANNEL_ICONS = {
-  email: EnvelopeSimple, discord: DiscordLogo, slack: SlackLogo, teams: MicrosoftTeamsLogo, webhook: Globe,
+  email: EnvelopeSimple, discord: DiscordLogo, slack: SlackLogo, teams: MicrosoftTeamsLogo, webhook: Globe, sms: DeviceMobile,
 };
 const SEVERITIES = ["Critical","High","Medium","Low","Info"];
 
@@ -33,8 +33,9 @@ export default function Notifications() {
 
   const addChannel = async () => {
     if (!chForm.name) { toast.error("Name required"); return; }
-    if (chForm.type !== "email" && !chForm.webhook_url) { toast.error("Webhook URL required"); return; }
+    if (chForm.type !== "email" && chForm.type !== "sms" && !chForm.webhook_url) { toast.error("Webhook URL required"); return; }
     if (chForm.type === "email" && !chForm.to) { toast.error("Recipient email required"); return; }
+    if (chForm.type === "sms" && !chForm.to) { toast.error("Recipient phone/cell number required"); return; }
     try { await api.post("/v1/admin/notification-channels", chForm); toast.success("Channel added"); setChForm({name:"", type:"discord", webhook_url:"", to:"", enabled:true}); await load(); }
     catch (e) { toast.error(e.response?.data?.detail || "Failed"); }
   };
@@ -89,8 +90,10 @@ export default function Notifications() {
           <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-3 grid grid-cols-6 gap-2">
             <input placeholder="Name" data-testid="ch-name" value={chForm.name} onChange={(e)=>setChForm({...chForm, name:e.target.value})} className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px]"/>
             <select data-testid="ch-type" value={chForm.type} onChange={(e)=>setChForm({...chForm, type:e.target.value})} className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px]">{meta.channels.map(c=> <option key={c}>{c}</option>)}</select>
-            {chForm.type !== "email" ? (
+            {chForm.type !== "email" && chForm.type !== "sms" ? (
               <input placeholder="Webhook URL" data-testid="ch-url" value={chForm.webhook_url} onChange={(e)=>setChForm({...chForm, webhook_url:e.target.value})} className="col-span-2 h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] font-mono"/>
+            ) : chForm.type === "sms" ? (
+              <input placeholder="+1 555 123 4567" data-testid="ch-to" value={chForm.to} onChange={(e)=>setChForm({...chForm, to:e.target.value})} className="col-span-2 h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px]"/>
             ) : (
               <input placeholder="recipient@example.com" data-testid="ch-to" value={chForm.to} onChange={(e)=>setChForm({...chForm, to:e.target.value})} className="col-span-2 h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px]"/>
             )}

@@ -51,6 +51,10 @@ services:
       # container gets recreated on every deploy/update and would take the backup
       # with it. Set BACKUP_SCHEDULE_ENABLED=true to also run these nightly.
       - vulnops_backups:/app/backups
+      # Same reasoning for IR case artifacts (arbitrary uploaded files -- logs,
+      # spreadsheets, PDFs, etc. attached to an incident) -- these need to survive
+      # container recreation too, unlike the rest of the container's filesystem.
+      - vulnops_ir_artifacts:/app/ir_artifacts
     # Not published to the host — only nginx (frontend) talks to it.
 
   frontend:
@@ -67,3 +71,4 @@ services:
 volumes:
   mongo_data:
   vulnops_backups:
+  vulnops_ir_artifacts:

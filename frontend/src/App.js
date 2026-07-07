@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { Toaster } from "@/components/ui/sonner";
@@ -75,6 +76,13 @@ const Protected = ({ children, module }) => {
 
 const AppRouter = () => {
   const location = useLocation();
+  // Explicit, instant scroll-to-top on every route change. Without this, switching
+  // between modules whose page heights differ leaves the browser's default scroll
+  // position wherever it happens to clamp to on the new (often shorter) page --
+  // which reads as "it randomly jumps around" rather than a clean, deliberate reset.
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [location.pathname]);
   // CRITICAL: Detect OAuth callback synchronously during render — before any Protected gating
   if (location.hash?.includes("session_id=")) return <AuthCallback />;
   return (

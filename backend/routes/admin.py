@@ -134,6 +134,8 @@ async def create_channel(body: ChannelIn, user: dict = Depends(require_role("adm
         raise HTTPException(400, f"type must be one of {CHANNELS}")
     if body.type == "email" and not body.to:
         raise HTTPException(400, "to (recipient email) is required for email channels")
+    if body.type == "sms" and not body.to:
+        raise HTTPException(400, "to (recipient phone/cell number) is required for sms channels")
     if body.type in ("discord", "slack", "teams", "webhook") and not body.webhook_url:
         raise HTTPException(400, "webhook_url is required for this channel type")
     doc = {**body.model_dump(), "id": str(uuid.uuid4()), "created_at": now_iso()}

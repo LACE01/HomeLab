@@ -25,10 +25,10 @@ TRIGGERS = [
     "ticket_sla_warning", "ticket_overdue", "ticket_reassigned",
     "comment_mention", "exception_expiring", "finding_reopened", "kev_match",
     "tls_cert_expiring", "exception_revoked", "exception_risk_escalated",
-    "osint_exposure_found", "ir_case_opened",
+    "osint_exposure_found", "ir_case_opened", "ir_obligation_notify",
 ]
 
-CHANNELS = ["email", "discord", "slack", "teams", "webhook"]
+CHANNELS = ["email", "discord", "slack", "teams", "webhook", "sms"]
 
 
 # --- Message templates (Markdown / plain text) ---
@@ -124,6 +124,15 @@ TEMPLATES = {
             "{items_text}"
         ),
     },
+    "ir_obligation_notify": {
+        "subject": "[VulnOps IR] {obligation_name} — {case_number}: {title}",
+        "body": (
+            "This is a notification for a reporting obligation attached to IR case {case_number}.\n\n"
+            "• **Obligation:** {obligation_name}\n• **Trigger:** {trigger_description}\n"
+            "• **Reporting target:** {reporting_target}\n• **Timeline:** {timeline_text}\n\n"
+            "• **Case:** {title} ({classification})\n• **Summary:** {summary}\n\nOpen: {url}"
+        ),
+    },
 }
 
 
@@ -136,6 +145,7 @@ def render(template_id: str, ctx: dict) -> dict:
         "closed_today", "overdue", "kev", "approver", "expires_at",
         "cadence", "rule_name", "count", "items_text",
         "case_number", "classification", "category", "confidence_pct",
+        "obligation_name", "trigger_description", "reporting_target", "timeline_text", "summary",
     ]}
     return {"subject": tpl["subject"].format(**safe), "body": tpl["body"].format(**safe)}
 
@@ -202,6 +212,31 @@ async def _send_smtp(to_addr: str, subject: str, body: str) -> dict:
     return {"status_code": 250, "ok": True, "text": f"Sent via SMTP ({host}:{port})"}
 
 
+async def _send_sms(to_number: str, subject: str, body: str) -> dict:
+    """Cell/SMS delivery -- generic HTTP relay so a self-hosted deployment can point
+    at whatever SMS gateway they already have (Twilio's messages endpoint accepts a
+    simple form-encoded POST, most other providers accept a JSON POST) without this
+    app taking a hard dependency on one vendor's SDK. Same simulate-if-unconfigured
+    fallback as email so IR obligation notify still works (with a clear outbox
+    record) before a real gateway is wired up."""
+    if not to_number:
+        return {"status_code": 0, "ok": False, "text": "Contact has no phone/cell number configured"}
+
+    webhook_url = os.environ.get("SMS_WEBHOOK_URL")
+    if webhook_url:
+        text = f"{subject}\n{body}"[:1500]  # most SMS gateways truncate long bodies anyway
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.post(webhook_url, json={"to": to_number, "body": text, "source": "vulnops"})
+            return {"status_code": r.status_code, "ok": 200 <= r.status_code < 300, "text": r.text[:200]}
+        except Exception as e:
+            return {"status_code": 0, "ok": False, "text": f"SMS webhook error: {e}"}
+
+    return {"status_code": 0, "ok": True, "simulated": True,
+            "text": "SIMULATED -- no SMS_WEBHOOK_URL configured, so nothing was actually texted. "
+                    "Point SMS_WEBHOOK_URL at your SMS gateway's HTTP API (Twilio, etc.) to send real texts."}
+
+
 async def _send_email(to_addr: str, subject: str, body: str) -> dict:
     """Prefers plain SMTP (SMTP_HOST) since that's the self-hosted-friendly option --
     falls back to Resend's API if that's what's configured, then simulates."""
@@ -253,6 +288,8 @@ async def deliver(channel: dict, template_id: str, ctx: dict, db) -> dict:
             result = await _send_webhook(channel["webhook_url"], msg["subject"], msg["body"], ctx)
         elif channel["type"] == "email":
             result = await _send_email(channel.get("to"), msg["subject"], msg["body"])
+        elif channel["type"] == "sms":
+            result = await _send_sms(channel.get("to"), msg["subject"], msg["body"])
         else:
             result = {"status_code": 0, "ok": False, "text": f"Unknown channel type: {channel['type']}"}
     except Exception as e:

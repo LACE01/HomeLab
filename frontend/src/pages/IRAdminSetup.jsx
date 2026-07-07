@@ -110,7 +110,7 @@ function RolesTab() {
 
   const update = (i, patch) => { const next = [...roles]; next[i] = { ...next[i], ...patch }; setRoles(next); };
   const remove = (i) => setRoles(roles.filter((_, idx) => idx !== i));
-  const addRole = () => setRoles([...roles, { name: "New role", kind: "optional", description: "", contacts: [] }]);
+  const addRole = () => setRoles([...roles, { name: "New role", kind: "optional", description: "", tasks: [], contacts: [] }]);
 
   const save = async () => {
     setSaving(true);
@@ -128,18 +128,28 @@ function RolesTab() {
         <SectionSave onSave={save} saving={saving} />
       </div>
       {roles.map((r, i) => (
-        <div key={r.id || i} className="border border-[#30363D] bg-[#0D1117] rounded-md p-3 grid grid-cols-1 md:grid-cols-[1fr_140px_1fr_auto] gap-2 items-start">
-          <input value={r.name} onChange={e => update(i, { name: e.target.value })} placeholder="Role name"
-            className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200" />
-          <select value={r.kind} onChange={e => update(i, { kind: e.target.value })}
-            className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200">
-            <option value="standing">standing</option>
-            <option value="mandatory">mandatory</option>
-            <option value="optional">optional</option>
-          </select>
-          <input value={r.description || ""} onChange={e => update(i, { description: e.target.value })} placeholder="Description"
-            className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200" />
-          <button onClick={() => remove(i)} className="text-slate-500 hover:text-red-400 h-8 flex items-center"><Trash size={14} /></button>
+        <div key={r.id || i} className="border border-[#30363D] bg-[#0D1117] rounded-md p-3 space-y-2">
+          <div className="grid grid-cols-1 md:grid-cols-[1fr_140px_1fr_auto] gap-2 items-start">
+            <input value={r.name} onChange={e => update(i, { name: e.target.value })} placeholder="Role name"
+              className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200" />
+            <select value={r.kind} onChange={e => update(i, { kind: e.target.value })}
+              className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200">
+              <option value="standing">standing</option>
+              <option value="mandatory">mandatory</option>
+              <option value="optional">optional</option>
+            </select>
+            <input value={r.description || ""} onChange={e => update(i, { description: e.target.value })} placeholder="Description"
+              className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200" />
+            <button onClick={() => remove(i)} className="text-slate-500 hover:text-red-400 h-8 flex items-center"><Trash size={14} /></button>
+          </div>
+          <details className="pl-1">
+            <summary className="cursor-pointer text-[11px] text-slate-500 hover:text-slate-300">
+              Checklist shown to whoever is assigned this role ({(r.tasks || []).length} task{(r.tasks || []).length === 1 ? "" : "s"})
+            </summary>
+            <div className="mt-2">
+              <StepListInput items={r.tasks || []} onChange={v => update(i, { tasks: v })} placeholder="Task for this role…" />
+            </div>
+          </details>
         </div>
       ))}
       <button onClick={addRole} className="h-8 px-3 text-[12px] border border-dashed border-[#30363D] hover:border-[#484F58] text-slate-400 rounded inline-flex items-center gap-1.5">

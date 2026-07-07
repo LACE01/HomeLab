@@ -179,14 +179,22 @@ def _default_phases() -> list:
 
 def _default_roles_config() -> dict:
     roles = [
-        {"name": "Triage Leader", "kind": "standing", "description": "First point of escalation; owns intake and initial classification."},
-        {"name": "Incident Commander", "kind": "mandatory", "description": "Owns the incident end-to-end once classified; runs briefings and the Incident Action Plan."},
-        {"name": "IT Support/Operations Representative", "kind": "mandatory", "description": "Executes technical containment, evidence collection, and restoration."},
-        {"name": "Cybersecurity Representative", "kind": "mandatory", "description": "Leads analysis, root cause, and security-specific guidance."},
-        {"name": "Legal and Compliance Representative", "kind": "mandatory", "description": "Advises on regulatory/legal exposure and required notifications."},
-        {"name": "Public Information Officer", "kind": "optional", "description": "Owns external/internal communications."},
-        {"name": "Safety Officer", "kind": "optional", "description": "Ensures responder and physical safety during the incident."},
-        {"name": "Liaison Officer", "kind": "optional", "description": "Coordinates with outside agencies/vendors."},
+        {"name": "Triage Leader", "kind": "standing", "description": "First point of escalation; owns intake and initial classification.",
+         "tasks": ["Confirm the initial report and gather basic facts", "Assign initial classification", "Escalate to Incident Commander if Critical/Significant"]},
+        {"name": "Incident Commander", "kind": "mandatory", "description": "Owns the incident end-to-end once classified; runs briefings and the Incident Action Plan.",
+         "tasks": ["Stand up the response team and assign roles", "Run regular status briefings", "Own the Incident Action Plan", "Sign off before case closure"]},
+        {"name": "IT Support/Operations Representative", "kind": "mandatory", "description": "Executes technical containment, evidence collection, and restoration.",
+         "tasks": ["Isolate/contain affected systems", "Collect and preserve technical evidence", "Execute restoration plan", "Validate systems before returning to production"]},
+        {"name": "Cybersecurity Representative", "kind": "mandatory", "description": "Leads analysis, root cause, and security-specific guidance.",
+         "tasks": ["Perform technical analysis of the incident", "Determine root cause", "Recommend containment/eradication steps", "Verify no persistence/backdoors remain"]},
+        {"name": "Legal and Compliance Representative", "kind": "mandatory", "description": "Advises on regulatory/legal exposure and required notifications.",
+         "tasks": ["Review reporting obligations for applicability", "Advise on legal/regulatory exposure", "Coordinate required external notifications"]},
+        {"name": "Public Information Officer", "kind": "optional", "description": "Owns external/internal communications.",
+         "tasks": ["Draft internal communications", "Draft external/public communications if needed", "Coordinate messaging with legal"]},
+        {"name": "Safety Officer", "kind": "optional", "description": "Ensures responder and physical safety during the incident.",
+         "tasks": ["Assess physical safety risks", "Ensure responder safety during containment"]},
+        {"name": "Liaison Officer", "kind": "optional", "description": "Coordinates with outside agencies/vendors.",
+         "tasks": ["Identify outside agencies/vendors that need coordination", "Maintain point of contact with each"]},
     ]
     return {"roles": [{"id": _id(), **r, "contacts": []} for r in roles], "updated_at": _now_iso()}
 
@@ -501,6 +509,51 @@ def build_closure_report(case: dict, phase_progress: list, events: list, evidenc
     }
 
 
+def compute_case_progress(case: dict, phase_progress: list, roles_cfg: list, report: dict = None) -> dict:
+    """Rolls up everything trackable on a case (phase checklist tasks, each
+    assigned role's own checklist, and open/closed follow-up actions) into one
+    0-100 progress number for the ticket header. A case only reads 100% once it's
+    closed, the closure report is approved, and there are no open follow-up
+    actions left -- matches the "approved but follow-ups still open" case the
+    follow-up-actions banner also surfaces, so the two stay consistent."""
+    phase_total = sum(len(p.get("tasks") or []) for p in phase_progress)
+    phase_done = sum(len(p.get("tasks_done") or []) for p in phase_progress)
+
+    roles_by_id = {r["id"]: r for r in (roles_cfg or [])}
+    assigned_roles = case.get("assigned_roles") or {}
+    role_total = 0
+    role_done = 0
+    for role_id, assignment in assigned_roles.items():
+        role = roles_by_id.get(role_id)
+        if not role or not (assignment or {}).get("name"):
+            continue
+        n = len(role.get("tasks") or [])
+        role_total += n
+        role_done += len(set((assignment or {}).get("tasks_done") or []) & set(range(n)))
+
+    follow_ups = case.get("follow_up_actions") or []
+    follow_total = len(follow_ups)
+    follow_done = sum(1 for a in follow_ups if isinstance(a, dict) and a.get("done"))
+
+    weighted_total = phase_total + role_total + follow_total
+    weighted_done = phase_done + role_done + follow_done
+
+    if case.get("status") == "closed" and report and report.get("status") == "approved" and follow_done == follow_total:
+        pct = 100.0
+    elif weighted_total == 0:
+        pct = 100.0 if case.get("status") == "closed" else 0.0
+    else:
+        pct = round((weighted_done / weighted_total) * 100, 1)
+
+    return {
+        "pct": pct,
+        "phase_tasks_done": phase_done, "phase_tasks_total": phase_total,
+        "role_tasks_done": role_done, "role_tasks_total": role_total,
+        "follow_ups_done": follow_done, "follow_ups_total": follow_total,
+        "fully_resolved": case.get("status") == "closed" and bool(report) and report.get("status") == "approved" and follow_done == follow_total,
+    }
+
+
 # --------------------------------------------------------------------------------
 # Mandatory reporting obligations -- modeled on a real trigger-based routing table
 # (which agency/stakeholder gets told what, on what legal/contractual deadline, for
@@ -569,46 +622,45 @@ def _default_reporting_obligations() -> list:
 
 
 async def send_obligation_notification(db, case: dict, instance: dict) -> dict:
-    """Emails every contact on an attached obligation that has an email address, and
-    posts to a webhook if one is set. Best-effort per-contact -- one bad address
-    shouldn't block the rest from being notified. Returns a summary dict the caller
-    logs onto the case timeline."""
-    from notifier import _send_email
-    import httpx
+    """Notifies every contact on an attached obligation via email and/or cell (SMS)
+    depending on what's on file for them, plus a webhook if one is set -- routed
+    through notifier.deliver() (the same delivery + outbox-logging pipeline the
+    Notifications module uses for every other trigger in the app) instead of a
+    separate ad hoc email/webhook implementation, so there's one delivery code path,
+    one outbox log, and one place SMTP/SMS-gateway config lives. Contacts are a
+    custom per-obligation list (not admin-configured channels), so synthetic
+    one-off channel dicts are built here and handed to deliver() rather than
+    reading from notification_channels. Best-effort per-contact -- one bad
+    address/number shouldn't block the rest. Returns a summary the caller logs
+    onto the case timeline."""
+    from notifier import deliver
     import logging
     logger = logging.getLogger("vulnops.ir_notify")
 
-    subject = f"[VulnOps IR] {instance['name']} — {case.get('case_number')}: {case.get('title')}"
-    body = (
-        f"This is a notification for a reporting obligation attached to IR case {case.get('case_number')}.\n\n"
-        f"Obligation: {instance['name']}\n"
-        f"Trigger: {instance.get('trigger_description','')}\n"
-        f"Reporting target: {instance.get('reporting_target','')}\n"
-        f"Timeline: {instance.get('timeline_text','')}\n\n"
-        f"Case: {case.get('title')} ({case.get('classification')})\n"
-        f"Summary: {case.get('initial_intake','')[:500]}\n"
-    )
+    ctx = {
+        "obligation_name": instance["name"], "case_number": case.get("case_number"), "title": case.get("title"),
+        "trigger_description": instance.get("trigger_description", ""), "reporting_target": instance.get("reporting_target", ""),
+        "timeline_text": instance.get("timeline_text", ""), "classification": case.get("classification"),
+        "summary": (case.get("initial_intake", "") or "")[:500], "url": "",
+    }
     sent, failed = [], []
     for contact in (instance.get("contacts") or []):
-        email = contact.get("email")
-        if not email:
-            continue
-        try:
-            await _send_email(email, subject, body)
-            sent.append(email)
-        except Exception as e:
-            logger.warning(f"Obligation notify email failed for {email}: {e}")
-            failed.append(email)
+        for kind, addr in (("email", contact.get("email")), ("sms", contact.get("phone"))):
+            if not addr:
+                continue
+            channel = {"type": kind, "to": addr, "name": contact.get("name") or instance["name"]}
+            try:
+                result = await deliver(channel, "ir_obligation_notify", ctx, db)
+                (sent if result.get("delivered") else failed).append(addr)
+            except Exception as e:
+                logger.warning(f"Obligation notify ({kind}) failed for {addr}: {e}")
+                failed.append(addr)
     webhook_url = instance.get("notify_webhook_url")
     if webhook_url:
+        channel = {"type": "webhook", "webhook_url": webhook_url, "name": instance["name"]}
         try:
-            async with httpx.AsyncClient(timeout=15) as c:
-                await c.post(webhook_url, json={
-                    "case_number": case.get("case_number"), "case_title": case.get("title"),
-                    "obligation": instance["name"], "reporting_target": instance.get("reporting_target"),
-                    "timeline": instance.get("timeline_text"), "subject": subject, "body": body,
-                })
-            sent.append(webhook_url)
+            result = await deliver(channel, "ir_obligation_notify", ctx, db)
+            (sent if result.get("delivered") else failed).append(webhook_url)
         except Exception as e:
             logger.warning(f"Obligation notify webhook failed: {e}")
             failed.append(webhook_url)
@@ -616,7 +668,8 @@ async def send_obligation_notification(db, case: dict, instance: dict) -> dict:
 
 
 def build_case_docx(case: dict, phase_progress: list, events: list, evidence: list,
-                     obligations: list, report: dict = None):
+                     obligations: list, report: dict = None, artifacts: list = None,
+                     related_entities: list = None):
     """Builds a real .docx of the case -- opens natively in Word, and Google Docs
     converts .docx on upload/open, so this one export covers both "give it to us as
     a Word doc" and "give it to us as a Google Doc to import" without needing any
@@ -625,7 +678,7 @@ def build_case_docx(case: dict, phase_progress: list, events: list, evidence: li
     turned out to be more setup than most orgs wanted for what they actually needed:
     something they can just open and read/edit."""
     from docx import Document
-    from docx.shared import Pt, RGBColor
+    from docx.shared import Pt, RGBColor, Inches
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     import io
 
@@ -694,17 +747,91 @@ def build_case_docx(case: dict, phase_progress: list, events: list, evidence: li
         p.add_run(f"{(e.get('created_at') or '')[:19]} — {e.get('author','system')} ").bold = True
         p.add_run(f"({e.get('type','note').replace('_',' ')}): ").italic = True
         p.add_run(e.get("text", ""))
+        for att in (e.get("attachments") or []):
+            mime = att.get("mime", "")
+            data_url = att.get("data_url", "")
+            if mime.startswith("image/") and "," in data_url:
+                try:
+                    import base64
+                    raw = base64.b64decode(data_url.split(",", 1)[1])
+                    doc.add_picture(io.BytesIO(raw), width=Inches(4))
+                except Exception:
+                    doc.add_paragraph(f"[screenshot could not be embedded: {att.get('name','?')}]")
+            else:
+                doc.add_paragraph(f"[attachment: {att.get('name','?')}]")
 
     if report:
         doc.add_heading("Closure Report", level=1)
         doc.add_paragraph(f"Status: {report.get('status')}")
         doc.add_heading("Root Cause", level=2)
-        doc.add_paragraph(report.get("root_cause") or "(not recorded)")
-        doc.add_heading("Follow-up Actions", level=2)
-        for a in (report.get("follow_up_actions") or []):
-            doc.add_paragraph(a, style="List Bullet")
+        doc.add_paragraph(case.get("root_cause") or report.get("root_cause") or "(not recorded)")
+    follow_ups = case.get("follow_up_actions") or []
+    if follow_ups:
+        doc.add_heading("Follow-up Actions", level=1)
+        for a in follow_ups:
+            text = a.get("text", "") if isinstance(a, dict) else str(a)
+            done = a.get("done") if isinstance(a, dict) else False
+            doc.add_paragraph(f"{'[x]' if done else '[ ]'} {text}", style="List Bullet")
+
+    if related_entities:
+        doc.add_heading("Related Assets / Entities", level=1)
+        table = doc.add_table(rows=1, cols=3)
+        table.style = "Light Grid Accent 1"
+        hdr = table.rows[0].cells
+        for i, h in enumerate(["Type", "Name / Identifier", "Notes"]):
+            hdr[i].text = h
+        for re_ in related_entities:
+            row = table.add_row().cells
+            row[0].text = (re_.get("type") or "").replace("_", " ").title()
+            row[1].text = re_.get("name", "")
+            row[2].text = re_.get("notes", "")
+
+    if artifacts:
+        doc.add_heading("Attached Artifacts", level=1)
+        doc.add_paragraph(
+            "Screenshots embedded above are inline in the Timeline & Activity section. "
+            "The files below are attached to the case and available for download from the "
+            "case's Artifacts panel (not embedded here since they may not be Word-viewable)."
+        )
+        table = doc.add_table(rows=1, cols=4)
+        table.style = "Light Grid Accent 1"
+        hdr = table.rows[0].cells
+        for i, h in enumerate(["File", "Folder", "Size", "Uploaded by"]):
+            hdr[i].text = h
+        for a in artifacts:
+            row = table.add_row().cells
+            row[0].text = a.get("filename", "")
+            row[1].text = a.get("folder") or "—"
+            size = a.get("size") or 0
+            row[2].text = f"{size/1024:.1f} KB" if size < 1024*1024 else f"{size/1024/1024:.1f} MB"
+            row[3].text = a.get("uploaded_by", "")
 
     buf = io.BytesIO()
     doc.save(buf)
     buf.seek(0)
     return buf
+
+
+# --------------------------------------------------------------------------------
+# Case artifacts -- arbitrary files (logs, spreadsheets, PDFs, exports from other
+# tools, multi-file folders) attached to a case, stored on disk rather than as
+# base64 in Mongo (unlike the small inline screenshot attachments on timeline
+# notes) since these can be much larger and more varied in type. Same
+# path-containment pattern as backup.py's BACKUP_DIR.
+# --------------------------------------------------------------------------------
+import os as _os
+from pathlib import Path as _Path
+
+ARTIFACTS_DIR = _Path(_os.environ.get("IR_ARTIFACTS_DIR", "/app/ir_artifacts"))
+MAX_ARTIFACT_BYTES = 25 * 1024 * 1024  # 25MB/file -- generous for logs/PDFs/spreadsheets, not unlimited
+
+
+def artifact_disk_path(case_id: str, stored_name: str) -> _Path:
+    """Resolves a stored artifact's real path, refusing to resolve outside
+    ARTIFACTS_DIR/case_id (stored_name is a generated uuid-based name, never the
+    original filename, specifically so this can't be tricked into path traversal)."""
+    base = (ARTIFACTS_DIR / case_id).resolve()
+    candidate = (base / stored_name).resolve()
+    if not str(candidate).startswith(str(base)):
+        raise ValueError("Invalid artifact path")
+    return candidate

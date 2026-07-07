@@ -7,7 +7,8 @@ import { useAuth } from "@/lib/auth";
 import {
   Plus, X, ArrowLeft, CheckSquare, Square, Notepad, Camera, Package as PackageIcon,
   UsersThree, FileArrowDown, Lock, CaretRight, Megaphone, Bell, ClockCountdown,
-  Flag, PencilSimple, DownloadSimple, UserPlus,
+  Flag, PencilSimple, DownloadSimple, UserPlus, UploadSimple, Trash, FolderSimple,
+  ArrowClockwise, Warning, DesktopTower, Globe, Handshake, User as UserIcon, LinkSimple, ListChecks,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -289,6 +290,8 @@ const EVENT_ICON = {
   obligation_attached: { Icon: Megaphone, color: "text-amber-400" },
   obligation_notified: { Icon: Bell, color: "text-orange-400" },
   obligation_done: { Icon: CheckSquare, color: "text-emerald-400" },
+  case_reopened: { Icon: ArrowClockwise, color: "text-blue-400" },
+  entity_linked: { Icon: LinkSimple, color: "text-violet-400" },
 };
 
 function VisualTimeline({ events }) {
@@ -325,8 +328,37 @@ function VisualTimeline({ events }) {
   );
 }
 
-function RoleAssignRow({ role, assigned, users, canEditCase, onAssign }) {
-  const isKnownUser = assigned?.email && users.some(u => u.email === assigned.email) && !assigned?.external;
+function ProgressBar({ progress }) {
+  if (!progress) return null;
+  const pct = Math.max(0, Math.min(100, progress.pct ?? 0));
+  const color = pct >= 100 ? "from-emerald-500 to-emerald-400" : pct >= 60 ? "from-blue-500 to-blue-400" : pct >= 30 ? "from-amber-500 to-amber-400" : "from-red-500 to-red-400";
+  const parts = [];
+  if (progress.phase_tasks_total) parts.push(`${progress.phase_tasks_done}/${progress.phase_tasks_total} phase tasks`);
+  if (progress.role_tasks_total) parts.push(`${progress.role_tasks_done}/${progress.role_tasks_total} role tasks`);
+  if (progress.follow_ups_total) parts.push(`${progress.follow_ups_done}/${progress.follow_ups_total} follow-ups`);
+  return (
+    <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[11px] uppercase font-mono text-slate-500">Case progress</span>
+        <span className="text-[13px] font-medium text-slate-100">{pct.toFixed(1)}%</span>
+      </div>
+      <div className="h-2.5 bg-slate-800 rounded-full overflow-hidden">
+        <div className={`h-full bg-gradient-to-r ${color} rounded-full transition-all duration-500`} style={{ width: `${pct}%` }} />
+      </div>
+      {parts.length > 0 && <div className="text-[10.5px] text-slate-500 mt-1.5">{parts.join(" · ")}</div>}
+      {progress.follow_ups_total > 0 && progress.follow_ups_done < progress.follow_ups_total && (
+        <div className="text-[10.5px] text-amber-400 mt-1">Follow-up actions still open — not fully resolved yet.</div>
+      )}
+    </div>
+  );
+}
+
+function RoleAssignRow({ role, assigned, users, canEditCase, onAssign, onToggleTask }) {
+  // Stored assignments use "contact" for the email/phone value (external contacts
+  // don't have a real "email" field to key off of) -- checking assigned?.email here
+  // was the bug: it was always undefined, so the dropdown could never show the
+  // just-assigned user and looked like the assignment silently failed.
+  const isKnownUser = assigned?.contact && users.some(u => u.email === assigned.contact) && !assigned?.external;
   const [mode, setMode] = useState(assigned?.external ? "external" : "user");
   const [extName, setExtName] = useState(assigned?.external ? assigned.name || "" : "");
   const [extContact, setExtContact] = useState(assigned?.external ? assigned.contact || "" : "");
@@ -337,26 +369,52 @@ function RoleAssignRow({ role, assigned, users, canEditCase, onAssign }) {
     onAssign(role.id, { name: u.name, contact: u.email, external: false });
   };
   const saveExternal = () => onAssign(role.id, { name: extName, contact: extContact, external: true });
+  const tasks = role.tasks || [];
+  const tasksDone = new Set(assigned?.tasks_done || []);
+  const hasAssignment = !!assigned?.name;
+
+  const checklist = tasks.length > 0 && hasAssignment && (
+    <details className="mt-1.5" open={tasksDone.size < tasks.length}>
+      <summary className="cursor-pointer text-[10.5px] text-slate-500 hover:text-slate-300 inline-flex items-center gap-1">
+        <ListChecks size={11}/> Checklist ({tasksDone.size}/{tasks.length})
+      </summary>
+      <div className="mt-1 space-y-1 pl-1">
+        {tasks.map((t, i) => {
+          const done = tasksDone.has(i);
+          return (
+            <button key={i} disabled={!canEditCase} onClick={() => onToggleTask(role.id, i, !done)}
+              className="flex items-start gap-1.5 text-[11px] text-left w-full text-slate-300 hover:text-slate-100 disabled:cursor-default">
+              {done ? <CheckSquare size={13} className="text-emerald-400 shrink-0 mt-0.5"/> : <Square size={13} className="text-slate-600 shrink-0 mt-0.5"/>}
+              <span className={done ? "line-through text-slate-500" : ""}>{t}</span>
+            </button>
+          );
+        })}
+      </div>
+    </details>
+  );
 
   if (!canEditCase) {
     return (
-      <div className="text-[11.5px]">
+      <div className="text-[11.5px] pb-2 border-b border-[#30363D] last:border-0">
         <div className="text-slate-400">{role.name} <span className="text-slate-600">({role.kind})</span></div>
-        <div className="text-slate-300">{assigned?.name ? `${assigned.name}${assigned.external ? " (external)" : ""}` : "—"}</div>
+        {role.description && <div className="text-[10.5px] text-slate-600 mt-0.5">{role.description}</div>}
+        <div className="text-slate-300 mt-0.5">{assigned?.name ? `${assigned.name}${assigned.external ? " (external)" : ""}` : "—"}</div>
+        {checklist}
       </div>
     );
   }
 
   return (
-    <div className="text-[11.5px]">
+    <div className="text-[11.5px] pb-2.5 border-b border-[#30363D] last:border-0">
       <div className="flex items-center justify-between">
         <div className="text-slate-400">{role.name} <span className="text-slate-600">({role.kind})</span></div>
         <button onClick={()=>setMode(mode === "user" ? "external" : "user")} className="text-blue-300 hover:text-blue-200 inline-flex items-center gap-1 text-[10.5px]">
           <UserPlus size={11}/> {mode === "user" ? "external?" : "use a user"}
         </button>
       </div>
+      {role.description && <div className="text-[10.5px] text-slate-600 mt-0.5 mb-1">{role.description}</div>}
       {mode === "user" ? (
-        <select value={isKnownUser ? assigned.email : ""} onChange={e=>pickUser(e.target.value)}
+        <select value={isKnownUser ? assigned.contact : ""} onChange={e=>pickUser(e.target.value)}
           className="w-full h-7 mt-0.5 bg-[#161B22] border border-[#30363D] rounded px-1.5 text-[11.5px] text-slate-200">
           <option value="">Unassigned</option>
           {users.map(u => <option key={u.id} value={u.email}>{u.name} — {u.email}</option>)}
@@ -369,6 +427,237 @@ function RoleAssignRow({ role, assigned, users, canEditCase, onAssign }) {
             className="flex-1 h-7 bg-[#161B22] border border-[#30363D] rounded px-1.5 text-[11px] text-slate-200"/>
         </div>
       )}
+      {checklist}
+    </div>
+  );
+}
+
+function ArtifactsPanel({ caseId, canEditCase }) {
+  const [items, setItems] = useState([]);
+  const [folder, setFolder] = useState("");
+  const [dragOver, setDragOver] = useState(false);
+  const [uploading, setUploading] = useState(false);
+
+  const load = useCallback(() => {
+    api.get(`/v1/ir/cases/${caseId}/artifacts`).then(r => setItems(r.data.items)).catch(() => setItems([]));
+  }, [caseId]);
+  useEffect(() => { load(); }, [load]);
+
+  const upload = async (files) => {
+    const arr = Array.from(files || []);
+    if (arr.length === 0) return;
+    const form = new FormData();
+    arr.forEach(f => form.append("files", f));
+    if (folder.trim()) form.append("folder", folder.trim());
+    setUploading(true);
+    try {
+      await api.post(`/v1/ir/cases/${caseId}/artifacts`, form, { headers: { "Content-Type": "multipart/form-data" } });
+      toast.success(`${arr.length} file${arr.length===1?"":"s"} attached.`);
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Upload failed"); } finally { setUploading(false); }
+  };
+
+  const onDrop = (e) => { e.preventDefault(); e.stopPropagation(); setDragOver(false); upload(e.dataTransfer.files); };
+
+  const download = (a) => {
+    const token = localStorage.getItem("vulnops_token");
+    fetch(`${API}/v1/ir/cases/${caseId}/artifacts/${a.id}/download`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then(r => r.blob()).then(blob => {
+        const url = URL.createObjectURL(blob);
+        const el = document.createElement("a");
+        el.href = url; el.download = a.filename; document.body.appendChild(el); el.click(); el.remove();
+        URL.revokeObjectURL(url);
+      }).catch(() => toast.error("Download failed"));
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm("Delete this artifact?")) return;
+    await api.delete(`/v1/ir/cases/${caseId}/artifacts/${id}`);
+    load();
+  };
+
+  const grouped = items.reduce((acc, a) => { const k = a.folder || ""; (acc[k] = acc[k] || []).push(a); return acc; }, {});
+  const fmtSize = (n) => n < 1024*1024 ? `${(n/1024).toFixed(1)} KB` : `${(n/1024/1024).toFixed(1)} MB`;
+
+  return (
+    <div className="border border-[#30363D] bg-[#0D1117] rounded-md">
+      <div className="px-4 py-3 border-b border-[#30363D] text-[13px] font-medium text-slate-100 flex items-center gap-1.5">
+        <FolderSimple size={15}/> Artifacts <span className="text-slate-500 font-normal">({items.length})</span>
+      </div>
+      {canEditCase && (
+        <div className="p-3.5 border-b border-[#30363D] space-y-2">
+          <div
+            onDragOver={(e)=>{e.preventDefault(); setDragOver(true);}}
+            onDragLeave={()=>setDragOver(false)}
+            onDrop={onDrop}
+            className={`rounded border-2 border-dashed p-3 text-center transition-colors ${dragOver ? "border-blue-500/60 bg-blue-500/5" : "border-[#30363D]"}`}>
+            <div className="text-[11.5px] text-slate-500">Drag &amp; drop any files here (txt, csv, xlsx, docx, pdf, etc.)</div>
+          </div>
+          <div className="flex items-center gap-2">
+            <input value={folder} onChange={e=>setFolder(e.target.value)} placeholder="Optional folder/group name (for multi-file batches)"
+              className="flex-1 h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200"/>
+            <label className={`h-8 px-3 text-[12px] border border-[#30363D] hover:border-blue-500/50 text-slate-300 rounded inline-flex items-center gap-1.5 cursor-pointer ${uploading ? "opacity-50 pointer-events-none" : ""}`}>
+              <UploadSimple size={13}/> {uploading ? "Uploading…" : "Upload"}
+              <input type="file" multiple className="hidden" onChange={e=>upload(e.target.files)}/>
+            </label>
+          </div>
+        </div>
+      )}
+      <div className="divide-y divide-[#30363D]">
+        {Object.entries(grouped).map(([folderName, files]) => (
+          <div key={folderName || "_none"} className="p-3.5">
+            {folderName && <div className="text-[10.5px] uppercase font-mono text-slate-500 mb-1.5 flex items-center gap-1"><FolderSimple size={11}/> {folderName}</div>}
+            <div className="space-y-1.5">
+              {files.map(a => (
+                <div key={a.id} className="flex items-center justify-between gap-2 text-[12px]">
+                  <button onClick={()=>download(a)} className="text-blue-300 hover:underline truncate text-left">{a.filename}</button>
+                  <div className="flex items-center gap-2 shrink-0 text-slate-500">
+                    <span className="text-[10.5px]">{fmtSize(a.size)}</span>
+                    <span className="text-[10.5px]">{a.uploaded_by}</span>
+                    {canEditCase && <button onClick={()=>remove(a.id)} className="hover:text-red-400"><Trash size={12}/></button>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+        {items.length === 0 && <div className="p-4 text-center text-[11.5px] text-slate-600">No artifacts attached yet.</div>}
+      </div>
+    </div>
+  );
+}
+
+const ENTITY_TYPE_META = {
+  asset: { label: "Asset", Icon: DesktopTower },
+  server: { label: "Server", Icon: DesktopTower },
+  website: { label: "Website", Icon: Globe },
+  user: { label: "User", Icon: UserIcon },
+  external_vendor: { label: "External vendor", Icon: Handshake },
+  other: { label: "Other", Icon: LinkSimple },
+};
+
+function RelatedEntitiesPanel({ caseId, canEditCase }) {
+  const [items, setItems] = useState([]);
+  const [assetsLite, setAssetsLite] = useState([]);
+  const [form, setForm] = useState({ type: "asset", name: "", asset_id: "", notes: "" });
+
+  const load = useCallback(() => {
+    api.get(`/v1/ir/cases/${caseId}/entities`).then(r => setItems(r.data.items)).catch(() => setItems([]));
+  }, [caseId]);
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => { api.get("/v1/ir/assets-lite").then(r => setAssetsLite(r.data.items)).catch(() => setAssetsLite([])); }, []);
+
+  const add = async () => {
+    if (!form.name.trim()) { toast.error("Name/identifier required"); return; }
+    try {
+      await api.post(`/v1/ir/cases/${caseId}/entities`, { type: form.type, name: form.name.trim(), asset_id: form.asset_id || null, notes: form.notes.trim() });
+      setForm({ type: form.type, name: "", asset_id: "", notes: "" });
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed to link"); }
+  };
+
+  const remove = async (id) => {
+    await api.delete(`/v1/ir/cases/${caseId}/entities/${id}`);
+    load();
+  };
+
+  const pickAsset = (assetId) => {
+    const a = assetsLite.find(x => x.id === assetId);
+    setForm({ ...form, asset_id: assetId, name: a ? (a.hostname || a.ip_address || assetId) : "" });
+  };
+
+  return (
+    <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+      <div className="text-[11px] uppercase font-mono text-slate-500 mb-2 flex items-center gap-1.5"><LinkSimple size={13}/> Related assets / entities</div>
+      {canEditCase && (
+        <div className="space-y-1.5 mb-3 pb-3 border-b border-[#30363D]">
+          <select value={form.type} onChange={e=>setForm({...form, type: e.target.value, asset_id: "", name: ""})}
+            className="w-full h-7 bg-[#161B22] border border-[#30363D] rounded px-1.5 text-[11.5px] text-slate-200">
+            {Object.entries(ENTITY_TYPE_META).map(([k,v]) => <option key={k} value={k}>{v.label}</option>)}
+          </select>
+          {form.type === "asset" ? (
+            <select value={form.asset_id} onChange={e=>pickAsset(e.target.value)}
+              className="w-full h-7 bg-[#161B22] border border-[#30363D] rounded px-1.5 text-[11.5px] text-slate-200">
+              <option value="">Pick an asset…</option>
+              {assetsLite.map(a => <option key={a.id} value={a.id}>{a.hostname || a.ip_address || a.id}{a.criticality ? ` (${a.criticality})` : ""}</option>)}
+            </select>
+          ) : (
+            <input value={form.name} onChange={e=>setForm({...form, name: e.target.value})} placeholder="Name / identifier"
+              className="w-full h-7 bg-[#161B22] border border-[#30363D] rounded px-1.5 text-[11.5px] text-slate-200"/>
+          )}
+          <input value={form.notes} onChange={e=>setForm({...form, notes: e.target.value})} placeholder="Notes (optional)"
+            className="w-full h-7 bg-[#161B22] border border-[#30363D] rounded px-1.5 text-[11.5px] text-slate-200"/>
+          <button onClick={add} className="w-full h-7 text-[11.5px] bg-blue-500/20 border border-blue-500/40 text-blue-200 rounded">Link</button>
+        </div>
+      )}
+      <div className="space-y-2">
+        {items.map(it => {
+          const meta = ENTITY_TYPE_META[it.type] || ENTITY_TYPE_META.other;
+          const Icon = meta.Icon;
+          return (
+            <div key={it.id} className="flex items-start justify-between gap-2 text-[11.5px]">
+              <div className="min-w-0 flex items-start gap-1.5">
+                <Icon size={13} className="text-slate-500 shrink-0 mt-0.5"/>
+                <div className="min-w-0">
+                  <div className="text-slate-200 truncate">{it.name} <span className="text-slate-600">({meta.label})</span></div>
+                  {it.notes && <div className="text-[10.5px] text-slate-500">{it.notes}</div>}
+                </div>
+              </div>
+              {canEditCase && <button onClick={()=>remove(it.id)} className="text-slate-500 hover:text-red-400 shrink-0"><X size={12}/></button>}
+            </div>
+          );
+        })}
+        {items.length === 0 && <div className="text-[11.5px] text-slate-600">Nothing linked yet.</div>}
+      </div>
+    </div>
+  );
+}
+
+function FollowUpsPanel({ caseId, followUps, canEditCase, onChanged }) {
+  const [text, setText] = useState("");
+
+  const add = async () => {
+    if (!text.trim()) return;
+    try { await api.post(`/v1/ir/cases/${caseId}/follow-ups`, { text: text.trim() }); setText(""); onChanged(); }
+    catch (e) { toast.error("Failed to add"); }
+  };
+  const toggle = async (id, done) => {
+    try { await api.put(`/v1/ir/cases/${caseId}/follow-ups/${id}`, { done }); onChanged(); }
+    catch (e) { toast.error("Failed to update"); }
+  };
+  const remove = async (id) => {
+    try { await api.delete(`/v1/ir/cases/${caseId}/follow-ups/${id}`); onChanged(); }
+    catch (e) { toast.error("Failed to remove"); }
+  };
+
+  const items = followUps || [];
+  const openCount = items.filter(a => !a.done).length;
+
+  return (
+    <div>
+      <div className="text-[10.5px] uppercase text-slate-500 flex items-center justify-between">
+        <span>Follow-up actions</span>
+        {items.length > 0 && <span className={openCount > 0 ? "text-amber-400" : "text-emerald-400"}>{items.length - openCount}/{items.length} done</span>}
+      </div>
+      <div className="mt-1 space-y-1">
+        {items.map(a => (
+          <div key={a.id} className="flex items-center justify-between gap-1.5 group">
+            <button disabled={!canEditCase} onClick={()=>toggle(a.id, !a.done)} className="flex items-start gap-1.5 text-[11.5px] text-left flex-1 min-w-0 disabled:cursor-default">
+              {a.done ? <CheckSquare size={13} className="text-emerald-400 shrink-0 mt-0.5"/> : <Square size={13} className="text-slate-600 shrink-0 mt-0.5"/>}
+              <span className={a.done ? "line-through text-slate-500" : "text-slate-300"}>{a.text}</span>
+            </button>
+            {canEditCase && <button onClick={()=>remove(a.id)} className="text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 shrink-0"><X size={11}/></button>}
+          </div>
+        ))}
+        {items.length === 0 && <div className="text-[11.5px] text-slate-600">None recorded.</div>}
+      </div>
+      {canEditCase && (
+        <div className="flex gap-1 mt-1.5">
+          <input value={text} onChange={e=>setText(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault(); add();}}} placeholder="Add a follow-up action…"
+            className="flex-1 h-7 bg-[#161B22] border border-[#30363D] rounded px-1.5 text-[11px] text-slate-200"/>
+          <button onClick={add} className="h-7 px-2 text-[11px] bg-blue-500/20 border border-blue-500/40 text-blue-200 rounded">Add</button>
+        </div>
+      )}
     </div>
   );
 }
@@ -378,6 +667,7 @@ export function IRCaseDetail() {
   const navigate = useNavigate();
   const { canEdit } = useAuth();
   const canEditCase = canEdit("/ir/cases");
+  const canApprove = canEdit("/ir/case-approval");
   const [data, setData] = useState(null);
   const [report, setReport] = useState(null);
   const [users, setUsers] = useState([]);
@@ -436,6 +726,17 @@ export function IRCaseDetail() {
     const next = { ...(data.case.assigned_roles || {}), [roleId]: assignment };
     try { await api.put(`/v1/ir/cases/${id}/roles`, { assigned_roles: next }); load(); }
     catch (e) { toast.error("Failed to assign role"); }
+  };
+
+  const toggleRoleTask = async (roleId, taskIndex, done) => {
+    try { await api.put(`/v1/ir/cases/${id}/roles/${roleId}/tasks`, { task_index: taskIndex, done }); load(); }
+    catch (e) { toast.error("Failed to update task"); }
+  };
+
+  const reopenCase = async () => {
+    if (!window.confirm("Reopen this case? Status will go back to open.")) return;
+    try { await api.post(`/v1/ir/cases/${id}/reopen`); load(); toast.success("Case reopened."); }
+    catch (e) { toast.error(e.response?.data?.detail || "Failed to reopen"); }
   };
 
   const addEvidence = async () => {
@@ -580,9 +881,15 @@ export function IRCaseDetail() {
           <ObligationsPanel caseId={id} canEditCase={canEditCase && c.status === "open"} onChanged={load}/>
 
           <PhaseChecklist caseId={id} phases={phase_progress} canEditCase={canEditCase && c.status === "open"} onChanged={load}/>
+
+          <ArtifactsPanel caseId={id} canEditCase={canEditCase}/>
+
+          <RelatedEntitiesPanel caseId={id} canEditCase={canEditCase}/>
         </div>
 
         <div className="space-y-4">
+          <ProgressBar progress={data.progress}/>
+
           {/* Case info */}
           <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4 space-y-2.5">
             <div className="flex items-center justify-between">
@@ -627,7 +934,7 @@ export function IRCaseDetail() {
             <div className="space-y-2.5">
               {roles.map(r => (
                 <RoleAssignRow key={r.id} role={r} assigned={(c.assigned_roles || {})[r.id]} users={users}
-                  canEditCase={canEditCase} onAssign={assignRole}/>
+                  canEditCase={canEditCase} onAssign={assignRole} onToggleTask={toggleRoleTask}/>
               ))}
             </div>
           </div>
@@ -638,9 +945,20 @@ export function IRCaseDetail() {
             {c.status === "open" && canEditCase && (
               <button onClick={closeCase} className="w-full h-8 text-[12px] bg-amber-500/15 border border-amber-500/40 text-amber-300 rounded mb-2">Close case</button>
             )}
+            {c.status === "closed" && canEditCase && (
+              <button onClick={reopenCase} className="w-full h-8 text-[12px] border border-[#30363D] hover:border-blue-500/50 text-slate-300 rounded mb-2 inline-flex items-center justify-center gap-1.5">
+                <ArrowClockwise size={13}/> Reopen case
+              </button>
+            )}
             {report ? (
               <div className="space-y-2">
                 <Chip color={report.status === "approved" ? "green" : "amber"}>{report.status}</Chip>
+                {report.status === "approved" && !data.progress?.fully_resolved && (
+                  <div className="border border-amber-500/40 bg-amber-900/20 rounded-md p-2.5 flex items-start gap-2">
+                    <Warning size={15} className="text-amber-400 shrink-0 mt-0.5"/>
+                    <div className="text-[11px] text-amber-300/90">Approved, but not truly closed yet — open follow-up actions below still need to be completed.</div>
+                  </div>
+                )}
                 <div>
                   <div className="text-[10.5px] uppercase text-slate-500">Root cause</div>
                   {report.status === "draft" && canEditCase ? (
@@ -648,20 +966,14 @@ export function IRCaseDetail() {
                       className="w-full mt-1 bg-[#161B22] border border-[#30363D] rounded px-2 py-1 text-[11.5px] text-slate-200"/>
                   ) : <div className="text-[11.5px] text-slate-300 mt-0.5">{report.root_cause || "—"}</div>}
                 </div>
-                <div>
-                  <div className="text-[10.5px] uppercase text-slate-500">Follow-up actions (one per line)</div>
-                  {report.status === "draft" && canEditCase ? (
-                    <textarea defaultValue={(report.follow_up_actions||[]).join("\n")} rows={2}
-                      onBlur={e=>saveReport({follow_up_actions: e.target.value.split("\n").map(s=>s.trim()).filter(Boolean)})}
-                      className="w-full mt-1 bg-[#161B22] border border-[#30363D] rounded px-2 py-1 text-[11.5px] text-slate-200"/>
-                  ) : (
-                    <ul className="mt-0.5">{(report.follow_up_actions||[]).map((a,i)=><li key={i} className="text-[11.5px] text-slate-300">• {a}</li>)}</ul>
-                  )}
-                </div>
-                {report.status === "draft" && canEditCase && (
+                <FollowUpsPanel caseId={id} followUps={c.follow_up_actions} canEditCase={canEditCase} onChanged={load}/>
+                {report.status === "draft" && canApprove && (
                   <button onClick={approveReport} className="w-full h-8 text-[12px] bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 rounded inline-flex items-center justify-center gap-1.5">
                     <Lock size={13}/> Approve &amp; archive
                   </button>
+                )}
+                {report.status === "draft" && !canApprove && (
+                  <div className="text-[10.5px] text-slate-500 text-center">Only security admins can approve case closure.</div>
                 )}
                 {report.status === "approved" && (
                   <div className="text-[11px] text-slate-500">Approved by {report.approved_by} on {new Date(report.approved_at).toLocaleString()}</div>

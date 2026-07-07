@@ -92,6 +92,7 @@ MODULE_REGISTRY = [
     # --- Incident Response ---
     {"key": "/ir/wizard", "label": "Triage Wizard", "group": "Incident Response"},
     {"key": "/ir/cases", "label": "IR Cases", "group": "Incident Response"},
+    {"key": "/ir/case-approval", "label": "IR Case Approval", "group": "Incident Response"},
     {"key": "/admin/ir-setup", "label": "IR Setup", "group": "Incident Response"},
 ]
 MODULE_KEYS = [m["key"] for m in MODULE_REGISTRY]
@@ -105,6 +106,10 @@ _ADMIN_ONLY_BY_DEFAULT = {
     "/admin/users", "/admin/notifications", "/admin/chatops", "/admin/health",
     "/admin/backups", "/admin/audit-log", "/admin/assignment-rules", "/admin/sla-policies",
     "/admin/approval-routing", "/admin/rbac", "/admin/ir-setup",
+    # IR case closure approval is deliberately admin-only by default -- the org's
+    # designated security admins, not every manager, sign off that a case is truly
+    # closed. An admin can still opt specific managers into this from Role Access.
+    "/ir/case-approval",
 }
 
 

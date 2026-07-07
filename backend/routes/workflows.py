@@ -246,7 +246,110 @@ async def list_exceptions(user: dict = Depends(get_current_user), status: Option
             cur = _current_pending_step(chain)
             e["awaiting_step_label"] = _step_label(cur) if cur else None
             e["can_current_user_approve"] = bool(cur) and _user_authorized_for_step(user, cur)
+        if e.get("status") in ("active", "pending_approval"):
+            asset = await db.assets.find_one({"id": e.get("asset_id")}, {"_id": 0, "criticality": 1}) if e.get("asset_id") else None
+            e["accepted_risk"] = compute_accepted_risk_score(e, f, asset)
     return {"items": items}
+
+
+@router.get("/v1/exceptions/risk-summary")
+async def exceptions_risk_summary(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/exceptions"))):
+    """Feeds the Exceptions landing page's compounding-risk chart: total accepted-risk
+    exposure right now, a breakdown by tier, and a running timeline of how that total
+    has moved as exceptions were approved and later expired/revoked/renewed -- so
+    it's visible whether accepted risk is accumulating over time or getting cleaned up."""
+    active = await db.exceptions.find({"status": "active"}, {"_id": 0}).to_list(1000)
+    scored = []
+    for e in active:
+        f = await db.findings.find_one({"id": e.get("finding_id")}, {"_id": 0, "severity": 1})
+        asset = await db.assets.find_one({"id": e.get("asset_id")}, {"_id": 0, "criticality": 1}) if e.get("asset_id") else None
+        risk = compute_accepted_risk_score(e, f, asset)
+        scored.append({
+            "id": e["id"], "finding_title": e.get("finding_title"), "tier": e.get("tier"),
+            "approved_at": e.get("approved_at"), "expires_at": e.get("expires_at"), "score": risk["score"],
+        })
+
+    total_score = round(sum(s["score"] for s in scored), 1)
+    by_tier = {}
+    for s in scored:
+        by_tier[s["tier"] or "Low"] = round(by_tier.get(s["tier"] or "Low", 0) + s["score"], 1)
+
+    # Running timeline: a step-function of total accepted risk, sampled at each
+    # approval event still active today, sorted chronologically -- shows whether the
+    # org's compounded accepted risk has been trending up or down.
+    events = sorted([s for s in scored if s.get("approved_at")], key=lambda s: s["approved_at"])
+    timeline = []
+    running = 0.0
+    for s in events:
+        running = round(running + s["score"], 1)
+        timeline.append({"date": s["approved_at"], "cumulative_score": running, "event": f"+{s['score']} — {s.get('finding_title') or 'exception'}"})
+
+    return {
+        "total_score": total_score, "active_count": len(scored),
+        "by_tier": by_tier, "timeline": timeline, "top_contributors": sorted(scored, key=lambda s: -s["score"])[:10],
+    }
+
+
+# --------------------------------------------------------------------------------
+# Compounding accepted-risk score -- lets the Exceptions landing page answer "how
+# much risk have we accepted, in total, right now, and is that going up?" instead of
+# just listing exceptions with no sense of aggregate exposure. Weighs: base severity
+# of what was accepted, live exploitability signals (KEV/EPSS/public exploits/active
+# attacks -- the same signals the threat-signal panel already tracks), the
+# criticality of the asset it sits on, how long the acceptance has been outstanding
+# (a risk accepted for a year compounds more than one accepted last week), and any
+# compensating controls put in place (each additional control helps less than the
+# last -- diminishing returns, capped so controls can reduce but never fully zero
+# out an accepted risk). Not a rigorous actuarial model -- a relative, comparable
+# score meant to rank/trend accepted risk, the same spirit as criticality.py's rule
+# score.
+# --------------------------------------------------------------------------------
+CRITICALITY_MULTIPLIER = {"crown_jewel": 1.6, "critical": 1.35, "high": 1.15, "medium": 1.0, "low": 0.75}
+SEVERITY_BASE_SCORE = {"Critical": 40, "High": 25, "Medium": 12, "Low": 5, "Info": 2}
+
+
+def compute_accepted_risk_score(exc: dict, finding: Optional[dict], asset: Optional[dict]) -> dict:
+    severity = (finding or {}).get("severity") or exc.get("tier") or "Low"
+    base = SEVERITY_BASE_SCORE.get(severity, 5)
+
+    signals = exc.get("last_risk_signals") or {}
+    exploitability_bonus = 0.0
+    if signals.get("kev_flag"):
+        exploitability_bonus += 25
+    epss = signals.get("max_epss_score")
+    if epss:
+        exploitability_bonus += min(epss, 1.0) * 20
+    exploit_count = signals.get("exploit_count") or 0
+    exploitability_bonus += min(exploit_count, 5) * 2
+    if signals.get("active_attacks"):
+        exploitability_bonus += 15
+
+    criticality = (asset or {}).get("criticality") or "medium"
+    crit_mult = CRITICALITY_MULTIPLIER.get(criticality, 1.0)
+
+    days_active = 0
+    approved_at = exc.get("approved_at")
+    if approved_at:
+        try:
+            days_active = max(0, (datetime.now(timezone.utc) - datetime.fromisoformat(approved_at.replace("Z", "+00:00"))).days)
+        except Exception:
+            days_active = 0
+    time_factor = 1 + min(days_active / 365, 1.0) * 0.35  # up to +35% after a year outstanding
+
+    n_controls = len(exc.get("compensating_controls") or [])
+    controls_reduction = min(0.65, 1 - (0.82 ** n_controls)) if n_controls else 0.0
+
+    raw = (base + exploitability_bonus) * crit_mult * time_factor
+    adjusted = raw * (1 - controls_reduction)
+    score = round(min(100, adjusted), 1)
+
+    return {
+        "score": score,
+        "base_severity": base, "exploitability_bonus": round(exploitability_bonus, 1),
+        "criticality": criticality, "criticality_multiplier": crit_mult,
+        "days_active": days_active, "time_factor": round(time_factor, 2),
+        "compensating_controls_count": n_controls, "controls_reduction_pct": round(controls_reduction * 100, 1),
+    }
 
 
 async def _log_exception_event(db, exc: dict, action: str, actor: str, details: str) -> None:

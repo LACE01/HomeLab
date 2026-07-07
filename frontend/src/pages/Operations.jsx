@@ -4,8 +4,9 @@ import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import { fmtDate, fmtRel } from "@/lib/utils-fmt";
 import { Link, useNavigate } from "react-router-dom";
-import { Plus, X } from "@phosphor-icons/react";
+import { Plus, X, ChartLine } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
 
 const CRITICALITY_OPTIONS = ["crown_jewel", "critical", "medium", "low"];
 
@@ -281,6 +282,64 @@ function RejectModal({ exc, onClose, onDone }) {
   );
 }
 
+const TIER_COLOR = { Critical: "#f87171", High: "#fb923c", Medium: "#fbbf24", Low: "#60a5fa", Info: "#94a3b8" };
+
+function AcceptedRiskPanel() {
+  const [summary, setSummary] = useState(null);
+  useEffect(() => { api.get("/v1/exceptions/risk-summary").then(r => setSummary(r.data)).catch(() => setSummary(null)); }, []);
+  if (!summary || summary.active_count === 0) return null;
+
+  const tickFmt = (s) => s ? s.slice(0, 10) : s;
+
+  return (
+    <div className="border border-[#30363D] bg-[#0D1117] rounded-md mb-3">
+      <div className="px-4 py-2.5 border-b border-[#30363D] flex items-center justify-between flex-wrap gap-2">
+        <h3 className="text-[11px] uppercase tracking-wider text-slate-400 font-mono flex items-center gap-1.5">
+          <ChartLine size={13}/> Compounded Accepted Risk
+        </h3>
+        <div className="flex items-center gap-3 text-[11px]">
+          <span className="text-slate-500">{summary.active_count} active acceptance{summary.active_count===1?"":"s"}</span>
+          <span className="text-slate-100 font-medium">{summary.total_score} pts total exposure</span>
+        </div>
+      </div>
+      <div className="p-3 grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-3">
+        <div style={{ height: 200 }}>
+          {summary.timeline.length > 1 ? (
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={summary.timeline}>
+                <CartesianGrid stroke="#30363D" strokeDasharray="2 2"/>
+                <XAxis dataKey="date" stroke="#8B949E" fontSize={10} tickFormatter={tickFmt}/>
+                <YAxis stroke="#8B949E" fontSize={10}/>
+                <Tooltip contentStyle={{ background: "#0D1117", border: "1px solid #30363D", fontSize: 12 }}
+                  labelFormatter={tickFmt} formatter={(v,_n,p)=>[v, p?.payload?.event || "cumulative score"]}/>
+                <Line type="stepAfter" dataKey="cumulative_score" name="Cumulative accepted risk" stroke="#f87171" dot strokeWidth={2}/>
+              </LineChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="h-full flex items-center justify-center text-[12px] text-slate-500">Not enough approved acceptances yet to chart a trend.</div>
+          )}
+        </div>
+        <div className="space-y-2">
+          <div className="text-[10.5px] uppercase font-mono text-slate-500">By severity tier</div>
+          {Object.entries(summary.by_tier).map(([tier, score]) => (
+            <div key={tier} className="flex items-center justify-between text-[11.5px]">
+              <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full" style={{ background: TIER_COLOR[tier] || "#94a3b8" }}/> {tier}</span>
+              <span className="text-slate-300 font-mono">{score}</span>
+            </div>
+          ))}
+          <div className="text-[10.5px] uppercase font-mono text-slate-500 pt-1.5 border-t border-[#30363D]">Top contributors</div>
+          {summary.top_contributors.slice(0,4).map(c => (
+            <div key={c.id} className="flex items-center justify-between text-[11px] gap-2">
+              <span className="text-slate-400 truncate">{c.finding_title || "Exception"}</span>
+              <span className="text-slate-300 font-mono shrink-0">{c.score}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Exceptions() {
   const navigate = useNavigate();
   const [items, setItems] = useState([]);
@@ -307,6 +366,7 @@ export function Exceptions() {
         className="h-8 px-3 text-[12px] bg-blue-500/15 border border-blue-500/40 hover:bg-blue-500/25 text-blue-300 rounded inline-flex items-center gap-1.5">
         <Plus size={14}/> New request
       </button>}>
+      <AcceptedRiskPanel/>
       <div className="flex items-center gap-1 mb-3">
         {EXC_STATUS_TABS.map(t => (
           <button key={t.id} onClick={()=>setStatusFilter(t.id)}
@@ -317,7 +377,7 @@ export function Exceptions() {
       </div>
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">
         <table className="dense w-full">
-          <thead><tr><th className="text-left">Target</th><th>Severity</th><th>Asset</th><th className="text-left">Justification</th><th>Status</th><th>Requested by</th><th>Expires</th><th></th></tr></thead>
+          <thead><tr><th className="text-left">Target</th><th>Severity</th><th>Asset</th><th className="text-left">Justification</th><th>Status</th><th>Accepted risk</th><th>Requested by</th><th>Expires</th><th></th></tr></thead>
           <tbody>
             {items.map(e => (
               <tr key={e.id} className="border-t border-[#30363D] hover:bg-slate-800/20 cursor-pointer" onClick={()=>navigate(`/exceptions/${e.id}`)} data-testid={`exception-row-${e.id}`}>
@@ -337,6 +397,13 @@ export function Exceptions() {
                   {e.status === "active" && e.days_until_expiry <= 7 && <div className="text-[10px] text-amber-400 mt-0.5">{e.days_until_expiry}d left</div>}
                   {e.status === "pending_approval" && e.awaiting_step_label && <div className="text-[10px] text-slate-500 mt-0.5">awaiting {e.awaiting_step_label}</div>}
                 </td>
+                <td className="font-mono text-[11px]">
+                  {e.accepted_risk ? (
+                    <span className={e.accepted_risk.score >= 60 ? "text-red-400" : e.accepted_risk.score >= 30 ? "text-amber-400" : "text-slate-400"}>
+                      {e.accepted_risk.score}
+                    </span>
+                  ) : "—"}
+                </td>
                 <td className="text-slate-400 text-[11px]">{e.requested_by || e.approver}</td>
                 <td className="font-mono text-[11px]">{fmtDate(e.expires_at)}</td>
                 <td className="whitespace-nowrap" onClick={ev=>ev.stopPropagation()}>
@@ -353,7 +420,7 @@ export function Exceptions() {
               </tr>
             ))}
             {items.length === 0 && (
-              <tr><td colSpan={8} className="text-center text-slate-500 py-6 text-[12px]">No exceptions in this view.</td></tr>
+              <tr><td colSpan={9} className="text-center text-slate-500 py-6 text-[12px]">No exceptions in this view.</td></tr>
             )}
           </tbody>
         </table>

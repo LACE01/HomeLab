@@ -5,8 +5,8 @@ See backend/incident_response.py for the domain logic/defaults this wires up."""
 import uuid
 from typing import Optional, List, Dict, Any
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 
 from db import db
@@ -81,6 +81,7 @@ class RoleBody(BaseModel):
     name: str
     kind: str = "optional"  # standing | mandatory | optional
     description: Optional[str] = ""
+    tasks: List[str] = []  # checklist shown to whoever is assigned this role on a case
     contacts: List[dict] = []  # [{name, phone, email}]
 
 
@@ -404,7 +405,10 @@ async def get_case(case_id: str, user: dict = Depends(get_current_user), _rbac: 
     events = await db.ir_case_events.find({"case_id": case_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
     evidence = await db.ir_case_evidence.find({"case_id": case_id}, {"_id": 0}).sort("item_no", 1).to_list(200)
     roles_cfg = await _get_or_seed("ir_roles_config", ir._default_roles_config)
-    return {"case": case, "phase_progress": phase_progress, "events": events, "evidence": evidence, "roles": roles_cfg["roles"]}
+    report = await db.ir_case_reports.find_one({"case_id": case_id}, {"_id": 0})
+    progress = ir.compute_case_progress(case, phase_progress, roles_cfg["roles"], report)
+    return {"case": case, "phase_progress": phase_progress, "events": events, "evidence": evidence,
+            "roles": roles_cfg["roles"], "progress": progress}
 
 
 class CaseUpdateBody(BaseModel):
@@ -413,7 +417,6 @@ class CaseUpdateBody(BaseModel):
     reporter_contact: Optional[str] = None
     sheets_webhook_url: Optional[str] = None
     root_cause: Optional[str] = None
-    follow_up_actions: Optional[List[str]] = None
 
 
 @router.patch("/v1/ir/cases/{case_id}")
@@ -450,6 +453,39 @@ async def assign_case_roles(case_id: str, body: RolesAssignBody, user: dict = De
     await db.ir_case_events.insert_one(dict(event))
     await ir.push_case_event_to_sheet(db, case, event)
     return {"ok": True}
+
+
+class RoleTaskToggleBody(BaseModel):
+    task_index: int
+    done: bool
+
+
+@router.put("/v1/ir/cases/{case_id}/roles/{role_id}/tasks")
+async def toggle_role_task(case_id: str, role_id: str, body: RoleTaskToggleBody, user: dict = Depends(get_current_user),
+                            _rbac: dict = Depends(require_module("/ir/cases", level="edit"))):
+    """Lets whoever is assigned a role (or any case editor) check off that role's
+    task checklist -- tracked per-case since the same role config can be reused
+    across many cases with independent progress each time."""
+    case = await _get_case_or_404(case_id)
+    assigned_roles = dict(case.get("assigned_roles") or {})
+    assignment = dict(assigned_roles.get(role_id) or {})
+    tasks_done = set(assignment.get("tasks_done") or [])
+    if body.done:
+        tasks_done.add(body.task_index)
+    else:
+        tasks_done.discard(body.task_index)
+    assignment["tasks_done"] = sorted(tasks_done)
+    assigned_roles[role_id] = assignment
+    await db.ir_cases.update_one({"id": case_id}, {"$set": {"assigned_roles": assigned_roles, "updated_at": now_iso()}})
+    roles_cfg = await _get_or_seed("ir_roles_config", ir._default_roles_config)
+    role = next((r for r in roles_cfg["roles"] if r["id"] == role_id), None)
+    task_label = (role.get("tasks") or [])[body.task_index] if role and body.task_index < len(role.get("tasks") or []) else f"task {body.task_index}"
+    event = {"id": str(uuid.uuid4()), "case_id": case_id, "type": "task_checked" if body.done else "task_unchecked",
+              "text": f"[{role.get('name') if role else 'role'}] {'Checked' if body.done else 'Unchecked'}: {task_label}",
+              "author": user["email"], "attachments": [], "created_at": now_iso()}
+    await db.ir_case_events.insert_one(dict(event))
+    await ir.push_case_event_to_sheet(db, case, event)
+    return {"assigned_roles": assigned_roles}
 
 
 class EventBody(BaseModel):
@@ -577,7 +613,6 @@ async def close_case(case_id: str, user: dict = Depends(get_current_user),
 class ReportEditBody(BaseModel):
     summary: Optional[str] = None
     root_cause: Optional[str] = None
-    follow_up_actions: Optional[List[str]] = None
     timeline_text: Optional[str] = None
 
 
@@ -592,19 +627,75 @@ async def edit_case_report(case_id: str, body: ReportEditBody, user: dict = Depe
     update = {k: v for k, v in body.model_dump().items() if v is not None}
     update["generated_at"] = now_iso()
     await db.ir_case_reports.update_one({"case_id": case_id}, {"$set": update})
-    if update.get("root_cause") is not None or update.get("follow_up_actions") is not None:
-        case_update = {}
-        if "root_cause" in update:
-            case_update["root_cause"] = update["root_cause"]
-        if "follow_up_actions" in update:
-            case_update["follow_up_actions"] = update["follow_up_actions"]
-        await db.ir_cases.update_one({"id": case_id}, {"$set": case_update})
+    if "root_cause" in update:
+        await db.ir_cases.update_one({"id": case_id}, {"$set": {"root_cause": update["root_cause"]}})
     return {**report, **update}
 
 
+# --------------------------------------------------------------------------------
+# Follow-up actions -- tracked as individual {id, text, done} items on the case
+# itself (not frozen into the report), so they stay actionable even after the
+# closure report is approved. A case with pending follow-ups isn't "truly done"
+# even once its report is approved -- the frontend surfaces that distinction
+# rather than this API inventing a third case status.
+# --------------------------------------------------------------------------------
+class FollowUpCreateBody(BaseModel):
+    text: str
+
+
+@router.post("/v1/ir/cases/{case_id}/follow-ups")
+async def add_follow_up(case_id: str, body: FollowUpCreateBody, user: dict = Depends(get_current_user),
+                         _rbac: dict = Depends(require_module("/ir/cases", level="edit"))):
+    case = await _get_case_or_404(case_id)
+    item = {"id": str(uuid.uuid4()), "text": body.text, "done": False}
+    items = (case.get("follow_up_actions") or []) + [item]
+    await db.ir_cases.update_one({"id": case_id}, {"$set": {"follow_up_actions": items, "updated_at": now_iso()}})
+    await db.ir_case_events.insert_one({
+        "id": str(uuid.uuid4()), "case_id": case_id, "type": "case_updated",
+        "text": f"Follow-up action added: {body.text}", "author": user["email"], "attachments": [], "created_at": now_iso(),
+    })
+    return item
+
+
+class FollowUpUpdateBody(BaseModel):
+    text: Optional[str] = None
+    done: Optional[bool] = None
+
+
+@router.put("/v1/ir/cases/{case_id}/follow-ups/{item_id}")
+async def update_follow_up(case_id: str, item_id: str, body: FollowUpUpdateBody, user: dict = Depends(get_current_user),
+                            _rbac: dict = Depends(require_module("/ir/cases", level="edit"))):
+    case = await _get_case_or_404(case_id)
+    items = case.get("follow_up_actions") or []
+    idx = next((i for i, it in enumerate(items) if it.get("id") == item_id), None)
+    if idx is None:
+        raise HTTPException(404, "Follow-up action not found")
+    if body.text is not None:
+        items[idx]["text"] = body.text
+    if body.done is not None:
+        items[idx]["done"] = body.done
+    await db.ir_cases.update_one({"id": case_id}, {"$set": {"follow_up_actions": items, "updated_at": now_iso()}})
+    if body.done is not None:
+        await db.ir_case_events.insert_one({
+            "id": str(uuid.uuid4()), "case_id": case_id, "type": "case_updated",
+            "text": f"Follow-up action {'completed' if body.done else 'reopened'}: {items[idx]['text']}",
+            "author": user["email"], "attachments": [], "created_at": now_iso(),
+        })
+    return items[idx]
+
+
+@router.delete("/v1/ir/cases/{case_id}/follow-ups/{item_id}")
+async def delete_follow_up(case_id: str, item_id: str, user: dict = Depends(get_current_user),
+                            _rbac: dict = Depends(require_module("/ir/cases", level="edit"))):
+    case = await _get_case_or_404(case_id)
+    items = [it for it in (case.get("follow_up_actions") or []) if it.get("id") != item_id]
+    await db.ir_cases.update_one({"id": case_id}, {"$set": {"follow_up_actions": items, "updated_at": now_iso()}})
+    return {"ok": True}
+
+
 @router.post("/v1/ir/cases/{case_id}/report/approve")
-async def approve_case_report(case_id: str, user: dict = Depends(require_role("admin", "manager")),
-                               _rbac: dict = Depends(require_module("/ir/cases", level="edit"))):
+async def approve_case_report(case_id: str, user: dict = Depends(get_current_user),
+                               _rbac: dict = Depends(require_module("/ir/case-approval", level="edit"))):
     report = await db.ir_case_reports.find_one({"case_id": case_id}, {"_id": 0})
     if not report:
         raise HTTPException(404, "No report generated yet for this case")
@@ -805,7 +896,10 @@ async def export_case_docx(case_id: str, user: dict = Depends(get_current_user),
     evidence = await db.ir_case_evidence.find({"case_id": case_id}, {"_id": 0}).sort("item_no", 1).to_list(200)
     obligations = await db.ir_case_obligations.find({"case_id": case_id}, {"_id": 0}).to_list(200)
     report = await db.ir_case_reports.find_one({"case_id": case_id}, {"_id": 0})
-    buf = ir.build_case_docx(case, phase_progress, events, evidence, obligations, report)
+    artifacts = await db.ir_case_artifacts.find({"case_id": case_id}, {"_id": 0}).sort("uploaded_at", 1).to_list(500)
+    related_entities = await db.ir_case_entities.find({"case_id": case_id}, {"_id": 0}).to_list(500)
+    buf = ir.build_case_docx(case, phase_progress, events, evidence, obligations, report,
+                              artifacts=artifacts, related_entities=related_entities)
     filename = f"{case.get('case_number','ir-case')}.docx"
     return StreamingResponse(
         buf, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -830,4 +924,140 @@ async def list_obligations_lite(user: dict = Depends(get_current_user), _rbac: d
     72-hour CISA reporting clock isn't something that should wait on an admin)."""
     await _ensure_obligations_seeded()
     items = await db.ir_reporting_obligations.find({"active": {"$ne": False}}, {"_id": 0}).sort("name", 1).to_list(200)
+    return {"items": items}
+
+
+@router.post("/v1/ir/cases/{case_id}/reopen")
+async def reopen_case(case_id: str, user: dict = Depends(get_current_user),
+                       _rbac: dict = Depends(require_module("/ir/cases", level="edit"))):
+    case = await _get_case_or_404(case_id)
+    if case["status"] != "closed":
+        raise HTTPException(400, "Case is not closed")
+    await db.ir_cases.update_one({"id": case_id}, {"$set": {"status": "open", "closed_at": None, "updated_at": now_iso()}})
+    event = {"id": str(uuid.uuid4()), "case_id": case_id, "type": "case_reopened",
+              "text": f"Case reopened by {user['email']}.", "author": user["email"], "attachments": [], "created_at": now_iso()}
+    await db.ir_case_events.insert_one(dict(event))
+    await ir.push_case_event_to_sheet(db, case, event)
+    return {"ok": True, "status": "open"}
+
+
+# --------------------------------------------------------------------------------
+# Case artifacts -- general file attachments (any type: .txt, .csv, .xlsx, .docx,
+# .pdf, exports from other tools...), optionally grouped into a named "folder" when
+# several files belong together (e.g. a batch of logs from one host).
+# --------------------------------------------------------------------------------
+@router.get("/v1/ir/cases/{case_id}/artifacts")
+async def list_case_artifacts(case_id: str, user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/ir/cases"))):
+    items = await db.ir_case_artifacts.find({"case_id": case_id}, {"_id": 0}).sort("uploaded_at", -1).to_list(500)
+    return {"items": items}
+
+
+@router.post("/v1/ir/cases/{case_id}/artifacts")
+async def upload_case_artifacts(case_id: str, files: List[UploadFile] = File(...), folder: Optional[str] = Form(None),
+                                 user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/ir/cases", level="edit"))):
+    case = await _get_case_or_404(case_id)
+    case_dir = ir.ARTIFACTS_DIR / case_id
+    case_dir.mkdir(parents=True, exist_ok=True)
+    saved = []
+    for f in files:
+        content = await f.read()
+        if len(content) > ir.MAX_ARTIFACT_BYTES:
+            raise HTTPException(413, f"'{f.filename}' exceeds the 25MB per-file limit")
+        stored_name = f"{uuid.uuid4().hex}_{f.filename}"
+        (case_dir / stored_name).write_bytes(content)
+        doc = {
+            "id": str(uuid.uuid4()), "case_id": case_id, "filename": f.filename, "stored_name": stored_name,
+            "mime": f.content_type or "application/octet-stream", "size": len(content), "folder": folder,
+            "uploaded_by": user["email"], "uploaded_at": now_iso(),
+        }
+        await db.ir_case_artifacts.insert_one(dict(doc))
+        saved.append(_clean(doc))
+    names = ", ".join(a["filename"] for a in saved)
+    folder_suffix = f' to folder "{folder}"' if folder else ""
+    event = {"id": str(uuid.uuid4()), "case_id": case_id, "type": "evidence_added",
+              "text": f"Artifact(s) uploaded{folder_suffix}: {names}",
+              "author": user["email"], "attachments": [], "created_at": now_iso()}
+    await db.ir_case_events.insert_one(dict(event))
+    await ir.push_case_event_to_sheet(db, case, event)
+    return {"items": saved}
+
+
+@router.get("/v1/ir/cases/{case_id}/artifacts/{artifact_id}/download")
+async def download_case_artifact(case_id: str, artifact_id: str, user: dict = Depends(get_current_user),
+                                  _rbac: dict = Depends(require_module("/ir/cases"))):
+    artifact = await db.ir_case_artifacts.find_one({"id": artifact_id, "case_id": case_id}, {"_id": 0})
+    if not artifact:
+        raise HTTPException(404, "Artifact not found")
+    try:
+        path = ir.artifact_disk_path(case_id, artifact["stored_name"])
+    except ValueError:
+        raise HTTPException(400, "Invalid artifact")
+    if not path.exists():
+        raise HTTPException(404, "Artifact file is missing on disk")
+    return FileResponse(path, media_type=artifact.get("mime") or "application/octet-stream", filename=artifact["filename"])
+
+
+@router.delete("/v1/ir/cases/{case_id}/artifacts/{artifact_id}")
+async def delete_case_artifact(case_id: str, artifact_id: str, user: dict = Depends(get_current_user),
+                                _rbac: dict = Depends(require_module("/ir/cases", level="edit"))):
+    artifact = await db.ir_case_artifacts.find_one({"id": artifact_id, "case_id": case_id}, {"_id": 0})
+    if artifact:
+        try:
+            path = ir.artifact_disk_path(case_id, artifact["stored_name"])
+            path.unlink(missing_ok=True)
+        except ValueError:
+            pass
+    await db.ir_case_artifacts.delete_one({"id": artifact_id, "case_id": case_id})
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------------
+# Related assets/entities -- what this incident could have affected: internal
+# assets (servers/websites) pulled from the asset inventory, users, or external
+# parties (vendors/supply-chain partners) that aren't in inventory at all.
+# --------------------------------------------------------------------------------
+RELATED_ENTITY_TYPES = {"asset", "user", "server", "website", "external_vendor", "other"}
+
+
+class RelatedEntityBody(BaseModel):
+    type: str
+    name: str
+    asset_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@router.get("/v1/ir/cases/{case_id}/entities")
+async def list_case_entities(case_id: str, user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/ir/cases"))):
+    items = await db.ir_case_entities.find({"case_id": case_id}, {"_id": 0}).to_list(500)
+    return {"items": items}
+
+
+@router.post("/v1/ir/cases/{case_id}/entities")
+async def add_case_entity(case_id: str, body: RelatedEntityBody, user: dict = Depends(get_current_user),
+                           _rbac: dict = Depends(require_module("/ir/cases", level="edit"))):
+    if body.type not in RELATED_ENTITY_TYPES:
+        raise HTTPException(400, f"type must be one of {sorted(RELATED_ENTITY_TYPES)}")
+    case = await _get_case_or_404(case_id)
+    doc = {"id": str(uuid.uuid4()), "case_id": case_id, "type": body.type, "name": body.name,
+           "asset_id": body.asset_id, "notes": body.notes or "", "added_by": user["email"], "added_at": now_iso()}
+    await db.ir_case_entities.insert_one(dict(doc))
+    event = {"id": str(uuid.uuid4()), "case_id": case_id, "type": "entity_linked",
+              "text": f"Linked {body.type.replace('_',' ')}: {body.name}",
+              "author": user["email"], "attachments": [], "created_at": now_iso()}
+    await db.ir_case_events.insert_one(dict(event))
+    await ir.push_case_event_to_sheet(db, case, event)
+    return _clean(doc)
+
+
+@router.delete("/v1/ir/cases/{case_id}/entities/{entity_id}")
+async def remove_case_entity(case_id: str, entity_id: str, user: dict = Depends(get_current_user),
+                              _rbac: dict = Depends(require_module("/ir/cases", level="edit"))):
+    await db.ir_case_entities.delete_one({"id": entity_id, "case_id": case_id})
+    return {"ok": True}
+
+
+@router.get("/v1/ir/assets-lite")
+async def list_assets_lite(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/ir/cases"))):
+    """Lightweight asset picker source for linking related assets to a case."""
+    items = await db.assets.find({}, {"_id": 0, "id": 1, "hostname": 1, "ip_address": 1, "criticality": 1}).to_list(1000)
     return {"items": items}
