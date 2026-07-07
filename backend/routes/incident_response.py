@@ -245,7 +245,13 @@ async def _create_case_from_wizard(user: dict, body: WizardSubmitBody, result: d
     plan = await _get_or_seed("ir_plan_config", lambda: {"phases": ir._default_phases(), "updated_at": now_iso()})
     phases = plan["phases"]
     phase_progress = [
-        {"phase_id": p["id"], "phase_name": p["name"], "order": p["order"], "tasks_done": [], "completed_at": None}
+        {"phase_id": p["id"], "phase_name": p["name"], "order": p["order"], "tasks_done": [], "completed_at": None,
+         # Snapshot the phase's actual content at case-open time -- a case's checklist
+         # shouldn't silently change shape if an admin edits the plan template while
+         # this case is still open. Without this snapshot, the frontend has nothing
+         # to render checkboxes for (this was the "can't click Done" bug).
+         "tasks": p.get("tasks") or [], "objectives": p.get("objectives") or [],
+         "responsible_party": p.get("responsible_party") or "", "things_needed": p.get("things_needed") or []}
         for p in phases
     ]
     action_plan = wizard_cfg.get("action_plans", {}).get(result["top_category"], {})
@@ -336,7 +342,9 @@ async def create_case_manually(body: ManualCaseBody, user: dict = Depends(get_cu
         raise HTTPException(400, f"classification must be one of {ir.CLASSIFICATION_LEVELS}")
     plan = await _get_or_seed("ir_plan_config", lambda: {"phases": ir._default_phases(), "updated_at": now_iso()})
     phase_progress = [
-        {"phase_id": p["id"], "phase_name": p["name"], "order": p["order"], "tasks_done": [], "completed_at": None, "case_id": None}
+        {"phase_id": p["id"], "phase_name": p["name"], "order": p["order"], "tasks_done": [], "completed_at": None, "case_id": None,
+         "tasks": p.get("tasks") or [], "objectives": p.get("objectives") or [],
+         "responsible_party": p.get("responsible_party") or "", "things_needed": p.get("things_needed") or []}
         for p in plan["phases"]
     ]
     case = {
@@ -376,6 +384,20 @@ async def _get_case_or_404(case_id: str) -> dict:
 async def get_case(case_id: str, user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/ir/cases"))):
     case = await _get_case_or_404(case_id)
     phase_progress = await db.ir_case_phase_progress.find({"case_id": case_id}, {"_id": 0}).sort("order", 1).to_list(100)
+    # Self-heal: cases opened before the phase-snapshot fix have no "tasks" field on
+    # their phase_progress docs at all (the original bug -- nothing to check off).
+    # Backfill from the current plan config by phase_id, best-effort, and persist it
+    # so this only needs to happen once per old case.
+    if any("tasks" not in pp for pp in phase_progress):
+        plan = await _get_or_seed("ir_plan_config", lambda: {"phases": ir._default_phases(), "updated_at": now_iso()})
+        phases_by_id = {p["id"]: p for p in plan["phases"]}
+        for pp in phase_progress:
+            if "tasks" not in pp:
+                src = phases_by_id.get(pp["phase_id"], {})
+                fill = {"tasks": src.get("tasks") or [], "objectives": src.get("objectives") or [],
+                        "responsible_party": src.get("responsible_party") or "", "things_needed": src.get("things_needed") or []}
+                pp.update(fill)
+                await db.ir_case_phase_progress.update_one({"case_id": case_id, "phase_id": pp["phase_id"]}, {"$set": fill})
     events = await db.ir_case_events.find({"case_id": case_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
     evidence = await db.ir_case_evidence.find({"case_id": case_id}, {"_id": 0}).sort("item_no", 1).to_list(200)
     roles_cfg = await _get_or_seed("ir_roles_config", ir._default_roles_config)
@@ -463,21 +485,22 @@ async def toggle_phase_task(case_id: str, phase_id: str, body: TaskToggleBody, u
     pp = await db.ir_case_phase_progress.find_one({"case_id": case_id, "phase_id": phase_id}, {"_id": 0})
     if not pp:
         raise HTTPException(404, "Phase not found on this case")
-    plan = await _get_or_seed("ir_plan_config", lambda: {"phases": ir._default_phases(), "updated_at": now_iso()})
-    phase = next((p for p in plan["phases"] if p["id"] == phase_id), None)
-    n_tasks = len(phase["tasks"]) if phase else 0
+    # Use the snapshot taken at case-open time, not the live (possibly since-edited)
+    # plan config -- this case's checklist is whatever it was when the case opened.
+    tasks = pp.get("tasks") or []
+    n_tasks = len(tasks)
     tasks_done = set(pp.get("tasks_done") or [])
     if body.done:
         tasks_done.add(body.task_index)
     else:
         tasks_done.discard(body.task_index)
     update = {"tasks_done": sorted(tasks_done)}
-    if phase and n_tasks and len(tasks_done) >= n_tasks:
+    if n_tasks and len(tasks_done) >= n_tasks:
         update["completed_at"] = pp.get("completed_at") or now_iso()
     elif len(tasks_done) < n_tasks:
         update["completed_at"] = None
     await db.ir_case_phase_progress.update_one({"case_id": case_id, "phase_id": phase_id}, {"$set": update})
-    task_label = phase["tasks"][body.task_index] if phase and body.task_index < n_tasks else f"task {body.task_index}"
+    task_label = tasks[body.task_index] if body.task_index < n_tasks else f"task {body.task_index}"
     event = {"id": str(uuid.uuid4()), "case_id": case_id, "type": "task_checked" if body.done else "task_unchecked",
               "text": f"[{pp.get('phase_name')}] {'Checked' if body.done else 'Unchecked'}: {task_label}",
               "author": user["email"], "attachments": [], "created_at": now_iso()}
