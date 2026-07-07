@@ -5,7 +5,7 @@ import {
   ChartLineUp, ListChecks, HardDrives, Stack, Lightning, Ticket,
   ShieldCheck, PlugsConnected, FileArrowDown, GearSix, SignOut, Database, Bug,
   UsersThree, Bell, ShareNetwork, BookOpen, Robot, Globe, Certificate, Package, MagnifyingGlass, ClipboardText, SlackLogo, Heartbeat, HardDrive, Notepad, Virus, FlowArrow,
-  CaretDown, LockKey, CalendarBlank,
+  CaretDown, LockKey, CalendarBlank, FirstAidKit, Siren, SlidersHorizontal,
 } from "@phosphor-icons/react";
 
 const COLLAPSE_KEY = "vulnops.sidebar.collapsedGroups";
@@ -122,6 +122,11 @@ export default function Sidebar() {
           <NavItem to="/admin/sla-policies" icon={ShieldCheck} label="SLA Policies" testid="nav-sla" />
           <NavItem to="/admin/approval-routing" icon={FlowArrow} label="Approval Routing" testid="nav-approval-routing" />
           <NavItem to="/admin/rbac" icon={LockKey} label="Role Access" testid="nav-rbac" />
+        </Group>
+        <Group title="Incident Response" collapsed={!!collapsed["Incident Response"]} onToggle={()=>toggleGroup("Incident Response")}>
+          <NavItem to="/ir/wizard" icon={FirstAidKit} label="Triage Wizard" testid="nav-ir-wizard" />
+          <NavItem to="/ir/cases" icon={Siren} label="IR Cases" testid="nav-ir-cases" />
+          <NavItem to="/admin/ir-setup" icon={SlidersHorizontal} label="IR Setup" testid="nav-ir-setup" />
         </Group>
       </nav>
 

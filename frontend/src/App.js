@@ -44,6 +44,9 @@ import AuditLog from "@/pages/AuditLog";
 import Yara from "@/pages/Yara";
 import RoleAccess from "@/pages/RoleAccess";
 import ScanSchedule from "@/pages/ScanSchedule";
+import IRWizard from "@/pages/IRWizard";
+import { IRCases, IRCaseDetail } from "@/pages/IRCases";
+import IRAdminSetup from "@/pages/IRAdminSetup";
 
 const Protected = ({ children, module }) => {
   const { user, loading, canAccess } = useAuth();
@@ -123,6 +126,10 @@ const AppRouter = () => {
       <Route path="/admin/notifications" element={<Protected module="/admin/notifications"><Notifications/></Protected>}/>
       <Route path="/admin/rbac" element={<Protected module="/admin/rbac"><RoleAccess/></Protected>}/>
       <Route path="/admin/scan-schedule" element={<Protected module="/admin/scan-schedule"><ScanSchedule/></Protected>}/>
+      <Route path="/ir/wizard" element={<Protected module="/ir/wizard"><IRWizard/></Protected>}/>
+      <Route path="/ir/cases" element={<Protected module="/ir/cases"><IRCases/></Protected>}/>
+      <Route path="/ir/cases/:id" element={<Protected module="/ir/cases"><IRCaseDetail/></Protected>}/>
+      <Route path="/admin/ir-setup" element={<Protected module="/admin/ir-setup"><IRAdminSetup/></Protected>}/>
     </Routes>
   );
 };
