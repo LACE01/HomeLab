@@ -6,6 +6,52 @@ import { fmtDate, fmtRel } from "@/lib/utils-fmt";
 import { CheckCircle, WarningCircle, XCircle, GearSix, Lightning, Info, ArrowsClockwise, Eye, EyeSlash, Trash, Plus, Warning, ShieldCheck, Target, Bug } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
+// There's no free-text "raw headers" box anywhere in this form -- Content-Type and
+// Authorization are always constructed automatically from Auth Type + API Key, and
+// CF-Access-Client-Id/Secret (if set) are added as their own headers. This preview
+// exists specifically because that wasn't visible or obvious: a value that LOOKS
+// right in a masked/password field can silently include an accidentally-pasted
+// "Header-Name:" or "Bearer " prefix (very easy to do -- Cloudflare's own service
+// token page and most API docs show copy-pasteable "Header: value" text, not the
+// bare value alone). The backend now strips that on save (see routes/integrations.py
+// _clean_credential), but showing it here means a bad paste is visible before Save
+// is even clicked, not discovered later via Cloudflare's dashboard still saying
+// "not seen".
+const HEADER_PREFIX_RE = /^\s*(?:cf-access-client-id|cf-access-client-secret|authorization)\s*:\s*/i;
+const BEARER_PREFIX_RE = /^\s*bearer\s+/i;
+
+function looksLikePrefixed(v) {
+  return !!v && (HEADER_PREFIX_RE.test(v) || BEARER_PREFIX_RE.test(v));
+}
+
+function HeaderPreview({ form }) {
+  const apiKeyBad = looksLikePrefixed(form.api_key);
+  const cfIdBad = looksLikePrefixed(form.cf_access_client_id);
+  const cfSecretBad = looksLikePrefixed(form.cf_access_client_secret);
+  const anyBad = apiKeyBad || cfIdBad || cfSecretBad;
+  const maskedKey = form.api_key ? `${form.api_key.slice(0, 4)}${"•".repeat(Math.max(form.api_key.length - 4, 3))}` : "(unset)";
+  return (
+    <div className="rounded border border-[#30363D] bg-black/20 p-2.5">
+      <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider mb-1.5">Headers that will actually be sent</div>
+      <div className="font-mono text-[11px] text-slate-300 space-y-0.5">
+        <div>Content-Type: application/json</div>
+        <div className={apiKeyBad ? "text-red-400" : ""}>Authorization: Bearer {maskedKey}</div>
+        {(form.cf_access_client_id || form.cf_access_client_secret) && (
+          <>
+            <div className={cfIdBad ? "text-red-400" : ""}>CF-Access-Client-Id: {form.cf_access_client_id || "(unset)"}</div>
+            <div className={cfSecretBad ? "text-red-400" : ""}>CF-Access-Client-Secret: {form.cf_access_client_secret ? "•".repeat(8) : "(unset, keeps existing on save)"}</div>
+          </>
+        )}
+      </div>
+      {anyBad && (
+        <div className="text-[10.5px] text-red-400 mt-1.5">
+          One of these still has a header name or "Bearer " baked into the value -- paste only the part after the colon/space. It'll be auto-stripped on Save either way, but fix it here so this preview matches what Cloudflare actually receives.
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Integrations() {
   const [items, setItems] = useState([]);
   const [editing, setEditing] = useState(null);
@@ -374,6 +420,7 @@ export function Integrations() {
                   <div className="text-[10.5px] text-slate-500 leading-relaxed">
                     ⚠ After saving, you MUST add the same service token as an "Include" rule on the CF Access application policy for <span className="font-mono text-slate-300">open.smrtlab.net</span>. Otherwise CF still redirects API calls to the login page.
                   </div>
+                  <HeaderPreview form={form}/>
                 </div>
               )}
               <label className="flex items-center gap-2 text-[12px] text-slate-300">

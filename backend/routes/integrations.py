@@ -1,5 +1,6 @@
 """Integrations + import-jobs + universal ingestion routes."""
 import logging
+import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
@@ -44,6 +45,30 @@ class IntegrationConfig(BaseModel):
     cf_access_client_secret: Optional[str] = None
 
 
+# Cloudflare's own service-token detail page (and most API docs, including OpenCTI's
+# "Required Headers" panel) show copy-pasteable text in the form "Header-Name: value"
+# specifically so it can be dropped straight into a curl command or client config --
+# which is exactly the wrong thing to paste into a field that expects ONLY the value
+# and constructs the header name itself. Pasting "CF-Access-Client-Id: abc123.access"
+# into the Client ID field produces a real HTTP header of
+# "CF-Access-Client-Id: CF-Access-Client-Id: abc123.access", which Cloudflare will
+# never match against any real service token -- indistinguishable from the token
+# being wrong entirely, and exactly what was found live in one user's config. Strip
+# a leading "Header-Name:" prefix (for any of the header-shaped fields) and a leading
+# "Bearer " prefix (for API key/token fields, since "Authorization: Bearer <token>" is
+# the single most commonly copy-pasted example format for that kind of credential).
+_HEADER_PREFIX_RE = re.compile(r"^\s*(?:cf-access-client-id|cf-access-client-secret|authorization)\s*:\s*", re.IGNORECASE)
+_BEARER_PREFIX_RE = re.compile(r"^\s*bearer\s+", re.IGNORECASE)
+
+
+def _clean_credential(field: str, v: str) -> str:
+    v = v.strip()
+    v = _HEADER_PREFIX_RE.sub("", v)
+    if field in ("api_key", "api_secret"):
+        v = _BEARER_PREFIX_RE.sub("", v)
+    return v.strip()
+
+
 @router.patch("/v1/integrations/{integration_id}")
 async def update_integration(integration_id: str, body: IntegrationConfig, user: dict = Depends(require_role("admin"))):
     integration = await db.integrations.find_one({"id": integration_id})
@@ -52,14 +77,15 @@ async def update_integration(integration_id: str, body: IntegrationConfig, user:
     cfg = integration.get("config") or {}
     update = body.model_dump(exclude_none=True)
     for k, v in update.items():
-        # Defensive trim: copy-pasted endpoints/keys/CF-Access tokens frequently carry
-        # a trailing newline or stray leading/trailing space from the clipboard. A
-        # secret that LOOKS right but has an invisible extra character will fail auth
-        # silently (Cloudflare Access won't even register the service token as "seen"
-        # since the header value never matches), so strip whitespace on every string
-        # field before it's persisted.
+        # Defensive clean: copy-pasted endpoints/keys/CF-Access tokens frequently carry
+        # a trailing newline, stray leading/trailing space, or (see _clean_credential
+        # above) an accidentally-included "Header-Name:" / "Bearer " prefix from
+        # whatever docs page the value was copied from. A value that LOOKS right but
+        # has any of these will fail auth silently -- Cloudflare Access won't even
+        # register the service token as "seen" since the header value never matches
+        # a real token -- so normalize every string field before it's persisted.
         if isinstance(v, str):
-            v = v.strip()
+            v = _clean_credential(k, v)
         cfg[k] = v
     # If credentials are now present, lift the "not_configured" status to "healthy" (user must Test to confirm)
     new_status = integration.get("status", "not_configured")
