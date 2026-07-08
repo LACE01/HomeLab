@@ -402,18 +402,33 @@ async def _upsert_finding(db, det: dict, kb: dict, nvd_cache: dict | None = None
     return "created"
 
 
-async def _reconcile_fixed_detections(db, endpoint: str, username: str, password: str, kb: dict) -> dict:
+async def _reconcile_fixed_detections(db, endpoint: str, username: str, password: str, kb: dict,
+                                       active_keys: set | None = None) -> dict:
     """Fetches Qualys detections explicitly reported as STATUS=Fixed -- a rescan-
     confirmed signal Qualys only sends once it has positively re-checked and found the
     vulnerability gone, not an inference from "this finding didn't show up in today's
     Active/Re-Opened page" (which could just mean the host wasn't in this run's window,
     a much weaker signal). Every finding this closes gets an activity-log entry AND a
     visible comment on the finding explaining exactly why, so "why did this get closed"
-    is never a mystery."""
+    is never a mystery.
+
+    `active_keys` is the set of (hostname, qid) pairs THIS SAME sync run just fetched
+    as Active/Re-Opened in the main detection pull above. Qualys's "Fixed" status
+    query can still return a detection record for a host+QID that a fresher scan has
+    since re-flagged Active/Re-Opened (this is a real, observed Qualys VMDR quirk --
+    the Fixed record isn't purged the moment a rescan reopens it, it just becomes
+    stale). Without this cross-check, every poll cycle would see the same
+    contradictory pair of signals and flip the finding Reopened -> Fixed validated ->
+    Reopened -> ... forever, spamming a duplicate "auto-closed" comment each time
+    (this is exactly the bug reported: a finding stuck oscillating with 50+ reopens
+    and a wall of identical comments). The Active/Re-Opened signal from THIS run is
+    strictly fresher than a Fixed record that may be from an earlier scan window, so
+    it wins -- skip auto-closing anything Stage 1 just confirmed is still open."""
     xml_body = await _fetch_qualys_detections(endpoint, username, password, statuses="Fixed", truncation_limit=1000)
     fixed_dets, _ = _parse_detections(xml_body)
     if not fixed_dets:
         return {"fixed_detections": 0, "auto_closed": 0}
+    active_keys = active_keys or set()
 
     missing_qids = sorted({d["qid"] for d in fixed_dets if d.get("qid") and d["qid"] not in kb})
     if missing_qids:
@@ -423,9 +438,16 @@ async def _reconcile_fixed_detections(db, endpoint: str, username: str, password
         except Exception:
             pass  # best-effort -- falls back to QID-keyed matching below for these
 
-    closed = 0
+    closed = skipped_still_active = 0
     for det in fixed_dets:
         qid = det.get("qid")
+        if (det.get("hostname"), qid) in active_keys:
+            # This exact host+QID was independently confirmed Active/Re-Opened by
+            # THIS run's main detection pull -- the Fixed record is stale, not fresh
+            # evidence. Closing it here would just get reopened next time Stage 1
+            # sees it again, forever.
+            skipped_still_active += 1
+            continue
         cve = (kb.get(qid) or {}).get("cve")
         canonical = f"{cve or qid}::{det['hostname']}"
         existing = await db.findings.find_one({"canonical_key": canonical}, {"_id": 0})
@@ -448,7 +470,7 @@ async def _reconcile_fixed_detections(db, endpoint: str, username: str, password
             "attachments": [], "created_at": _now_iso(),
         })
         closed += 1
-    return {"fixed_detections": len(fixed_dets), "auto_closed": closed}
+    return {"fixed_detections": len(fixed_dets), "auto_closed": closed, "skipped_still_active": skipped_still_active}
 
 
 async def run_qualys_sync(db) -> dict:
@@ -592,7 +614,8 @@ async def run_qualys_sync(db) -> dict:
 
     # Stage 5 — Auto-close findings Qualys has explicitly confirmed as Fixed via rescan.
     try:
-        summary["auto_closed"] = await _reconcile_fixed_detections(db, endpoint, username, password, kb)
+        active_keys = {(d.get("hostname"), d.get("qid")) for d in detections}
+        summary["auto_closed"] = await _reconcile_fixed_detections(db, endpoint, username, password, kb, active_keys)
     except Exception as e:
         errors.append({"stage": "fixed_reconciliation", "error": str(e)})
 
