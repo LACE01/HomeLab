@@ -1031,6 +1031,49 @@ async def delete_team(team_id: str, user: dict = Depends(require_role("admin")))
     return {"ok": True}
 
 
+# --------------------------- IMPLICIT TEAMS (rename / clear) ---------------------------
+# "Implicit" teams (see list_teams above) are just a distinct owner_team/team string
+# that shows up on users/assets/findings without ever having a real teams collection
+# document -- e.g. legacy data, or a value a connector wrote in before Teams existed
+# as a formal concept. There's no team_id to PATCH/DELETE against, so renaming or
+# clearing one previously required editing every asset/finding by hand. This does the
+# same bulk find/replace update_team already does for a real team's rename, just keyed
+# by name instead of id, and lets an implicit team be either renamed to something else
+# (optionally promoting it to a real team at the same time) or cleared to "Unassigned".
+class ImplicitTeamRenameIn(BaseModel):
+    old_name: str
+    new_name: Optional[str] = None  # blank/omitted => clear to "Unassigned"
+    create_team: Optional[bool] = False  # also create a formal Team doc for new_name
+
+
+@router.post("/v1/admin/teams/implicit/rename")
+async def rename_implicit_team(body: ImplicitTeamRenameIn, user: dict = Depends(require_role("admin", "manager")),
+                               _rbac: dict = Depends(require_module("/admin/teams", level="edit"))):
+    old = (body.old_name or "").strip()
+    if not old:
+        raise HTTPException(400, "old_name is required")
+    if await db.teams.find_one({"name": old}):
+        raise HTTPException(400, f"'{old}' is a formally-defined team — use its own Edit/Delete actions instead.")
+    new = (body.new_name or "").strip() or "Unassigned"
+    if new != "Unassigned" and await db.teams.find_one({"name": new}):
+        raise HTTPException(409, f"A formal team named '{new}' already exists — rename to that exact name to merge into it, or pick a different name.")
+
+    user_new = None if new == "Unassigned" else new
+    u_res = await db.users.update_many({"team": old}, {"$set": {"team": user_new}})
+    a_res = await db.assets.update_many({"owner_team": old}, {"$set": {"owner_team": new}})
+    f_res = await db.findings.update_many({"owner_team": old}, {"$set": {"owner_team": new}})
+
+    if new != "Unassigned" and body.create_team:
+        await db.teams.insert_one({
+            "id": str(uuid.uuid4()), "name": new, "color": "#64748b",
+            "description": f"Promoted from implicit team '{old}'.", "members": [],
+            "created_at": now_iso(), "created_by": user.get("email"),
+        })
+
+    return {"ok": True, "new_name": new, "users_updated": u_res.modified_count,
+            "assets_updated": a_res.modified_count, "findings_updated": f_res.modified_count}
+
+
 # --------------------------- INTEGRATION CONFIG PATCH ---------------------------
 class IntegrationConfigPatch(BaseModel):
     config: dict

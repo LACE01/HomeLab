@@ -17,6 +17,7 @@ import httpx
 import xml.etree.ElementTree as ET
 
 from scoring import compute_risk, compute_sla_days
+from asset_classify import classify_asset_type
 
 logger = logging.getLogger("vulnops.qualys")
 
@@ -297,7 +298,7 @@ async def _upsert_asset(db, hostname: str, ip: str | None, os_name: str | None, 
         "environment": "unknown", "criticality": "medium",
         "exposure": "internal", "platform": "Linux" if "linux" in (os_name or "").lower() else ("Windows" if "windows" in (os_name or "").lower() else "unknown"),
         "operating_system": os_name or "unknown",
-        "asset_type": "server",
+        "asset_type": classify_asset_type(os_name) or "server",
         "qualys_host_id": qualys_host_id,
         "owner_team": "Unassigned", "product_id": None, "product_name": None,
         "tags": list({"qualys", *(tags or [])}),

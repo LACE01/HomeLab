@@ -1,5 +1,6 @@
 """Findings routes: list, stats, detail, KRI, comments, status updates, bulk ops,
 prioritization preview, attack-paths, CWE prevalence, threat-intel, findings-groups."""
+import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
@@ -33,6 +34,7 @@ async def list_findings(
     view: Optional[str] = None,
     platform: Optional[str] = None,
     min_risk_score: Optional[int] = None,
+    source_tool: Optional[str] = None,
     sort: str = "risk_score",
     order: str = "desc",
     limit: int = 100,
@@ -66,6 +68,11 @@ async def list_findings(
         flt["asset_os"] = {"$regex": platform, "$options": "i"}
     if min_risk_score is not None:
         flt["risk_score"] = {"$gte": min_risk_score}
+    if source_tool:
+        # Exact-ish match rather than a bare $eq -- YARA/SBOM "view what this scan
+        # created" deep links pass this, and a case-sensitive exact match is brittle
+        # against minor naming drift ("SBOM / OSV.dev" vs "SBOM/OSV.dev" etc).
+        flt["source_tool"] = {"$regex": f"^{re.escape(source_tool)}$", "$options": "i"}
     if q:
         flt["$or"] = [
             {"title": {"$regex": q, "$options": "i"}},

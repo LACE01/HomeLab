@@ -27,6 +27,8 @@ async def list_integrations(user: dict = Depends(get_current_user), _rbac: dict 
             cfg["api_key"] = cfg["api_key"][:4] + "•••" + cfg["api_key"][-4:] if len(cfg.get("api_key", "")) > 8 else "•••"
         if cfg.get("api_secret"):
             cfg["api_secret"] = "•••"
+        if cfg.get("cf_access_client_secret"):
+            cfg["cf_access_client_secret"] = "•••"
     return {"items": items}
 
 
@@ -50,6 +52,14 @@ async def update_integration(integration_id: str, body: IntegrationConfig, user:
     cfg = integration.get("config") or {}
     update = body.model_dump(exclude_none=True)
     for k, v in update.items():
+        # Defensive trim: copy-pasted endpoints/keys/CF-Access tokens frequently carry
+        # a trailing newline or stray leading/trailing space from the clipboard. A
+        # secret that LOOKS right but has an invisible extra character will fail auth
+        # silently (Cloudflare Access won't even register the service token as "seen"
+        # since the header value never matches), so strip whitespace on every string
+        # field before it's persisted.
+        if isinstance(v, str):
+            v = v.strip()
         cfg[k] = v
     # If credentials are now present, lift the "not_configured" status to "healthy" (user must Test to confirm)
     new_status = integration.get("status", "not_configured")
@@ -219,6 +229,9 @@ async def ingest_universal(body: UniversalIngestBody, request: Request, _: dict 
                     "id": str(uuid.uuid4()), "hostname": f_in.asset_hostname, "ip": f_in.asset_ip,
                     "fqdn": None, "environment": "unknown", "criticality": "medium",
                     "exposure": "internal", "platform": "unknown", "operating_system": "unknown",
+                    # The universal ingest payload has no OS field to classify from,
+                    # so this stays a plain default -- edit the asset (or backfill via
+                    # POST /v1/admin/assets/recompute-types) once its real OS is known.
                     "asset_type": "server", "owner_team": "Unassigned",
                     "product_id": None, "product_name": None,
                     "tags": ["auto-created"], "status": "active", "created_at": now_iso(),

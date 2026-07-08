@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import { useAuth } from "@/lib/auth";
-import { Plus, Trash, PencilSimple, Users, X, Check } from "@phosphor-icons/react";
+import { Plus, Trash, PencilSimple, Users, X, Check, ArrowsClockwise } from "@phosphor-icons/react";
 
 const PRESET_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#64748b", "#06b6d4"];
 
@@ -17,6 +17,9 @@ export default function Teams() {
   const [newTeam, setNewTeam] = useState({ name: "", color: PRESET_COLORS[0], description: "", members: [] });
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({ name: "", color: "", members: [] });
+  const [renamingImplicit, setRenamingImplicit] = useState(null); // team name being renamed
+  const [implicitNewName, setImplicitNewName] = useState("");
+  const [savingImplicit, setSavingImplicit] = useState(false);
 
   const load = async () => {
     try {
@@ -70,6 +73,38 @@ export default function Teams() {
     } catch (e) {
       toast.error(e.response?.data?.detail || "Delete failed");
     }
+  };
+
+  // Implicit teams (t.id === null) have no team document to PATCH/DELETE against --
+  // they're just a distinct owner_team/team string seen on users/assets/findings.
+  // Renaming or clearing one is a bulk find/replace by name instead.
+  const startRenameImplicit = (t) => { setRenamingImplicit(t.name); setImplicitNewName(t.name); };
+
+  const saveRenameImplicit = async (oldName, { createTeam = false } = {}) => {
+    setSavingImplicit(true);
+    try {
+      const r = await api.post("/v1/admin/teams/implicit/rename", {
+        old_name: oldName, new_name: implicitNewName.trim(), create_team: createTeam,
+      });
+      const { new_name, users_updated, assets_updated, findings_updated } = r.data;
+      toast.success(`'${oldName}' → '${new_name}': ${assets_updated} asset(s), ${findings_updated} finding(s), ${users_updated} user(s) updated.`);
+      setRenamingImplicit(null);
+      await load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Rename failed");
+    } finally { setSavingImplicit(false); }
+  };
+
+  const clearImplicit = async (t) => {
+    if (!window.confirm(`Set every asset/finding/user currently on "${t.name}" to Unassigned? This can't be undone in bulk (you'd need to reassign them individually).`)) return;
+    setSavingImplicit(true);
+    try {
+      const r = await api.post("/v1/admin/teams/implicit/rename", { old_name: t.name, new_name: "" });
+      toast.success(`'${t.name}' cleared: ${r.data.assets_updated} asset(s), ${r.data.findings_updated} finding(s), ${r.data.users_updated} user(s) → Unassigned.`);
+      await load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to clear");
+    } finally { setSavingImplicit(false); }
   };
 
   const toggleMember = (form, setForm, userId) => {
@@ -184,6 +219,43 @@ export default function Teams() {
                       </div>
                     </td>
                   </>
+                ) : renamingImplicit === t.name ? (
+                  <>
+                    <td colSpan={2} className="py-2">
+                      <div className="flex items-center gap-2">
+                        <input data-testid={`implicit-rename-input-${t.name}`} autoFocus value={implicitNewName}
+                          onChange={(e)=>setImplicitNewName(e.target.value)}
+                          placeholder="New name — leave blank to set Unassigned"
+                          className="h-7 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12.5px] text-slate-100 w-full max-w-[280px]"/>
+                      </div>
+                      <div className="text-[10.5px] text-slate-500 mt-1">
+                        Renames "{t.name}" everywhere it's used (assets, findings, users). Leave blank to clear to Unassigned instead.
+                      </div>
+                    </td>
+                    <td>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <Users size={12} className="text-slate-500"/>
+                        <span className="text-[12px] text-slate-300 font-mono">{t.member_count}</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="flex gap-1 flex-wrap">
+                        <button data-testid={`implicit-rename-save-${t.name}`} disabled={savingImplicit}
+                          onClick={()=>saveRenameImplicit(t.name)}
+                          className="h-7 px-2 text-[11.5px] bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 rounded inline-flex items-center gap-1 disabled:opacity-50">
+                          <Check size={12}/> Save
+                        </button>
+                        {implicitNewName.trim() && (
+                          <button disabled={savingImplicit} onClick={()=>saveRenameImplicit(t.name, { createTeam: true })}
+                            title="Also create a formal Team entry for the new name"
+                            className="h-7 px-2 text-[11.5px] border border-[#30363D] text-slate-300 hover:text-slate-100 rounded inline-flex items-center gap-1 disabled:opacity-50">
+                            + Make formal team
+                          </button>
+                        )}
+                        <button onClick={()=>setRenamingImplicit(null)} className="h-7 px-2 text-[11.5px] text-slate-400 hover:text-slate-200"><X size={12}/></button>
+                      </div>
+                    </td>
+                  </>
                 ) : (
                   <>
                     <td>
@@ -214,6 +286,21 @@ export default function Teams() {
                         {/* Deleting a team is admin-only regardless of Role Access -- unchanged from before this feature existed. */}
                         {t.id && user?.role === "admin" && (
                           <button data-testid={`team-delete-${t.name}`} onClick={()=>deleteTeam(t)} className="h-7 px-2 text-[11.5px] text-red-300 hover:text-red-200 inline-flex items-center gap-1"><Trash size={12}/></button>
+                        )}
+                        {/* Implicit teams have no team_id -- offer rename (bulk find/replace by
+                            name) and a one-click "set to Unassigned" instead of Edit/Delete. */}
+                        {!t.id && canEditTeams && (
+                          <>
+                            <button data-testid={`implicit-rename-${t.name}`} onClick={()=>startRenameImplicit(t)}
+                              className="h-7 px-2 text-[11.5px] text-slate-300 hover:text-slate-100 inline-flex items-center gap-1">
+                              <PencilSimple size={12}/> Rename
+                            </button>
+                            <button data-testid={`implicit-clear-${t.name}`} disabled={savingImplicit} onClick={()=>clearImplicit(t)}
+                              title="Set every asset/finding/user on this team to Unassigned"
+                              className="h-7 px-2 text-[11.5px] text-red-300 hover:text-red-200 inline-flex items-center gap-1 disabled:opacity-50">
+                              <ArrowsClockwise size={12}/> Unassign
+                            </button>
+                          </>
                         )}
                       </div>
                     </td>

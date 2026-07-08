@@ -66,7 +66,13 @@ async def sync_kev(db) -> dict:
 
 async def sync_epss(db) -> dict:
     """Pull EPSS scores from FIRST.org for every unique CVE currently in our findings.
-    EPSS is free / no key. We chunk requests (100 CVEs per call) and stamp `epss_score`."""
+    EPSS is free / no key. We chunk requests (100 CVEs per call) and stamp `epss_score`.
+    Non-200 responses used to be swallowed silently (just `continue`), which meant a
+    rate limit, an outbound-network block, or an API change would report back
+    status="success", matched=0 -- indistinguishable from "nothing needed scoring" and
+    with nothing for an admin to act on. Failed chunks are now recorded and surfaced,
+    and the call is marked "failed" if every chunk failed so the sync-now button
+    actually shows an error instead of a quiet false "success"."""
     raw = await db.findings.distinct("cve")
     cves = [c for c in raw if c and isinstance(c, str) and c.startswith("CVE-")]
     if not cves:
@@ -74,6 +80,7 @@ async def sync_epss(db) -> dict:
 
     matched = 0
     lookups = 0
+    chunk_errors: list = []
     epss_map: dict = {}
     try:
         async with httpx.AsyncClient(timeout=60) as c:
@@ -82,25 +89,37 @@ async def sync_epss(db) -> dict:
                 r = await c.get(EPSS_URL, params={"cve": ",".join(chunk)})
                 lookups += 1
                 if r.status_code != 200:
+                    chunk_errors.append(f"HTTP {r.status_code} for {len(chunk)} CVE(s): {r.text[:200]}")
                     continue
                 for row in (r.json().get("data") or []):
                     if row.get("cve") and row.get("epss") is not None:
                         epss_map[row["cve"]] = float(row["epss"])
     except Exception as e:
-        return {"status": "failed", "error": str(e), "matched": 0, "lookups": lookups}
+        return {"status": "failed", "error": str(e), "matched": 0, "lookups": lookups, "chunk_errors": chunk_errors}
 
-    # Bulk update findings
+    if lookups > 0 and len(chunk_errors) == lookups:
+        # Every single chunk failed -- this is a real failure (network/API/rate-limit
+        # issue), not "no CVEs matched", so don't report status="success".
+        return {"status": "failed", "error": chunk_errors[0], "chunk_errors": chunk_errors,
+                "matched": 0, "lookups": lookups, "synced_at": _now_iso()}
+
+    # Bulk update findings. Uses $addToSet/$pull on rti rather than overwriting the
+    # whole array, since a blind `{"rti": [...]}` $set here used to wipe out any other
+    # rti flags (e.g. "zero_day"/"wormable" set elsewhere) every time EPSS synced.
     for cve, score in epss_map.items():
-        # Active-attack heuristic: EPSS >= 0.50 → flag as "active_attacks"
-        r = await db.findings.update_many(
-            {"cve": cve},
-            {"$set": {"epss_score": score,
-                      "rti": ["active_attacks"] if score >= 0.50 else []}}
-        )
+        update: dict = {"$set": {"epss_score": score}}
+        if score >= 0.50:
+            update["$addToSet"] = {"rti": "active_attacks"}
+        else:
+            update["$pull"] = {"rti": "active_attacks"}
+        r = await db.findings.update_many({"cve": cve}, update)
         matched += r.modified_count
 
-    return {"status": "success", "matched": matched, "lookups": lookups,
-            "cves_with_score": len(epss_map), "synced_at": _now_iso()}
+    result = {"status": "success", "matched": matched, "lookups": lookups,
+              "cves_with_score": len(epss_map), "synced_at": _now_iso()}
+    if chunk_errors:
+        result["chunk_errors"] = chunk_errors  # partial failure -- some chunks still worked
+    return result
 
 
 async def flag_active_attacks(db, recency_days: int = 45) -> dict:

@@ -4,11 +4,14 @@ import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtDate, fmtRel, isOverdue } from "@/lib/utils-fmt";
-import { MagnifyingGlass, ArrowLeft, Stack, CaretLeft, CaretRight, LockKey, LockKeyOpen, Info, WindowsLogo, LinuxLogo, AppleLogo, Desktop, User } from "@phosphor-icons/react";
+import { MagnifyingGlass, ArrowLeft, Stack, CaretLeft, CaretRight, LockKey, LockKeyOpen, Info, WindowsLogo, LinuxLogo, AppleLogo, Desktop, User, ArrowsClockwise } from "@phosphor-icons/react";
 import TrendChart from "@/components/TrendChart";
 import { toast } from "sonner";
+import { useAuth } from "@/lib/auth";
 
 const PAGE_SIZE = 50;
+const ENVIRONMENT_OPTIONS = ["production", "staging", "development", "test", "unknown"];
+const ASSET_TYPE_OPTIONS = ["server", "workstation", "web_application", "network_device", "other"];
 
 // Small platform badge next to the OS text -- Windows/Linux/macOS get their own logo,
 // anything else (or "unknown") falls back to a generic desktop icon rather than
@@ -31,6 +34,10 @@ export function Assets() {
   const [selected, setSelected] = useState(new Set());
   const [bulkProduct, setBulkProduct] = useState("");
   const [assigning, setAssigning] = useState(false);
+  const [bulkEnv, setBulkEnv] = useState("");
+  const [settingEnv, setSettingEnv] = useState(false);
+  const [recomputing, setRecomputing] = useState(false);
+  const { canEdit } = useAuth();
 
   const load = useCallback(() => {
     const params = { limit: PAGE_SIZE, offset: page * PAGE_SIZE };
@@ -68,8 +75,54 @@ export function Assets() {
     }
   };
 
+  const setEnvSelected = async () => {
+    if (!selected.size || !bulkEnv) return;
+    setSettingEnv(true);
+    try {
+      const r = await api.post("/v1/assets/bulk-set-environment", {
+        asset_ids: Array.from(selected), environment: bulkEnv,
+      });
+      toast.success(`Set environment to "${r.data.environment}" on ${r.data.updated_assets} asset(s).`);
+      setSelected(new Set());
+      setBulkEnv("");
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to set environment");
+    } finally {
+      setSettingEnv(false);
+    }
+  };
+
+  const recomputeTypes = async () => {
+    setRecomputing(true);
+    try {
+      const r = await api.post("/v1/admin/assets/recompute-types");
+      toast.success(`Checked ${r.data.checked}, reclassified ${r.data.changed} (${r.data.skipped_locked} locked, ${r.data.skipped_inconclusive} inconclusive left as-is).`);
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to recompute asset types");
+    } finally {
+      setRecomputing(false);
+    }
+  };
+
+  const setRowEnvironment = async (assetId, environment) => {
+    try {
+      await api.patch(`/v1/assets/${assetId}/environment`, { environment });
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to update environment");
+    }
+  };
+
   return (
-    <Layout title="Assets" subtitle="Hosts, cloud resources, repositories, and devices under management">
+    <Layout title="Assets" subtitle="Hosts, cloud resources, repositories, and devices under management"
+      actions={canEdit("/assets") && (
+        <button onClick={recomputeTypes} disabled={recomputing} title="Re-classify server vs workstation from each asset's known OS"
+          className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] rounded inline-flex items-center gap-1.5 text-slate-300 disabled:opacity-50">
+          <ArrowsClockwise size={14} className={recomputing ? "animate-spin" : ""}/> {recomputing ? "Recomputing…" : "Recompute types"}
+        </button>
+      )}>
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md mb-3 px-3 py-2 flex gap-2 items-center flex-wrap">
         <div className="flex items-center gap-1.5 bg-[#161B22] border border-[#30363D] rounded px-2 h-8 flex-1 min-w-[200px]">
           <MagnifyingGlass size={14} className="text-slate-500" />
@@ -83,11 +136,22 @@ export function Assets() {
       </div>
 
       {selected.size > 0 && (
-        <div data-testid="bulk-assign-bar" className="border border-blue-500/30 bg-blue-500/5 rounded-md mb-3 px-3 py-2 flex items-center gap-2">
+        <div data-testid="bulk-assign-bar" className="border border-blue-500/30 bg-blue-500/5 rounded-md mb-3 px-3 py-2 flex items-center gap-2 flex-wrap">
           <Stack size={14} className="text-blue-300"/>
           <span className="text-[12px] text-blue-200">{selected.size} selected</span>
+          <div className="flex items-center gap-1.5 ml-auto">
+            <select data-testid="bulk-env-select" value={bulkEnv} onChange={(e)=>setBulkEnv(e.target.value)}
+              className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] capitalize">
+              <option value="">Set environment…</option>
+              {ENVIRONMENT_OPTIONS.map(e => <option key={e} value={e}>{e}</option>)}
+            </select>
+            <button data-testid="bulk-env-apply" onClick={setEnvSelected} disabled={settingEnv || !bulkEnv}
+              className="h-8 px-3 text-[12px] bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/40 text-blue-200 rounded disabled:opacity-50">
+              {settingEnv ? "Applying…" : "Set env"}
+            </button>
+          </div>
           <select data-testid="bulk-assign-product-select" value={bulkProduct} onChange={(e)=>setBulkProduct(e.target.value)}
-            className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] ml-auto">
+            className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px]">
             <option value="">Unassign product</option>
             {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
@@ -123,8 +187,16 @@ export function Assets() {
                   </Link>
                 </td>
                 <td className="font-mono text-[11.5px] text-slate-400">{a.ip || "—"}</td>
-                <td className="text-slate-400 text-[11.5px]">{a.asset_type}</td>
-                <td className="text-slate-400 capitalize">{a.environment}</td>
+                <td className="text-slate-400 text-[11.5px] capitalize">{(a.asset_type || "").replace("_", " ")}</td>
+                <td>
+                  {canEdit("/assets") ? (
+                    <select value={a.environment || "unknown"} onChange={(e)=>setRowEnvironment(a.id, e.target.value)}
+                      data-testid={`asset-env-${a.id}`} onClick={(e)=>e.stopPropagation()}
+                      className="h-6 bg-transparent hover:bg-[#161B22] border border-transparent hover:border-[#30363D] rounded px-1 text-[11.5px] text-slate-400 capitalize">
+                      {ENVIRONMENT_OPTIONS.map(e => <option key={e} value={e}>{e}</option>)}
+                    </select>
+                  ) : <span className="text-slate-400 capitalize">{a.environment}</span>}
+                </td>
                 <td><Chip color={a.criticality === "crown_jewel" ? "red" : a.criticality === "critical" ? "orange" : "slate"}>{a.criticality}</Chip></td>
                 <td><Chip color={a.exposure === "internet" ? "orange" : "slate"}>{a.exposure}</Chip></td>
                 <td className="text-slate-400">{a.owner_team}</td>
@@ -165,6 +237,7 @@ export function Assets() {
 
 export function AssetDetail() {
   const { id } = useParams();
+  const { canEdit } = useAuth();
   const [a, setA] = useState(null);
   const [findings, setFindings] = useState([]);
   const [history, setHistory] = useState({activity: [], observations: []});
@@ -174,6 +247,9 @@ export function AssetDetail() {
   const [editingCrit, setEditingCrit] = useState(false);
   const [critChoice, setCritChoice] = useState("medium");
   const [savingCrit, setSavingCrit] = useState(false);
+  const [editingType, setEditingType] = useState(false);
+  const [typeChoice, setTypeChoice] = useState("server");
+  const [savingType, setSavingType] = useState(false);
 
   useEffect(() => {
     api.get(`/v1/assets/${id}`).then(r => setA(r.data));
@@ -208,6 +284,31 @@ export function AssetDetail() {
     } finally { setSavingCrit(false); }
   };
 
+  const setManualType = async () => {
+    setSavingType(true);
+    try {
+      await api.patch(`/v1/assets/${id}/type`, { asset_type: typeChoice });
+      const r = await api.get(`/v1/assets/${id}`);
+      setA(r.data);
+      setEditingType(false);
+      toast.success("Asset type set and locked — recompute won't override it until you unlock.");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to update asset type");
+    } finally { setSavingType(false); }
+  };
+
+  const unlockType = async () => {
+    setSavingType(true);
+    try {
+      await api.patch(`/v1/assets/${id}/type`, { locked: false });
+      const r = await api.get(`/v1/assets/${id}`);
+      setA(r.data);
+      toast.success("Unlocked — resumed auto-classification from OS.");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to unlock");
+    } finally { setSavingType(false); }
+  };
+
   const changeProduct = async (e) => {
     const product_id = e.target.value || null;
     setSavingProduct(true);
@@ -239,7 +340,33 @@ export function AssetDetail() {
           <div className="mt-2 grid grid-cols-2 gap-2 text-[12.5px] items-center">
             <div><span className="text-slate-500">IP:</span> <span className="font-mono">{a.ip || "—"}</span></div>
             <div><span className="text-slate-500">FQDN:</span> <span className="font-mono text-[11px]">{a.fqdn || "—"}</span></div>
-            <div><span className="text-slate-500">Type:</span> {a.asset_type}</div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-500">Type:</span>
+              {editingType ? (
+                <>
+                  <select value={typeChoice} onChange={e=>setTypeChoice(e.target.value)}
+                    className="h-6 bg-[#161B22] border border-[#30363D] rounded px-1.5 text-[11.5px] text-slate-200 capitalize">
+                    {ASSET_TYPE_OPTIONS.map(t => <option key={t} value={t}>{t.replace("_"," ")}</option>)}
+                  </select>
+                  <button onClick={setManualType} disabled={savingType} className="h-6 px-1.5 text-[10.5px] bg-blue-500 hover:bg-blue-400 text-white rounded disabled:opacity-50">Set</button>
+                  <button onClick={()=>setEditingType(false)} className="h-6 px-1.5 text-[10.5px] border border-[#30363D] rounded text-slate-300">Cancel</button>
+                </>
+              ) : (
+                <>
+                  <span className="capitalize">{(a.asset_type || "").replace("_"," ")}</span>
+                  {a.asset_type_locked && <span className="text-[10px] text-slate-500">(locked)</span>}
+                  {canEdit("/assets") && (
+                    a.asset_type_locked ? (
+                      <button onClick={unlockType} disabled={savingType} title="Unlock to resume auto-classification from OS"
+                        className="text-slate-500 hover:text-emerald-300 disabled:opacity-50"><LockKey size={12}/></button>
+                    ) : (
+                      <button onClick={()=>{ setTypeChoice(a.asset_type || "server"); setEditingType(true); }} title="Manually override"
+                        className="text-slate-500 hover:text-blue-300"><LockKeyOpen size={12}/></button>
+                    )
+                  )}
+                </>
+              )}
+            </div>
             <div><span className="text-slate-500">Status:</span> {a.status}</div>
             <div><span className="text-slate-500">Owner Team:</span> {a.owner_team}</div>
             {a.hardware_info && <div><span className="text-slate-500">Hardware:</span> {a.hardware_info}</div>}

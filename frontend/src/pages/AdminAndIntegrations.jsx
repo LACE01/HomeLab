@@ -112,7 +112,11 @@ export function Integrations() {
   };
 
   const save = async () => {
-    const payload = Object.fromEntries(Object.entries(form).filter(([_,v]) => v !== "" && v !== null && v !== undefined));
+    // Trim whitespace client-side too -- a copy-pasted CF-Access token with a
+    // trailing newline looks identical in the input box but won't match on
+    // Cloudflare's side, and the token will just sit at "not seen" forever.
+    const trimmed = Object.fromEntries(Object.entries(form).map(([k, v]) => [k, typeof v === "string" ? v.trim() : v]));
+    const payload = Object.fromEntries(Object.entries(trimmed).filter(([_,v]) => v !== "" && v !== null && v !== undefined));
     try {
       await api.patch(`/v1/integrations/${editing.id}`, payload);
       toast.success(`${editing.name} configuration saved`);
@@ -211,6 +215,11 @@ export function Integrations() {
             </div>
             <div className="text-[11px] text-slate-500 mt-2">{tiStatus?.epss?.findings_scored ?? 0} finding(s) scored</div>
             {tiStatus?.epss?.error && <div className="text-[10.5px] text-red-400 mt-1">{tiStatus.epss.error}</div>}
+            {tiStatus?.epss?.last_result?.chunk_errors?.length > 0 && (
+              <div className="text-[10.5px] text-amber-400 mt-1">
+                {tiStatus.epss.last_result.chunk_errors.length} of {tiStatus.epss.last_result.lookups} request(s) to FIRST.org failed: {tiStatus.epss.last_result.chunk_errors[0]}
+              </div>
+            )}
           </div>
           <div className="border border-[#30363D] rounded p-3">
             <div className="flex items-center justify-between">
@@ -244,6 +253,14 @@ export function Integrations() {
               <div className="flex gap-2 items-center"><span className="text-[10px] font-mono text-slate-500 w-16 uppercase">Endpoint</span><span className="text-[11px] font-mono text-slate-300 truncate flex-1">{i.config?.endpoint || <span className="text-slate-600">not set</span>}</span></div>
               <div className="flex gap-2 items-center"><span className="text-[10px] font-mono text-slate-500 w-16 uppercase">API Key</span><span className="text-[11px] font-mono text-slate-300 truncate flex-1">{i.config?.api_key || <span className="text-slate-600">not set</span>}</span></div>
               <div className="flex gap-2 items-center"><span className="text-[10px] font-mono text-slate-500 w-16 uppercase">Auth</span><span className="text-[11px] font-mono text-slate-300">{i.config?.auth_type || "api_key"}</span></div>
+              {i.name === "OpenCTI" && (
+                <div className="flex gap-2 items-center">
+                  <span className="text-[10px] font-mono text-slate-500 w-16 uppercase">CF-Access</span>
+                  <span className={`text-[11px] font-mono ${i.config?.cf_access_client_id ? "text-emerald-400" : "text-slate-600"}`}>
+                    {i.config?.cf_access_client_id ? `configured (...${i.config.cf_access_client_id.slice(-14)})` : "not set — required if OpenCTI sits behind Cloudflare Access"}
+                  </span>
+                </div>
+              )}
             </div>
 
             <div className="mt-3 pt-3 border-t border-[#30363D] grid grid-cols-2 gap-2">

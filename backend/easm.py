@@ -191,6 +191,10 @@ async def promote_candidate(db, candidate_id: str, user_email: str) -> dict:
         "id": str(uuid.uuid4()), "hostname": cand["hostname"], "ip": cand.get("resolved_ip"),
         "fqdn": cand["hostname"], "environment": "unknown", "criticality": "medium",
         "exposure": "internet", "platform": "unknown", "operating_system": "unknown",
+        # No OS fingerprint exists yet at EASM discovery time (cert-transparency hit,
+        # not an active scan) so classify_asset_type() would always be inconclusive
+        # here -- "server" is the reasonable default for an internet-facing host
+        # found this way; an Nmap/Nikto scan against it later can refine this.
         "asset_type": "server", "owner_team": "Unassigned", "product_id": None, "product_name": None,
         "tags": ["easm", "discovered"], "status": "active", "created_at": _now_iso(),
         "ownership_confidence": 0.2,

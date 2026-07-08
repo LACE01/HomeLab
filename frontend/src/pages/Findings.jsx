@@ -7,7 +7,7 @@ import Layout from "@/components/Layout";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtRel, isOverdue } from "@/lib/utils-fmt";
 import { Link } from "react-router-dom";
-import { MagnifyingGlass, FileArrowDown, FunnelSimple, CaretDown, CaretRight, StackSimple, ListBullets, GridFour, Sparkle, X } from "@phosphor-icons/react";
+import { MagnifyingGlass, FileArrowDown, FunnelSimple, CaretDown, CaretRight, CaretLeft, StackSimple, ListBullets, GridFour, Sparkle, X, SortAscending, SortDescending } from "@phosphor-icons/react";
 import TeamCombobox from "@/components/TeamCombobox";
 
 const VIEWS = [
@@ -31,6 +31,17 @@ const GROUP_OPTIONS = [
   { id: "asset", label: "by Asset" },
 ];
 
+const SORT_OPTIONS = [
+  { id: "risk_score", label: "Risk score" },
+  { id: "cvss_score", label: "CVSS" },
+  { id: "epss_score", label: "EPSS" },
+  { id: "due_at", label: "Due date" },
+  { id: "first_seen_at", label: "First seen" },
+  { id: "last_seen_at", label: "Last seen" },
+];
+
+const PAGE_SIZE = 100;
+
 export default function Findings() {
   const { user } = useAuth();
   const { prefs, setSection } = usePreferences();
@@ -41,9 +52,14 @@ export default function Findings() {
   // e.g. /findings?view=kev&owner_team=IT%20Ops -- these seed initial state below and
   // are otherwise ordinary filters the user can then change.
   const ownerTeamParam = searchParams.get("owner_team");
+  // Also supports ?q=<text> for deep links from YARA/SBOM scan results ("view the
+  // finding(s) this scan created") -- reuses the same free-text search the box
+  // already does (title/CVE/hostname/QID regex match on the backend).
+  const qParam = searchParams.get("q");
+  const sourceToolParam = searchParams.get("source_tool");
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(qParam || "");
   const [view, setView] = useState(searchParams.get("view") || "");
   const [severity, setSeverity] = useState(searchParams.get("severity") || "");
   const [status, setStatus] = useState(searchParams.get("status") || "");
@@ -59,13 +75,16 @@ export default function Findings() {
   const [nlMode, setNlMode] = useState(false);
   const [nlInterpreted, setNlInterpreted] = useState(null);
   const [nlLoading, setNlLoading] = useState(false);
+  const [sort, setSort] = useState("risk_score");
+  const [order, setOrder] = useState("desc");
+  const [page, setPage] = useState(0);
 
   const groupBy = prefs?.findings?.group_by || "none";
   const viewMode = prefs?.findings?.view_mode || "by_asset";
 
   const load = async () => {
     setLoading(true);
-    if (groupBy !== "none" && !cweParam && !cveParam) {
+    if (groupBy !== "none" && !cweParam && !cveParam && !sourceToolParam) {
       const params = { group_by: groupBy, view_mode: viewMode, limit: 100 };
       if (severity) params.severity = severity;
       if (status) params.status = status;
@@ -77,7 +96,7 @@ export default function Findings() {
       setLoading(false);
       return;
     }
-    const params = { limit: 200 };
+    const params = { limit: PAGE_SIZE, offset: page * PAGE_SIZE, sort, order };
     if (q) params.q = q;
     if (view) params.view = view;
     if (severity) params.severity = severity;
@@ -86,11 +105,15 @@ export default function Findings() {
     if (cveParam) params.cve = cveParam;
     if (myQueue && user?.team) params.owner_team = user.team;
     else if (ownerTeamParam) params.owner_team = ownerTeamParam;
+    if (sourceToolParam) params.source_tool = sourceToolParam;
     const r = await api.get("/v1/findings", { params });
     setItems(r.data.items || []); setTotal(r.data.total);
     setLoading(false); setSelected(new Set());
   };
-  useEffect(() => { if (prefs) load(); /* eslint-disable-next-line */ }, [prefs, view, severity, status, myQueue, groupBy, viewMode, cweParam, cveParam]);
+  useEffect(() => { if (prefs) load(); /* eslint-disable-next-line */ }, [prefs, view, severity, status, myQueue, groupBy, viewMode, cweParam, cveParam, sourceToolParam, sort, order, page]);
+  // Any filter change (other than paging itself) should reset back to page 1 --
+  // otherwise you can land on an empty page 5 after narrowing a filter down.
+  useEffect(() => { setPage(0); }, [view, severity, status, myQueue, sort, order, q]);
 
   const runNlSearch = async () => {
     if (!q.trim()) return;
@@ -212,6 +235,14 @@ export default function Findings() {
             <option value="">All statuses</option>
             {STATUSES.map(s=> <option key={s}>{s}</option>)}
           </select>
+          <select data-testid="filter-sort" value={sort} onChange={(e)=>setSort(e.target.value)} className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200">
+            {SORT_OPTIONS.map(o => <option key={o.id} value={o.id}>Sort: {o.label}</option>)}
+          </select>
+          <button data-testid="sort-order-toggle" onClick={()=>setOrder(order === "desc" ? "asc" : "desc")}
+            title={order === "desc" ? "Highest first — click for lowest first" : "Lowest first — click for highest first"}
+            className="h-8 px-2.5 text-[12px] border border-[#30363D] hover:border-[#484F58] rounded inline-flex items-center gap-1.5 text-slate-300">
+            {order === "desc" ? <><SortDescending size={14}/> Highest first</> : <><SortAscending size={14}/> Lowest first</>}
+          </button>
           <button data-testid="search-go" onClick={()=> nlMode ? runNlSearch() : load()} disabled={nlLoading}
             className="h-8 px-3 text-[12px] bg-blue-500/15 text-blue-300 border border-blue-500/30 rounded hover:bg-blue-500/25 disabled:opacity-50">
             <FunnelSimple size={14} className="inline mr-1"/> {nlMode ? (nlLoading ? "Thinking…" : "Ask") : "Apply"}
@@ -417,7 +448,7 @@ export default function Findings() {
                       <div className="text-[10.5px] text-slate-600 font-mono">{f.asset_ip || "—"}</div>
                     </td>
                     <td className="font-mono text-[11.5px]">{f.cvss_score?.toFixed?.(1) ?? "—"}</td>
-                    <td className="font-mono text-[11.5px]">{f.epss_score ? (f.epss_score*100).toFixed(1)+"%" : "—"}</td>
+                    <td className="font-mono text-[11.5px]">{f.epss_score != null ? (f.epss_score*100).toFixed(1)+"%" : "—"}</td>
                     <td><Chip color={f.status === "Reopened" ? "orange" : f.status?.includes("Fixed") ? "green" : f.status === "New" ? "blue" : "slate"}>{f.status}</Chip></td>
                     <td className="text-slate-400 text-[11.5px]">{f.owner_team}</td>
                     <td className="text-slate-500 text-[11px]">{f.source_tool}</td>
@@ -429,6 +460,27 @@ export default function Findings() {
           </div>
         )}
       </div>
+
+      {groupBy === "none" && (
+        <div className="flex items-center justify-between mt-3 px-1">
+          <div className="text-[11px] text-slate-500">
+            Showing {items.length === 0 ? 0 : page * PAGE_SIZE + 1}–{page * PAGE_SIZE + items.length} of {total}
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}
+              data-testid="findings-prev-page"
+              className="h-8 w-8 flex items-center justify-center text-slate-400 hover:text-slate-200 disabled:opacity-30 rounded border border-[#30363D]">
+              <CaretLeft size={14}/>
+            </button>
+            <span className="text-[11.5px] text-slate-500">Page {page + 1} of {Math.max(1, Math.ceil(total / PAGE_SIZE))}</span>
+            <button onClick={() => setPage(p => (p + 1) * PAGE_SIZE < total ? p + 1 : p)} disabled={(page + 1) * PAGE_SIZE >= total}
+              data-testid="findings-next-page"
+              className="h-8 w-8 flex items-center justify-center text-slate-400 hover:text-slate-200 disabled:opacity-30 rounded border border-[#30363D]">
+              <CaretRight size={14}/>
+            </button>
+          </div>
+        </div>
+      )}
     </Layout>
   );
 }

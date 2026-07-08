@@ -1,12 +1,19 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import {
   Virus, FileCode, UploadSimple, CheckCircle, XCircle, Plus, X, Trash, PencilSimple,
-  Warning, CircleNotch,
+  Warning, CircleNotch, Flask, LinkSimple,
 } from "@phosphor-icons/react";
+
+// Standard EICAR antivirus test string -- not malware, universally recognized by
+// every scanner as the industry-standard "does the pipeline actually work" probe.
+// Used for the one-click "Run test scan" button below so a first-time user can see
+// the whole upload -> match -> finding-created flow without needing a real sample.
+const EICAR_STRING = "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*";
 
 const SEVERITY_COLOR = { Critical: "red", High: "orange", Medium: "amber", Low: "slate" };
 
@@ -63,7 +70,11 @@ function ScanTab() {
   const fileRef = useRef(null);
   const [file, setFile] = useState(null);
   const [label, setLabel] = useState("");
+  const [assetQuery, setAssetQuery] = useState("");
+  const [assetId, setAssetId] = useState("");
+  const [assetOptions, setAssetOptions] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [testBusy, setTestBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [history, setHistory] = useState([]);
   const [detail, setDetail] = useState(null);
@@ -77,20 +88,55 @@ function ScanTab() {
 
   useEffect(() => { loadHistory(); }, []);
 
+  // Lightweight asset search-as-you-type -- lets a scan get attributed to a real
+  // asset (so the resulting finding shows up on that asset's page) instead of every
+  // upload just floating as a generic, unattached finding.
+  useEffect(() => {
+    const h = setTimeout(async () => {
+      if (!assetQuery.trim()) { setAssetOptions([]); return; }
+      try {
+        const r = await api.get("/v1/assets", { params: { q: assetQuery, limit: 20 } });
+        setAssetOptions(r.data.items || []);
+      } catch (e) { /* non-fatal */ }
+    }, 250);
+    return () => clearTimeout(h);
+  }, [assetQuery]);
+
+  const runScan = async (uploadFile, uploadLabel) => {
+    setResult(null);
+    const fd = new FormData();
+    fd.append("file", uploadFile);
+    fd.append("label", uploadLabel || "");
+    if (assetId) fd.append("asset_id", assetId);
+    const r = await api.post("/v1/admin/yara/scan", fd, { headers: { "Content-Type": "multipart/form-data" } });
+    setResult(r.data);
+    toast.success(`${r.data.matched_rule_count} rule match(es), ${r.data.findings_created} new finding(s)`);
+    loadHistory();
+  };
+
   const submit = async () => {
     if (!file) { toast.error("Pick a file first"); return; }
-    setBusy(true); setResult(null);
+    setBusy(true);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      fd.append("label", label);
-      const r = await api.post("/v1/admin/yara/scan", fd, { headers: { "Content-Type": "multipart/form-data" } });
-      setResult(r.data);
-      toast.success(`${r.data.matched_rule_count} rule match(es), ${r.data.findings_created} new finding(s)`);
-      loadHistory();
+      await runScan(file, label);
     } catch (e) {
       toast.error(e.response?.data?.detail || "Scan failed");
     } finally { setBusy(false); }
+  };
+
+  // One-click pipeline smoke test using the industry-standard EICAR test string --
+  // every AV/YARA tool recognizes it, it's not malware, and the seeded starter rule
+  // library already ships an EICAR-detecting rule. Lets a first-time user confirm
+  // upload -> match -> finding-created works before hunting for a real sample.
+  const runEicarTest = async () => {
+    setTestBusy(true);
+    try {
+      const blob = new Blob([EICAR_STRING], { type: "text/plain" });
+      const eicarFile = new File([blob], "eicar-test-file.txt", { type: "text/plain" });
+      await runScan(eicarFile, "Built-in EICAR pipeline test");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Test scan failed");
+    } finally { setTestBusy(false); }
   };
 
   const openDetail = async (id) => {
@@ -137,10 +183,39 @@ function ScanTab() {
             </div>
           </div>
 
-          <button onClick={submit} disabled={busy || !file}
-            className="h-10 px-4 text-[13px] bg-blue-500 hover:bg-blue-400 disabled:opacity-40 text-white rounded inline-flex items-center justify-center gap-2">
-            <UploadSimple size={16}/> {busy ? "Scanning…" : "Upload & Scan"}
-          </button>
+          <div>
+            <label className="block text-[10px] uppercase tracking-wider font-mono text-slate-500 mb-1.5">Attribute to asset (optional)</label>
+            <input value={assetId ? assetQuery : assetQuery} onChange={(e) => { setAssetQuery(e.target.value); setAssetId(""); }}
+              placeholder="Search hostname/IP — leave blank to leave the finding unattached"
+              list="yara-asset-options"
+              className="w-full h-9 bg-[#161B22] border border-[#30363D] rounded px-3 text-[12.5px] text-slate-100"/>
+            <datalist id="yara-asset-options">
+              {assetOptions.map(a => <option key={a.id} value={a.hostname} data-id={a.id}/>)}
+            </datalist>
+            {assetOptions.length > 0 && !assetId && (
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {assetOptions.slice(0, 5).map(a => (
+                  <button type="button" key={a.id} onClick={() => { setAssetId(a.id); setAssetQuery(a.hostname); }}
+                    className="h-6 px-2 text-[11px] border border-[#30363D] hover:border-blue-500/40 hover:text-blue-300 rounded text-slate-400">
+                    {a.hostname}
+                  </button>
+                ))}
+              </div>
+            )}
+            {assetId && <div className="text-[10.5px] text-emerald-400 mt-1">Attributed to {assetQuery}</div>}
+          </div>
+
+          <div className="flex gap-2">
+            <button onClick={submit} disabled={busy || !file}
+              className="h-10 px-4 text-[13px] bg-blue-500 hover:bg-blue-400 disabled:opacity-40 text-white rounded inline-flex items-center justify-center gap-2 flex-1">
+              <UploadSimple size={16}/> {busy ? "Scanning…" : "Upload & Scan"}
+            </button>
+            <button onClick={runEicarTest} disabled={testBusy} type="button"
+              title="Run a one-click smoke test with the standard (harmless) EICAR test string to confirm the pipeline works"
+              className="h-10 px-4 text-[13px] border border-[#30363D] hover:border-blue-500/40 hover:text-blue-300 disabled:opacity-40 text-slate-300 rounded inline-flex items-center justify-center gap-2">
+              <Flask size={16}/> {testBusy ? "Running…" : "Run test scan (EICAR)"}
+            </button>
+          </div>
 
           {result && (
             <div>
@@ -149,6 +224,11 @@ function ScanTab() {
                 <div>{result.matched_rule_count} match(es) · {result.findings_created} new finding(s) created</div>
                 {result.rules_broken?.length > 0 && (
                   <div className="text-amber-300">{result.rules_broken.length} enabled rule(s) skipped — compile error, see Rules tab</div>
+                )}
+                {result.findings_created > 0 && (
+                  <Link to="/findings?source_tool=YARA" className="inline-flex items-center gap-1 text-blue-300 hover:text-blue-200 mt-1">
+                    <LinkSimple size={12}/> View YARA finding(s) in Findings
+                  </Link>
                 )}
               </div>
               <MatchList matches={result.matches}/>
@@ -193,6 +273,11 @@ function ScanTab() {
               <div className="text-[10.5px] text-slate-500 font-mono mb-3">
                 sha256: {detail.sha256} · {detail.size_bytes} bytes · {new Date(detail.scanned_at).toLocaleString()}
               </div>
+              {detail.findings_created > 0 && (
+                <Link to="/findings?source_tool=YARA" className="inline-flex items-center gap-1 text-[11.5px] text-blue-300 hover:text-blue-200 mb-3">
+                  <LinkSimple size={12}/> View YARA finding(s) in Findings
+                </Link>
+              )}
               <MatchList matches={detail.matches}/>
             </div>
           </div>

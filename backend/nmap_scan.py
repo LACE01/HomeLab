@@ -36,6 +36,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 from scoring import compute_risk, compute_sla_days
+from asset_classify import classify_asset_type
 
 # Flags per intensity preset. -T4 is "aggressive" timing (fine on a LAN/VPN, still
 # reasonable over the internet); -sV/-O need raw sockets (NET_RAW/NET_ADMIN, granted to
@@ -461,6 +462,10 @@ async def import_nmap_xml(db, content: bytes, vantage: str = "internal", source_
         }
         if h["os_guess"]:
             patch["detected_os"] = h["os_guess"]
+            if not asset.get("asset_type_locked"):
+                guess = classify_asset_type(asset.get("operating_system"), h["os_guess"], asset.get("platform"))
+                if guess:
+                    patch["asset_type"] = guess
 
         # Exposure verification -- only meaningful when the scan was actually run from
         # outside the network; an internal scan finding a host "up" tells you nothing

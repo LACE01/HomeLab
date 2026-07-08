@@ -129,6 +129,81 @@ async def bulk_assign_product(body: BulkAssignProductBody,
     return {"updated_assets": updated}
 
 
+ENVIRONMENT_OPTIONS = ["production", "staging", "development", "test", "unknown"]
+
+
+class EnvironmentBody(BaseModel):
+    environment: str
+
+
+@router.patch("/v1/assets/{asset_id}/environment")
+async def set_asset_environment(asset_id: str, body: EnvironmentBody, user: dict = Depends(get_current_user),
+                                 _rbac: dict = Depends(require_module("/assets", level="edit"))):
+    a = await db.assets.find_one({"id": asset_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(404, "Asset not found")
+    env = body.environment.strip().lower()
+    if not env:
+        raise HTTPException(400, "environment is required")
+    await db.assets.update_one({"id": asset_id}, {"$set": {"environment": env}})
+    return {"ok": True, "environment": env}
+
+
+class BulkSetEnvironmentBody(BaseModel):
+    asset_ids: List[str]
+    environment: str
+
+
+@router.post("/v1/assets/bulk-set-environment")
+async def bulk_set_environment(body: BulkSetEnvironmentBody, user: dict = Depends(get_current_user),
+                                _rbac: dict = Depends(require_module("/assets", level="edit"))):
+    if not body.asset_ids:
+        raise HTTPException(400, "asset_ids is required")
+    env = body.environment.strip().lower()
+    if not env:
+        raise HTTPException(400, "environment is required")
+    r = await db.assets.update_many({"id": {"$in": body.asset_ids}}, {"$set": {"environment": env}})
+    return {"updated_assets": r.modified_count, "environment": env}
+
+
+class AssetTypeBody(BaseModel):
+    asset_type: Optional[str] = None  # set to manually override + lock
+    locked: Optional[bool] = None      # set locked=False (with asset_type omitted) to unlock + resume auto-classification
+
+
+@router.patch("/v1/assets/{asset_id}/type")
+async def set_asset_type(asset_id: str, body: AssetTypeBody, user: dict = Depends(get_current_user),
+                          _rbac: dict = Depends(require_module("/assets", level="edit"))):
+    from asset_classify import TYPES
+    a = await db.assets.find_one({"id": asset_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(404, "Asset not found")
+
+    if body.asset_type is not None:
+        if body.asset_type not in TYPES:
+            raise HTTPException(400, f"asset_type must be one of {TYPES}")
+        await db.assets.update_one({"id": asset_id}, {"$set": {
+            "asset_type": body.asset_type, "asset_type_locked": True,
+        }})
+        return {"ok": True, "asset_type": body.asset_type, "locked": True}
+
+    if body.locked is False:
+        await db.assets.update_one({"id": asset_id}, {"$set": {"asset_type_locked": False}})
+        return {"ok": True, "locked": False}
+
+    raise HTTPException(400, "Provide asset_type to set+lock, or locked=false to unlock")
+
+
+@router.post("/v1/admin/assets/recompute-types")
+async def recompute_asset_types(user: dict = Depends(require_role("admin", "manager")),
+                                 _rbac: dict = Depends(require_module("/assets", level="edit"))):
+    """Backfills asset_type from each asset's already-known OS fields -- for assets
+    created before this classifier existed, or by an importer that had no OS info
+    yet at creation time. Safe to re-run any time; skips manually-locked assets."""
+    from asset_classify import recompute_all_asset_types
+    return await recompute_all_asset_types(db)
+
+
 # --------------------------- PRODUCTS ---------------------------
 @router.get("/v1/products")
 async def list_products(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/products"))):
