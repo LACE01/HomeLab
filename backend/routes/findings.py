@@ -216,6 +216,25 @@ async def cwe_prevalence(user: dict = Depends(get_current_user)):
 
 
 # --------------------------- THREAT INTEL (OpenCTI) ---------------------------
+def _opencti_graphql_url(endpoint: str) -> str:
+    """OpenCTI's GraphQL route is /graphql by default, but a lot of real deployments
+    sit behind a reverse proxy / Cloudflare Tunnel that only forwards a specific,
+    non-default path (e.g. a "/public/graphql" route carved out specifically so it
+    can be exposed differently from the rest of the app -- this is exactly what one
+    user's setup turned out to be, confirmed from their own browser hitting
+    `open.smrtlab.net/public/graphql` and landing on OpenCTI's GraphQL playground).
+    Previously this always blindly appended "/graphql" to whatever endpoint was
+    configured, which silently mangled a fully-specified endpoint like
+    "https://host/public/graphql" into "https://host/public/graphql/graphql" -- a
+    request to a path that simply doesn't exist, no matter how correct the
+    Cloudflare Access headers are. If the endpoint already ends in "/graphql",
+    use it as-is; only append the default suffix when it doesn't."""
+    endpoint = (endpoint or "").rstrip("/")
+    if endpoint.endswith("/graphql"):
+        return endpoint
+    return endpoint + "/graphql"
+
+
 async def opencti_ping(cfg: dict) -> dict:
     """Lightweight live connectivity check against OpenCTI's GraphQL endpoint, sharing
     the same Cloudflare Access redirect-detection as threat_intel_for_cve below so
@@ -236,7 +255,7 @@ async def opencti_ping(cfg: dict) -> dict:
         headers["CF-Access-Client-Secret"] = cf_client_secret
     try:
         async with httpx.AsyncClient(timeout=15, follow_redirects=False) as c:
-            r = await c.post(endpoint.rstrip("/") + "/graphql", headers=headers,
+            r = await c.post(_opencti_graphql_url(endpoint), headers=headers,
                               json={"query": "{ about { version } }"})
         if r.status_code in (301, 302, 303, 307, 308):
             loc = r.headers.get("location", "")
@@ -313,7 +332,7 @@ async def threat_intel_for_cve(cve: str, user: dict = Depends(get_current_user))
         if cf_client_secret:
             headers["CF-Access-Client-Secret"] = cf_client_secret
         async with httpx.AsyncClient(timeout=15, follow_redirects=False) as c:
-            r = await c.post(endpoint.rstrip("/") + "/graphql",
+            r = await c.post(_opencti_graphql_url(endpoint),
                              headers=headers, json={"query": query})
         if r.status_code in (301, 302, 303, 307, 308):
             loc = r.headers.get("location", "")

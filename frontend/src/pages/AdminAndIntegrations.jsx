@@ -312,7 +312,16 @@ export function Integrations() {
               <div>
                 <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Endpoint URL</label>
                 <input data-testid="cfg-endpoint" value={form.endpoint} onChange={(e)=>setForm({...form, endpoint:e.target.value})}
-                  placeholder="https://qualysapi.qualys.com" className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200"/>
+                  placeholder={editing.name === "OpenCTI" ? "https://your-opencti-host (or the full .../graphql URL if it's non-default, e.g. behind a reverse proxy on .../public/graphql)" : "https://qualysapi.qualys.com"}
+                  className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200"/>
+                {editing.name === "OpenCTI" && (
+                  <div className="text-[10.5px] text-slate-500 mt-1">
+                    Defaults to appending <code className="font-mono bg-black/30 px-1 rounded">/graphql</code> to whatever you enter here.
+                    If your OpenCTI's GraphQL route lives at a non-default path (e.g. a reverse proxy that only forwards
+                    <code className="font-mono bg-black/30 px-1 rounded mx-1">/public/graphql</code>
+                    instead of the standard <code className="font-mono bg-black/30 px-1 rounded">/graphql</code>), paste that full URL here instead — it's used as-is when it already ends in <code className="font-mono bg-black/30 px-1 rounded">/graphql</code>.
+                  </div>
+                )}
               </div>
               <div>
                 <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Auth Type</label>
