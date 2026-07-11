@@ -14,12 +14,30 @@ const FREE_TEXT_FIELDS = new Set(["cve"]); // no fixed/known list of values to o
 // one rule can match several tags/teams/environments at once instead of needing a
 // separate rule per value.
 function MultiValueInput({ value, onChange, testid }) {
-  const values = (value || "").split(",").map(v => v.trim()).filter(Boolean);
+  // De-dupe case/whitespace-insensitively when parsing what's already stored --
+  // covers rules saved before this check existed, or edited via a raw API call,
+  // so a legacy duplicate doesn't keep resurfacing every time the rule is opened.
+  const seen = new Set();
+  const values = (value || "").split(",").map(v => v.trim()).filter(Boolean).filter(v => {
+    const key = v.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
   const [input, setInput] = useState("");
   const commit = () => {
     const v = input.trim();
-    if (!v) return;
-    if (!values.includes(v)) onChange([...values, v].join(","));
+    if (!v) { setInput(""); return; }
+    // Case-insensitive: "High" and "high" are the same value here, not two rules
+    // worth of distinct matches -- previously only an exact-string check, so a
+    // value that merely differed in case could be added again right next to the
+    // one already there.
+    const isDupe = values.some(x => x.toLowerCase() === v.toLowerCase());
+    if (isDupe) {
+      toast.error(`"${v}" is already in this rule's value list.`);
+    } else {
+      onChange([...values, v].join(","));
+    }
     setInput("");
   };
   const remove = (v) => onChange(values.filter(x => x !== v).join(","));

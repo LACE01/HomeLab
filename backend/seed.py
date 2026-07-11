@@ -99,8 +99,14 @@ async def _ensure_user(db, now_iso_str: str):
         )
     await db.users.insert_many([
         {"id": _id(), "email": admin_email, "name": "Admin",
-         "role": "admin", "team": None, "department": "Security",
+         "role": "admin", "team": None, "teams": [], "department": "Security",
          "password_hash": hash_password(admin_password),
+         # The seeded admin's password is either explicitly set via ADMIN_PASSWORD or
+         # printed to the log right above -- either way the operator already has it
+         # in hand the same way they'd have any other documented default credential,
+         # so this doesn't force the change-password flow the way an admin-created
+         # user's temp password does. They can still change it themselves any time.
+         "must_change_password": False,
          "created_at": now_iso_str, "active": True},
     ])
 

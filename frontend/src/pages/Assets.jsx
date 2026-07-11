@@ -4,7 +4,7 @@ import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtDate, fmtRel, isOverdue } from "@/lib/utils-fmt";
-import { MagnifyingGlass, ArrowLeft, Stack, CaretLeft, CaretRight, LockKey, LockKeyOpen, Info, WindowsLogo, LinuxLogo, AppleLogo, Desktop, User, ArrowsClockwise } from "@phosphor-icons/react";
+import { MagnifyingGlass, ArrowLeft, Stack, CaretLeft, CaretRight, LockKey, LockKeyOpen, Info, WindowsLogo, LinuxLogo, AppleLogo, Desktop, User, ArrowsClockwise, HandPalm } from "@phosphor-icons/react";
 import TrendChart from "@/components/TrendChart";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
@@ -37,7 +37,35 @@ export function Assets() {
   const [bulkEnv, setBulkEnv] = useState("");
   const [settingEnv, setSettingEnv] = useState(false);
   const [recomputing, setRecomputing] = useState(false);
-  const { canEdit } = useAuth();
+  const [claimingRow, setClaimingRow] = useState(null);
+  const [claimTeamChoice, setClaimTeamChoice] = useState("");
+  const [claiming, setClaiming] = useState(false);
+  const { canEdit, user } = useAuth();
+  const userTeams = (user?.teams && user.teams.length) ? user.teams : (user?.team ? [user.team] : []);
+
+  const claimAsset = async (assetId, team) => {
+    setClaiming(true);
+    try {
+      await api.post(`/v1/assets/${assetId}/claim`, team ? { team } : {});
+      toast.success("Asset claimed for your team.");
+      setClaimingRow(null);
+      setClaimTeamChoice("");
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to claim asset");
+    } finally {
+      setClaiming(false);
+    }
+  };
+
+  const startClaim = (assetId) => {
+    if (userTeams.length <= 1) {
+      claimAsset(assetId, userTeams[0]);
+    } else {
+      setClaimingRow(assetId);
+      setClaimTeamChoice(userTeams[0] || "");
+    }
+  };
 
   const load = useCallback(() => {
     const params = { limit: PAGE_SIZE, offset: page * PAGE_SIZE };
@@ -199,7 +227,29 @@ export function Assets() {
                 </td>
                 <td><Chip color={a.criticality === "crown_jewel" ? "red" : a.criticality === "critical" ? "orange" : "slate"}>{a.criticality}</Chip></td>
                 <td><Chip color={a.exposure === "internet" ? "orange" : "slate"}>{a.exposure}</Chip></td>
-                <td className="text-slate-400">{a.owner_team}</td>
+                <td className="text-slate-400">
+                  {a.owner_team ? a.owner_team : (
+                    canEdit("/assets") ? (
+                      claimingRow === a.id ? (
+                        <div className="flex items-center gap-1" onClick={(e)=>e.stopPropagation()}>
+                          <select value={claimTeamChoice} onChange={(e)=>setClaimTeamChoice(e.target.value)}
+                            className="h-6 bg-[#161B22] border border-[#30363D] rounded px-1 text-[11px]">
+                            {userTeams.map(t => <option key={t} value={t}>{t}</option>)}
+                          </select>
+                          <button onClick={()=>claimAsset(a.id, claimTeamChoice)} disabled={claiming}
+                            className="h-6 px-1.5 text-[10.5px] bg-blue-500 hover:bg-blue-400 text-white rounded disabled:opacity-50">Claim</button>
+                          <button onClick={()=>setClaimingRow(null)} className="h-6 px-1.5 text-[10.5px] border border-[#30363D] rounded text-slate-300">Cancel</button>
+                        </div>
+                      ) : (
+                        <button onClick={(e)=>{ e.stopPropagation(); startClaim(a.id); }} disabled={claiming || userTeams.length===0}
+                          title={userTeams.length===0 ? "You aren't assigned to a team" : "Claim this unassigned asset for your team"}
+                          className="inline-flex items-center gap-1 text-[11px] text-blue-300 hover:text-blue-200 disabled:opacity-40 disabled:cursor-not-allowed">
+                          <HandPalm size={12}/> Unassigned — claim
+                        </button>
+                      )
+                    ) : <span className="text-slate-500">Unassigned</span>
+                  )}
+                </td>
                 <td className="text-slate-400 text-[11.5px]">{a.product_name || "—"}</td>
                 <td className="text-right font-mono">{a.open_findings}</td>
                 <td className="text-right font-mono text-red-300">{a.critical_findings}</td>
@@ -237,8 +287,11 @@ export function Assets() {
 
 export function AssetDetail() {
   const { id } = useParams();
-  const { canEdit } = useAuth();
+  const { canEdit, user } = useAuth();
+  const userTeams = (user?.teams && user.teams.length) ? user.teams : (user?.team ? [user.team] : []);
   const [a, setA] = useState(null);
+  const [claimTeamChoice, setClaimTeamChoice] = useState("");
+  const [claiming, setClaiming] = useState(false);
   const [findings, setFindings] = useState([]);
   const [history, setHistory] = useState({activity: [], observations: []});
   const [products, setProducts] = useState([]);
@@ -309,6 +362,21 @@ export function AssetDetail() {
     } finally { setSavingType(false); }
   };
 
+  const claimAsset = async () => {
+    setClaiming(true);
+    try {
+      const team = userTeams.length > 1 ? claimTeamChoice : userTeams[0];
+      await api.post(`/v1/assets/${id}/claim`, team ? { team } : {});
+      const r = await api.get(`/v1/assets/${id}`);
+      setA(r.data);
+      toast.success("Asset claimed for your team.");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to claim asset");
+    } finally {
+      setClaiming(false);
+    }
+  };
+
   const changeProduct = async (e) => {
     const product_id = e.target.value || null;
     setSavingProduct(true);
@@ -368,7 +436,26 @@ export function AssetDetail() {
               )}
             </div>
             <div><span className="text-slate-500">Status:</span> {a.status}</div>
-            <div><span className="text-slate-500">Owner Team:</span> {a.owner_team}</div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-500">Owner Team:</span>
+              {a.owner_team ? a.owner_team : (
+                canEdit("/assets") ? (
+                  <>
+                    {userTeams.length > 1 && (
+                      <select value={claimTeamChoice || userTeams[0]} onChange={(e)=>setClaimTeamChoice(e.target.value)}
+                        className="h-6 bg-[#161B22] border border-[#30363D] rounded px-1.5 text-[11.5px] text-slate-200">
+                        {userTeams.map(t => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                    )}
+                    <button onClick={claimAsset} disabled={claiming || userTeams.length===0}
+                      title={userTeams.length===0 ? "You aren't assigned to a team" : "Claim this unassigned asset for your team"}
+                      className="inline-flex items-center gap-1 h-6 px-1.5 text-[11px] bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/40 text-blue-200 rounded disabled:opacity-40">
+                      <HandPalm size={12}/> {claiming ? "Claiming…" : "Claim for my team"}
+                    </button>
+                  </>
+                ) : <span className="text-slate-500">Unassigned</span>
+              )}
+            </div>
             {a.hardware_info && <div><span className="text-slate-500">Hardware:</span> {a.hardware_info}</div>}
             {a.last_logged_on_user && (
               <div className="flex items-center gap-1">

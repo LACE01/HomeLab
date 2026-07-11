@@ -1,7 +1,7 @@
 import { useEffect, useState, Fragment } from "react";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
-import { ArrowsClockwise, Info, Check } from "@phosphor-icons/react";
+import { ArrowsClockwise, Info, Check, Plus, Trash, PencilSimple, X } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 // Role Access -- decides which modules (pages) each non-admin role can see (view) and
@@ -31,18 +31,68 @@ function LevelCell({ level, onClick }) {
 export default function RoleAccess() {
   const [modules, setModules] = useState([]);
   const [roles, setRoles] = useState([]);
+  const [customRoleNames, setCustomRoleNames] = useState([]);
+  const [roleIds, setRoleIds] = useState({}); // name -> id, custom roles only
   const [access, setAccess] = useState({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [newRoleName, setNewRoleName] = useState("");
+  const [creatingRole, setCreatingRole] = useState(false);
+  const [renamingRole, setRenamingRole] = useState(null); // role name currently being renamed
+  const [renameValue, setRenameValue] = useState("");
 
   const load = () => {
     setLoading(true);
-    api.get("/v1/admin/rbac-config")
-      .then(r => { setModules(r.data.modules); setRoles(r.data.roles); setAccess(r.data.access || {}); })
+    Promise.all([
+      api.get("/v1/admin/rbac-config"),
+      api.get("/v1/admin/roles"),
+    ])
+      .then(([cfg, rolesRes]) => {
+        setModules(cfg.data.modules); setRoles(cfg.data.roles); setAccess(cfg.data.access || {});
+        setCustomRoleNames(cfg.data.custom_roles || []);
+        const ids = {};
+        (rolesRes.data.roles || []).forEach(r => { if (!r.is_builtin) ids[r.name] = r.id; });
+        setRoleIds(ids);
+      })
       .finally(() => setLoading(false));
   };
   useEffect(() => { load(); }, []);
+
+  const createRole = async () => {
+    const name = newRoleName.trim();
+    if (!name) return;
+    setCreatingRole(true);
+    try {
+      await api.post("/v1/admin/roles", { name });
+      toast.success(`Role "${name}" created — grant it module access below.`);
+      setNewRoleName("");
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed to create role"); }
+    finally { setCreatingRole(false); }
+  };
+
+  const startRename = (name) => { setRenamingRole(name); setRenameValue(name); };
+
+  const submitRename = async (oldName) => {
+    const name = renameValue.trim();
+    if (!name || name === oldName) { setRenamingRole(null); return; }
+    try {
+      await api.patch(`/v1/admin/roles/${roleIds[oldName]}`, { name });
+      toast.success(`Renamed "${oldName}" to "${name}"`);
+      setRenamingRole(null);
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed to rename role"); }
+  };
+
+  const deleteRole = async (name) => {
+    if (!window.confirm(`Delete the role "${name}"? Any user still assigned this role must be reassigned first.`)) return;
+    try {
+      await api.delete(`/v1/admin/roles/${roleIds[name]}`);
+      toast.success(`Role "${name}" deleted`);
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed to delete role"); }
+  };
 
   const cycle = (role, key) => {
     setAccess(prev => {
@@ -108,6 +158,47 @@ export default function RoleAccess() {
           that's not editable here, so there's no way to lock every admin out of this page. The starter mapping is a reasonable default, not a
           fixed policy: tune it however your org actually wants these roles scoped. Changes here are recorded in the Audit Log.
         </div>
+      </div>
+
+      <div className="border border-[#30363D] bg-[#0D1117] rounded-md px-3 py-3 mb-4 max-w-3xl">
+        <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500 mb-2">Manage Roles</div>
+        <div className="text-[11.5px] text-slate-500 mb-2">
+          Create a custom role beyond the 4 built-in ones (admin/manager/analyst/executive), then grant it module access in the grid below.
+          It'll also appear in the role dropdown when creating or editing a user.
+        </div>
+        <div className="flex items-center gap-2 mb-2">
+          <input value={newRoleName} onChange={e=>setNewRoleName(e.target.value)}
+            onKeyDown={e=>{ if (e.key === "Enter") createRole(); }}
+            placeholder="New role name (e.g. Auditor)"
+            className="h-8 flex-1 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px]"/>
+          <button onClick={createRole} disabled={creatingRole || !newRoleName.trim()}
+            className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-white rounded inline-flex items-center gap-1.5">
+            <Plus size={13}/> {creatingRole ? "Creating…" : "Create role"}
+          </button>
+        </div>
+        {customRoleNames.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {customRoleNames.map(name => (
+              <div key={name} className="flex items-center gap-1 h-7 px-2 bg-[#161B22] border border-[#30363D] rounded text-[11.5px]">
+                {renamingRole === name ? (
+                  <>
+                    <input autoFocus value={renameValue} onChange={e=>setRenameValue(e.target.value)}
+                      onKeyDown={e=>{ if (e.key === "Enter") submitRename(name); if (e.key === "Escape") setRenamingRole(null); }}
+                      className="h-5 w-28 bg-[#0D1117] border border-[#30363D] rounded px-1 text-[11px]"/>
+                    <button onClick={()=>submitRename(name)} className="text-emerald-400 hover:text-emerald-300"><Check size={12}/></button>
+                    <button onClick={()=>setRenamingRole(null)} className="text-slate-500 hover:text-slate-300"><X size={12}/></button>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-slate-300">{name}</span>
+                    <button onClick={()=>startRename(name)} title="Rename" className="text-slate-500 hover:text-blue-300"><PencilSimple size={12}/></button>
+                    <button onClick={()=>deleteRole(name)} title="Delete" className="text-slate-500 hover:text-red-300"><Trash size={12}/></button>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden max-w-4xl">

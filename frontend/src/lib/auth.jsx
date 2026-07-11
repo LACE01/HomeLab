@@ -65,7 +65,7 @@ export const AuthProvider = ({ children }) => {
   const canEdit = (moduleKey) => !moduleKey || moduleAccess === null || moduleAccess[moduleKey] === "edit";
 
   return (
-    <AuthCtx.Provider value={{ user, loading, login, logout, moduleAccess, canAccess, canEdit }}>
+    <AuthCtx.Provider value={{ user, setUser, loading, login, logout, moduleAccess, canAccess, canEdit }}>
       {children}
     </AuthCtx.Provider>
   );

@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from db import db
 from rbac import require_module
 from auth_utils import get_current_user, require_role
+from routes.common import user_teams
 
 router = APIRouter()
 
@@ -34,12 +35,31 @@ async def list_assets(user: dict = Depends(get_current_user),
         flt["exposure"] = exposure
     if product_id:
         flt["product_id"] = product_id
+    # Team scoping: analyst/executive users only see assets owned by (any of) their
+    # own team(s), OR assets with no team yet -- unlike findings (which are scoped
+    # strictly to the user's teams with no "unassigned" carve-out), an unowned asset
+    # needs to stay visible to *someone* or it could never get claimed by anyone in
+    # the first place. admin + manager are unrestricted, same convention as findings.
+    # Built as an `$and` clause (not a second top-level `$or`) specifically so it
+    # composes with the search box's own `$or` below instead of one silently
+    # clobbering the other -- two `$or` keys on the same dict is just the second
+    # write winning, which would have quietly widened visibility past the user's
+    # own team the moment they typed anything into the search box.
+    and_clauses = []
+    if user.get("role") in ("analyst", "executive"):
+        teams = user_teams(user)
+        and_clauses.append({"$or": [
+            {"owner_team": {"$in": teams}} if teams else {"owner_team": {"$in": []}},
+            {"owner_team": {"$in": [None, "Unassigned", ""]}},
+        ]})
     if q:
-        flt["$or"] = [
+        and_clauses.append({"$or": [
             {"hostname": {"$regex": q, "$options": "i"}},
             {"ip": {"$regex": q, "$options": "i"}},
             {"fqdn": {"$regex": q, "$options": "i"}},
-        ]
+        ]})
+    if and_clauses:
+        flt["$and"] = and_clauses
     items = await db.assets.find(flt, {"_id": 0}).skip(offset).limit(limit).to_list(limit)
     total = await db.assets.count_documents(flt)
 
@@ -202,6 +222,45 @@ async def recompute_asset_types(user: dict = Depends(require_role("admin", "mana
     yet at creation time. Safe to re-run any time; skips manually-locked assets."""
     from asset_classify import recompute_all_asset_types
     return await recompute_all_asset_types(db)
+
+
+class ClaimAssetBody(BaseModel):
+    team: Optional[str] = None  # required only if the user belongs to more than one team
+
+
+@router.post("/v1/assets/{asset_id}/claim")
+async def claim_asset(asset_id: str, body: ClaimAssetBody, user: dict = Depends(get_current_user),
+                       _rbac: dict = Depends(require_module("/assets", level="edit"))):
+    """Lets any user claim an unassigned asset for one of their own teams -- the
+    other half of team-scoped asset visibility: an analyst/executive only sees
+    assets on their own team(s) plus unassigned ones (see list_assets above)
+    specifically so there's a way to pull an unowned asset into their team instead
+    of it being permanently invisible to everyone once assets are scoped. Findings
+    already attached to the asset move to the same team so they don't end up
+    orphaned from it. Admin/manager aren't team-scoped for visibility, but can still
+    use this to claim on a team's behalf."""
+    asset = await db.assets.find_one({"id": asset_id}, {"_id": 0})
+    if not asset:
+        raise HTTPException(404, "Asset not found")
+    current_owner = asset.get("owner_team")
+    if current_owner and current_owner != "Unassigned":
+        raise HTTPException(409, f"Already owned by '{current_owner}' -- ask that team (or an admin) to reassign it instead of claiming.")
+
+    teams = user_teams(user)
+    team = body.team or (teams[0] if len(teams) == 1 else None)
+    if not team:
+        if not teams:
+            raise HTTPException(400, "You're not on any team yet -- ask an admin to add you to one before claiming assets.")
+        raise HTTPException(400, f"You belong to more than one team -- specify which: {', '.join(teams)}")
+    if team not in teams and user.get("role") not in ("admin", "manager"):
+        raise HTTPException(403, "You can only claim assets for a team you belong to.")
+
+    await db.assets.update_one({"id": asset_id}, {"$set": {
+        "owner_team": team, "ownership_confidence": 1.0,
+        "ownership_rationale": f"Claimed by {user.get('email')}",
+    }})
+    await db.findings.update_many({"asset_id": asset_id}, {"$set": {"owner_team": team}})
+    return {"ok": True, "owner_team": team}
 
 
 # --------------------------- PRODUCTS ---------------------------

@@ -5,10 +5,10 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_validator
 
 from db import db
-from rbac import require_module
+from rbac import require_module, all_roles
 from auth_utils import hash_password, get_current_user, require_role
 from routes.common import now_iso, _clean
 
@@ -26,9 +26,19 @@ class UserCreate(BaseModel):
     email: EmailStr
     name: str
     role: str = "analyst"
-    team: Optional[str] = None
+    # `teams` is the canonical multi-team membership list now (a user can belong to
+    # more than one team, e.g. covering two product areas). `team` (singular) is kept
+    # as a derived/legacy field -- set automatically to teams[0] -- because a lot of
+    # existing code (Teams admin member list, incident-response assignee picker,
+    # dashboards) still reads the singular field, and migrating every one of those
+    # read sites in lockstep isn't necessary: they just see "a" team, which is fine
+    # for display purposes. Anything that GATES data visibility (findings, assets)
+    # uses the full `teams` list, not the derived singular one.
+    teams: List[str] = []
+    team: Optional[str] = None  # legacy/derived -- ignored on input if `teams` given
     department: Optional[str] = None
     password: Optional[str] = None
+    must_change_password: bool = True  # forces the change-password flow on first login
 
 
 @router.post("/v1/admin/users")
@@ -36,12 +46,20 @@ async def create_user(body: UserCreate, user: dict = Depends(require_role("admin
     existing = await db.users.find_one({"email": body.email.lower()})
     if existing:
         raise HTTPException(409, "Email already exists")
-    if body.role not in ["admin", "analyst", "manager", "executive"]:
+    if body.role not in await all_roles(db):
         raise HTTPException(400, "Invalid role")
+    teams = list(dict.fromkeys(t for t in (body.teams or []) if t))  # de-dupe, keep order
+    if not teams and body.team:
+        teams = [body.team]
     new = {
         "id": str(uuid.uuid4()), "email": body.email.lower(), "name": body.name,
-        "role": body.role, "team": body.team, "department": body.department,
+        "role": body.role, "teams": teams, "team": teams[0] if teams else None,
+        "department": body.department,
         "password_hash": hash_password(body.password) if body.password else None,
+        # A temp password only needs to be changed if the admin actually set one --
+        # an account with no password yet (SSO-only, or set up some other way) has
+        # nothing to force a change away FROM.
+        "must_change_password": bool(body.password) and body.must_change_password,
         "created_at": now_iso(), "active": True,
     }
     await db.users.insert_one(new)
@@ -51,11 +69,13 @@ async def create_user(body: UserCreate, user: dict = Depends(require_role("admin
 class UserUpdate(BaseModel):
     name: Optional[str] = None
     email: Optional[EmailStr] = None
+    teams: Optional[List[str]] = None
     team: Optional[str] = None
     department: Optional[str] = None
     role: Optional[str] = None
     active: Optional[bool] = None
     password: Optional[str] = None
+    must_change_password: Optional[bool] = None
 
 
 @router.patch("/v1/admin/users/{user_id}")
@@ -66,8 +86,17 @@ async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(requi
 
     update = {}
     for k, v in body.model_dump(exclude_none=True).items():
-        if k == "password":
+        if k == "role":
+            if v not in await all_roles(db):
+                raise HTTPException(400, "Invalid role")
+            update["role"] = v
+        elif k == "password":
             update["password_hash"] = hash_password(v)
+            # An admin-set/reset password is a new temp password by convention --
+            # force the change-password flow again, unless the request explicitly
+            # says otherwise via must_change_password in the same call.
+            if "must_change_password" not in body.model_fields_set:
+                update["must_change_password"] = True
         elif k == "email":
             new_email = v.lower()
             if new_email != existing["email"]:
@@ -75,6 +104,10 @@ async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(requi
                 if dupe:
                     raise HTTPException(409, "Email already in use by another user")
                 update["email"] = new_email
+        elif k == "teams":
+            teams = list(dict.fromkeys(t for t in (v or []) if t))
+            update["teams"] = teams
+            update["team"] = teams[0] if teams else None
         else:
             update[k] = v
     if not update:
@@ -258,6 +291,26 @@ class AssignmentRule(BaseModel):
     value: str
     assign_team: str
     active: bool = True
+
+    @field_validator("value")
+    @classmethod
+    def _dedupe_value(cls, v: str) -> str:
+        """Defense in depth alongside the frontend's MultiValueInput dedupe check --
+        collapses case/whitespace-insensitive duplicates in the comma-separated value
+        list so a rule created or edited directly via the API (not through the chip
+        UI) can't end up with the same value listed twice either."""
+        seen = set()
+        out = []
+        for part in (v or "").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            key = part.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(part)
+        return ",".join(out)
 
 
 @router.get("/v1/admin/assignment-rules/settings")
@@ -987,9 +1040,12 @@ async def create_team(body: TeamIn, user: dict = Depends(require_role("admin", "
         "created_at": now_iso(), "created_by": user.get("email"),
     }
     await db.teams.insert_one(doc)
-    # Sync user.team field for assigned members
+    # Sync both the legacy singular `team` field and the canonical `teams` array
+    # for assigned members -- a user can belong to more than one team, so this adds
+    # to their teams list ($addToSet, not an overwrite) rather than replacing it.
     if body.members:
-        await db.users.update_many({"id": {"$in": body.members}}, {"$set": {"team": name}})
+        await db.users.update_many({"id": {"$in": body.members}},
+                                    {"$set": {"team": name}, "$addToSet": {"teams": name}})
     return _clean(doc)
 
 
@@ -1006,16 +1062,26 @@ async def update_team(team_id: str, body: TeamIn, user: dict = Depends(require_r
         await db.users.update_many({"team": old}, {"$set": {"team": new}})
         await db.assets.update_many({"owner_team": old}, {"$set": {"owner_team": new}})
         await db.findings.update_many({"owner_team": old}, {"$set": {"owner_team": new}})
+        # Also rename this team's entry inside every affected user's `teams` array.
+        # Done as a per-user read/replace rather than a single array-filter update
+        # so this works the same against mongomock in tests as it does against real
+        # MongoDB (array-filter operator support varies across drivers/versions).
+        async for u in db.users.find({"teams": old}, {"_id": 0, "id": 1, "teams": 1}):
+            new_teams = [new if t == old else t for t in (u.get("teams") or [])]
+            await db.users.update_one({"id": u["id"]}, {"$set": {"teams": new_teams}})
     if "members" in update:
         old_members = set(cur.get("members") or [])
         new_members = set(update["members"])
         # Clear team on removed users (only if their team still matches this team's old name)
         removed = old_members - new_members
+        team_name_for_removal = update.get("name", cur["name"])
         if removed:
             await db.users.update_many({"id": {"$in": list(removed)}, "team": cur["name"]}, {"$set": {"team": None}})
+            await db.users.update_many({"id": {"$in": list(removed)}}, {"$pull": {"teams": team_name_for_removal}})
         added = new_members - old_members
         if added:
-            await db.users.update_many({"id": {"$in": list(added)}}, {"$set": {"team": update.get("name", cur["name"])}})
+            await db.users.update_many({"id": {"$in": list(added)}}, {"$set": {"team": team_name_for_removal},
+                                                                        "$addToSet": {"teams": team_name_for_removal}})
     await db.teams.update_one({"id": team_id}, {"$set": update})
     return {"ok": True}
 
@@ -1027,6 +1093,7 @@ async def delete_team(team_id: str, user: dict = Depends(require_role("admin")))
         raise HTTPException(404, "Team not found")
     # Detach users — keep findings/assets but mark owner_team as 'Unassigned'
     await db.users.update_many({"team": t["name"]}, {"$set": {"team": None}})
+    await db.users.update_many({"teams": t["name"]}, {"$pull": {"teams": t["name"]}})
     await db.teams.delete_one({"id": team_id})
     return {"ok": True}
 
@@ -1062,6 +1129,12 @@ async def rename_implicit_team(body: ImplicitTeamRenameIn, user: dict = Depends(
     u_res = await db.users.update_many({"team": old}, {"$set": {"team": user_new}})
     a_res = await db.assets.update_many({"owner_team": old}, {"$set": {"owner_team": new}})
     f_res = await db.findings.update_many({"owner_team": old}, {"$set": {"owner_team": new}})
+    async for u in db.users.find({"teams": old}, {"_id": 0, "id": 1, "teams": 1}):
+        if new == "Unassigned":
+            new_teams = [t for t in (u.get("teams") or []) if t != old]
+        else:
+            new_teams = [new if t == old else t for t in (u.get("teams") or [])]
+        await db.users.update_one({"id": u["id"]}, {"$set": {"teams": new_teams}})
 
     if new != "Unassigned" and body.create_team:
         await db.teams.insert_one({

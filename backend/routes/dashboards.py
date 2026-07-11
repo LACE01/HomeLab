@@ -212,7 +212,14 @@ async def dashboard_operational(user: dict = Depends(get_current_user), team: Op
     open_states = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
 
     now_dt = datetime.now(timezone.utc)
-    buckets = {"0-7": 0, "8-30": 0, "31-60": 0, "61-90": 0, "90+": 0}
+    # "Unknown" exists so a finding with a missing/unparseable first_seen_at still
+    # gets counted somewhere -- previously the parse failure just silently `pass`ed
+    # and the finding vanished from every bucket while still being counted in
+    # total_open, so the Aging Buckets chart's bars summed to LESS than the "Open
+    # Total" KPI card right next to it on the same dashboard (the exact
+    # inconsistency reported). Every open finding now lands in exactly one bucket,
+    # so bucket sum == total_open always.
+    buckets = {"0-7": 0, "8-30": 0, "31-60": 0, "61-90": 0, "90+": 0, "Unknown": 0}
     by_assignee: dict = {}
     overdue_by_sev: dict = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Info": 0}
     total_open = 0
@@ -237,7 +244,7 @@ async def dashboard_operational(user: dict = Depends(get_current_user), team: Op
             else:
                 buckets["90+"] += 1
         except Exception:
-            pass
+            buckets["Unknown"] += 1
         a = f.get("assigned_to") or f.get("owner_team") or "Unassigned"
         by_assignee[a] = by_assignee.get(a, 0) + 1
         if f.get("due_at") and f["due_at"] < now_iso():

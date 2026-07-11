@@ -4,7 +4,7 @@ import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import { Link } from "react-router-dom";
-import { Notepad, CaretLeft, CaretRight } from "@phosphor-icons/react";
+import { Notepad, CaretLeft, CaretRight, SignIn, CheckCircle, XCircle } from "@phosphor-icons/react";
 
 const PAGE_SIZE = 50;
 
@@ -17,7 +17,98 @@ const ACTION_COLOR = (action) => {
   return "slate";
 };
 
+function LoginAuditTab() {
+  const [items, setItems] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [email, setEmail] = useState("");
+  const [outcome, setOutcome] = useState(""); // "" | "success" | "failed"
+  const [page, setPage] = useState(0);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const params = { limit: PAGE_SIZE, offset: page * PAGE_SIZE };
+      if (email) params.email = email;
+      if (outcome) params.success = outcome === "success";
+      const r = await api.get("/v1/admin/login-audit", { params });
+      setItems(r.data.items || []);
+      setTotal(r.data.total || 0);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to load login attempts");
+    } finally { setLoading(false); }
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [page, email, outcome]);
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  return (
+    <div>
+      <div className="border border-blue-500/30 bg-blue-500/5 rounded-md px-3 py-2.5 mb-4 text-[12px] text-blue-200 leading-relaxed">
+        Every login attempt, successful or not, with IP, user-agent, and browser language — the full set of metadata a
+        standard web login actually exposes. A MAC address can't be captured here: it's link-layer information that
+        never survives a router hop, and no browser API exposes it, so it's intentionally not tracked.
+      </div>
+      <div className="flex gap-2 mb-4 flex-wrap">
+        <input value={email} onChange={e => { setEmail(e.target.value); setPage(0); }}
+          placeholder="Filter by email…"
+          className="h-9 w-56 bg-[#161B22] border border-[#30363D] rounded px-3 text-[12.5px] text-slate-100"/>
+        <select value={outcome} onChange={e => { setOutcome(e.target.value); setPage(0); }}
+          className="h-9 bg-[#161B22] border border-[#30363D] rounded px-3 text-[12.5px] text-slate-200">
+          <option value="">All outcomes</option>
+          <option value="success">Successful</option>
+          <option value="failed">Failed</option>
+        </select>
+      </div>
+      {loading ? (
+        <div className="text-[12.5px] text-slate-500 py-8 text-center">Loading…</div>
+      ) : items.length === 0 ? (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md py-10 text-center text-[12.5px] text-slate-500">
+          <SignIn size={28} className="mx-auto mb-2 text-slate-600"/>
+          No matching login attempts.
+        </div>
+      ) : (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md divide-y divide-[#30363D]">
+          {items.map(it => (
+            <div key={it.id} className="px-4 py-3 flex items-start justify-between gap-3">
+              <div className="min-w-0 flex items-start gap-2">
+                {it.success ? <CheckCircle size={15} className="text-emerald-400 shrink-0 mt-0.5"/> : <XCircle size={15} className="text-red-400 shrink-0 mt-0.5"/>}
+                <div>
+                  <div className="text-[12.5px] text-slate-200 font-mono">{it.email || "—"}</div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">
+                    {it.ip || "unknown ip"} · {it.user_agent || "unknown client"}
+                    {!it.success && it.reason && <span className="text-red-400"> · {it.reason}</span>}
+                  </div>
+                </div>
+              </div>
+              <div className="text-[11px] text-slate-500 shrink-0 font-mono">
+                {it.timestamp ? new Date(it.timestamp).toLocaleString() : "—"}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center justify-between mt-4">
+        <div className="text-[11.5px] text-slate-500">{total} total attempt(s)</div>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}
+            className="h-8 w-8 flex items-center justify-center text-slate-400 hover:text-slate-200 disabled:opacity-30 rounded border border-[#30363D]">
+            <CaretLeft size={14}/>
+          </button>
+          <span className="text-[11.5px] text-slate-500">Page {page + 1} of {totalPages}</span>
+          <button onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}
+            className="h-8 w-8 flex items-center justify-center text-slate-400 hover:text-slate-200 disabled:opacity-30 rounded border border-[#30363D]">
+            <CaretRight size={14}/>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function AuditLog() {
+  const [tab, setTab] = useState("activity"); // "activity" | "logins"
   const [items, setItems] = useState([]);
   const [actions, setActions] = useState([]);
   const [total, setTotal] = useState(0);
@@ -42,14 +133,25 @@ export default function AuditLog() {
   };
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load(); }, [page, filters.actor, filters.action, filters.entity_type]);
+  useEffect(() => { if (tab === "activity") load(); }, [tab, page, filters.actor, filters.action, filters.entity_type]);
 
   const updateFilter = (patch) => { setFilters(f => ({ ...f, ...patch })); setPage(0); };
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
-    <Layout title="Audit Log" subtitle="Everything that's happened across the system — status changes, assignments, exceptions, automation, ChatOps actions">
+    <Layout title="Audit Log" subtitle="Everything that's happened across the system — status changes, assignments, exceptions, automation, ChatOps actions, and login attempts">
+      <div className="flex gap-1 border-b border-[#30363D] mb-5">
+        {[{ key: "activity", label: "System Activity" }, { key: "logins", label: "Login Attempts" }].map(t => (
+          <button key={t.key} onClick={() => setTab(t.key)}
+            className={`px-4 py-2 text-[13px] border-b-2 -mb-px transition-colors ${
+              tab === t.key ? "border-blue-500 text-blue-300" : "border-transparent text-slate-500 hover:text-slate-300"
+            }`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {tab === "logins" ? <LoginAuditTab/> : <>
       <div className="flex gap-2 mb-4 flex-wrap">
         <input value={filters.actor} onChange={e => updateFilter({ actor: e.target.value })}
           placeholder="Filter by actor…"
@@ -112,6 +214,7 @@ export default function AuditLog() {
           </button>
         </div>
       </div>
+      </>}
     </Layout>
   );
 }

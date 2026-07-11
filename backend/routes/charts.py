@@ -83,14 +83,32 @@ async def findings_timeseries(
     bucketed: dict = {}         # {date_str: {group_key: count}}
 
     cursor = db.findings.find(
-        flt, {"_id": 0, "first_seen_at": 1, "last_seen_at": 1, "severity": 1, "status": 1, "cwe": 1, "source_tool": 1}
+        flt, {"_id": 0, "first_seen_at": 1, "last_seen_at": 1, "last_changed_at": 1, "imported_at": 1,
+              "severity": 1, "status": 1, "cwe": 1, "source_tool": 1}
     )
-    async for f in cursor:
+
+    def _parse(raw):
         try:
-            first_dt = datetime.fromisoformat((f.get("first_seen_at") or "").replace("Z", "+00:00"))
+            return datetime.fromisoformat((raw or "").replace("Z", "+00:00")).date()
         except Exception:
-            continue
-        first_date = first_dt.date()
+            return None
+
+    async for f in cursor:
+        first_date = _parse(f.get("first_seen_at"))
+        if first_date is None:
+            # A malformed/missing first_seen_at used to just `continue` here --
+            # silently dropping the finding from EVERY date on the chart, forever,
+            # while it still showed up completely normally on the Findings list
+            # (which never parses this field). If an importer starts writing a bad
+            # first_seen_at for a given host/severity from some point onward, this
+            # is exactly what it looks like on the chart: the series quietly drops
+            # to 0 and stays there, even though the findings are still open and
+            # visible everywhere else -- the reported "data gap" bug. Fall back to
+            # whatever other timestamp IS present so the finding still shows up
+            # somewhere reasonable instead of vanishing outright.
+            first_date = _parse(f.get("last_changed_at")) or _parse(f.get("imported_at"))
+            if first_date is None:
+                continue  # truly no usable timestamp at all -- can't place it anywhere
         # last_seen_at is refreshed every time a rescan reconfirms a finding is still
         # present, so it's the best available signal for "how long was this actually
         # open" -- falls back to first_seen_date for a finding that's only ever been

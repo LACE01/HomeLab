@@ -12,7 +12,7 @@ from db import db
 from rbac import require_module
 from auth_utils import get_current_user, require_role
 from scoring import compute_risk
-from routes.common import now_iso, _clean, finding_ctx
+from routes.common import now_iso, _clean, finding_ctx, team_scope_filter
 
 router = APIRouter()
 
@@ -42,10 +42,11 @@ async def list_findings(
     _rbac: dict = Depends(require_module("/findings")),
 ):
     flt: dict = {}
-    # Team scoping: analyst/executive users only see their team's findings.
-    # admin + manager see everything.
-    if user.get("role") in ("analyst", "executive") and user.get("team"):
-        flt["owner_team"] = user["team"]
+    # Team scoping: analyst/executive users only see their team(s)' findings --
+    # a user can now belong to more than one team, so this is an $in over every
+    # team they're on, not an exact match against a single string. admin + manager
+    # see everything (team_scope_filter returns {} for those roles).
+    flt.update(team_scope_filter(user))
     if severity:
         flt["severity"] = severity
     if status:
@@ -137,8 +138,7 @@ async def findings_group(
     limit: int = 100,
 ):
     flt: dict = {"status": {"$in": ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]}}
-    if user.get("role") in ("analyst", "executive") and user.get("team"):
-        flt["owner_team"] = user["team"]
+    flt.update(team_scope_filter(user))
     if severity:
         flt["severity"] = severity
     if status:

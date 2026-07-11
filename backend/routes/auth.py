@@ -15,16 +15,53 @@ from routes.common import now_iso
 router = APIRouter()
 
 
+def _client_ip(request: Request) -> str:
+    # Prefer the original client IP from a reverse-proxy header (this app is
+    # deployed behind nginx / Cloudflare in every self-hosted setup so far) --
+    # request.client.host alone would just be the proxy's own address.
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip
+    return request.client.host if request.client else "unknown"
+
+
+async def _log_login_attempt(request: Request, email: str, success: bool, reason: str = None, user_id: str = None):
+    """Records every login attempt, successful or not, with as much request metadata
+    as a standard web login actually exposes. A MAC address is NOT reachable here --
+    that's link-layer information stripped by every router/switch hop between the
+    client and this server, and browsers have no API that exposes it either; IP +
+    user-agent + these headers are the real ceiling for a web login, not an
+    oversight. This is deliberately its own collection (not activity_log, which is
+    keyed to an authenticated entity_id/entity_type) since a failed login has no
+    user id to attach to."""
+    await db.login_audit.insert_one({
+        "id": str(uuid.uuid4()), "email": email.lower() if email else None,
+        "user_id": user_id, "success": success, "reason": reason,
+        "ip": _client_ip(request), "user_agent": request.headers.get("user-agent"),
+        "accept_language": request.headers.get("accept-language"),
+        "timestamp": now_iso(),
+    })
+
+
 class LoginBody(BaseModel):
     email: EmailStr
     password: str
 
 
 @router.post("/auth/login")
-async def login(body: LoginBody, response: Response):
+async def login(body: LoginBody, request: Request, response: Response):
     user = await db.users.find_one({"email": body.email.lower()})
-    if not user or not verify_password(body.password, user["password_hash"]):
+    if not user or not verify_password(body.password, user.get("password_hash") or ""):
+        await _log_login_attempt(request, body.email, False,
+                                  reason="no such user" if not user else "bad password")
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    if user.get("active") is False:
+        await _log_login_attempt(request, body.email, False, reason="account disabled", user_id=user["id"])
+        raise HTTPException(status_code=401, detail="Account disabled")
+    await _log_login_attempt(request, body.email, True, user_id=user["id"])
     token = create_access_token(user["id"], user["email"], user["role"])
     response.set_cookie(
         key="access_token", value=token, httponly=True, secure=False, samesite="lax",
@@ -32,8 +69,36 @@ async def login(body: LoginBody, response: Response):
     )
     return {
         "token": token,
-        "user": {"id": user["id"], "email": user["email"], "name": user["name"], "role": user["role"]},
+        "user": {"id": user["id"], "email": user["email"], "name": user["name"], "role": user["role"],
+                 "must_change_password": bool(user.get("must_change_password"))},
     }
+
+
+class ChangePasswordBody(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@router.post("/auth/change-password")
+async def change_password(body: ChangePasswordBody, user: dict = Depends(get_current_user)):
+    """Self-service password change -- covers both the voluntary "change my
+    password" case and the forced first-login flow (a temp password set by an
+    admin has must_change_password=True; the frontend redirects here until it's
+    cleared). Always requires the current password, including the forced-change
+    case -- the user just typed it to log in, so this isn't extra friction, and it
+    stops someone who grabbed an unlocked, still-logged-in session from silently
+    taking over the account by changing the password out from under its owner."""
+    full_user = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    if not full_user or not verify_password(body.current_password, full_user.get("password_hash") or ""):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    if len(body.new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    if body.new_password == body.current_password:
+        raise HTTPException(status_code=400, detail="New password must be different from the current one")
+    await db.users.update_one({"id": user["id"]}, {"$set": {
+        "password_hash": hash_password(body.new_password), "must_change_password": False,
+    }})
+    return {"ok": True}
 
 
 @router.post("/auth/logout")

@@ -27,6 +27,34 @@ def parse_time_range(range_key: Optional[str], start: Optional[str], end: Option
     return None, None, None
 
 
+def user_teams(user: dict) -> list:
+    """A user's full team membership as a de-duped list, whether it came from the
+    canonical `teams` array or (for older records / anything that only ever set the
+    singular field) the legacy `team` string. Used everywhere data visibility needs
+    to be scoped to "any team this user belongs to" now that a user can be on more
+    than one team, instead of the old single-string exact match."""
+    teams = list(user.get("teams") or [])
+    legacy = user.get("team")
+    if legacy and legacy not in teams:
+        teams.append(legacy)
+    return teams
+
+
+def team_scope_filter(user: dict, field: str = "owner_team") -> dict:
+    """Mongo filter fragment restricting to the given user's teams -- analyst and
+    executive roles only ever see data belonging to (one of) their own teams; admin
+    and manager see everything, so this returns {} (no restriction) for them.
+    Centralized here so findings, assets, and anything else that's team-scoped all
+    apply the exact same rule instead of each route reimplementing its own slightly
+    different version of "is this the user's team"."""
+    if user.get("role") not in ("analyst", "executive"):
+        return {}
+    teams = user_teams(user)
+    if not teams:
+        return {}
+    return {field: {"$in": teams}}
+
+
 def finding_ctx(f: dict) -> dict:
     """Build a notification context dict from a finding doc."""
     return {

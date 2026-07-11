@@ -41,9 +41,33 @@ from fastapi import Depends, HTTPException
 
 from auth_utils import get_current_user
 
-ALL_ROLES = ["admin", "manager", "analyst", "executive"]
-CONFIGURABLE_ROLES = [r for r in ALL_ROLES if r != "admin"]
+# The 4 roles this app shipped with. An admin can add more from Reports & Admin ->
+# Role Access ("Manage Roles") -- those are stored in db.roles and layered on top of
+# this fixed base list. Kept as BUILTIN_ROLES (rather than folding everything into
+# the DB) so the starter defaults below, and every `require_role("admin", ...)` call
+# scattered through the route files, keep meaning exactly what they always have --
+# adding a custom role never silently changes what those specific hardcoded checks
+# grant; a custom role only gets in through the module-level Role Access grid.
+BUILTIN_ROLES = ["admin", "manager", "analyst", "executive"]
 LEVELS = ["view", "edit"]
+
+
+async def custom_roles(db) -> list:
+    """Admin-created roles beyond the 4 built-in ones, alphabetically."""
+    docs = await db.roles.find({}, {"_id": 0, "name": 1}).to_list(None)
+    return sorted({d["name"] for d in docs if d.get("name") and d["name"] not in BUILTIN_ROLES})
+
+
+async def all_roles(db) -> list:
+    """Every role that exists, builtins first (in their fixed order) then custom
+    roles alphabetically -- the full universe a user's `role` field can be set to."""
+    return list(BUILTIN_ROLES) + await custom_roles(db)
+
+
+async def configurable_roles(db) -> list:
+    """Every role Role Access can grant module access to -- everything except
+    admin, which always has unconditional edit access (see module docstring)."""
+    return [r for r in await all_roles(db) if r != "admin"]
 
 MODULE_REGISTRY = [
     # --- Operations ---

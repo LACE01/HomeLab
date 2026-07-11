@@ -48,11 +48,19 @@ import ScanSchedule from "@/pages/ScanSchedule";
 import IRWizard from "@/pages/IRWizard";
 import { IRCases, IRCaseDetail } from "@/pages/IRCases";
 import IRAdminSetup from "@/pages/IRAdminSetup";
+import ChangePassword from "@/pages/ChangePassword";
 
 const Protected = ({ children, module }) => {
   const { user, loading, canAccess } = useAuth();
+  const location = useLocation();
   if (loading) return <div className="min-h-screen flex items-center justify-center bg-[#090C10] text-slate-500">Loading…</div>;
   if (!user) return <Navigate to="/login" replace />;
+  // A temp password (set by an admin at account creation) forces this before
+  // anything else in the app is reachable -- no route, including deep links typed
+  // directly into the address bar, bypasses it.
+  if (user.must_change_password && location.pathname !== "/change-password") {
+    return <Navigate to="/change-password" replace />;
+  }
   // Direct/typed URL to a module this role doesn't have -- the Sidebar already hides
   // the nav link, but the route itself needs its own guard too (nothing stops someone
   // from just typing the URL). The backend enforces this for real on its main data
@@ -89,6 +97,7 @@ const AppRouter = () => {
     <Routes>
       <Route path="/login" element={<Login/>}/>
       <Route path="/auth/callback" element={<AuthCallback/>}/>
+      <Route path="/change-password" element={<Protected><ChangePassword/></Protected>}/>
       <Route path="/" element={<Protected module="/"><Dashboard/></Protected>}/>
       <Route path="/findings" element={<Protected module="/findings"><Findings/></Protected>}/>
       <Route path="/findings/:id" element={<Protected module="/findings"><FindingDetail/></Protected>}/>
