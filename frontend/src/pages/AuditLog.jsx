@@ -4,7 +4,7 @@ import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import { Link } from "react-router-dom";
-import { Notepad, CaretLeft, CaretRight, SignIn, CheckCircle, XCircle } from "@phosphor-icons/react";
+import { Notepad, CaretLeft, CaretRight, SignIn, CheckCircle, XCircle, X, Globe, Monitor, Translate, User, Funnel } from "@phosphor-icons/react";
 
 const PAGE_SIZE = 50;
 
@@ -17,13 +17,69 @@ const ACTION_COLOR = (action) => {
   return "slate";
 };
 
+function LoginAttemptDetail({ item, onClose, onFilterIp, onFilterEmail }) {
+  if (!item) return null;
+  const row = (label, value, icon) => (
+    <div className="flex items-start gap-2.5 py-2 border-b border-[#30363D]/60 last:border-0">
+      <div className="text-slate-500 mt-0.5 shrink-0">{icon}</div>
+      <div className="min-w-0">
+        <div className="text-[10px] uppercase tracking-wider font-mono text-slate-500">{label}</div>
+        <div className="text-[12.5px] text-slate-200 break-all">{value ?? "—"}</div>
+      </div>
+    </div>
+  );
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-[#0D1117] border border-[#30363D] rounded-md w-full max-w-md max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#30363D]">
+          <div className="flex items-center gap-2">
+            {item.success ? <CheckCircle size={16} className="text-emerald-400"/> : <XCircle size={16} className="text-red-400"/>}
+            <div className="text-[14px] text-slate-100 font-medium">{item.success ? "Successful login" : "Failed login"}</div>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-200"><X size={18}/></button>
+        </div>
+        <div className="p-5">
+          {!item.success && item.reason && (
+            <div className="border border-red-500/30 bg-red-500/5 rounded-md px-3 py-2 mb-3 text-[12px] text-red-300">
+              Reason: {item.reason}
+            </div>
+          )}
+          {row("Email", item.email, <User size={14}/>)}
+          {row("User ID", item.user_id, <User size={14}/>)}
+          {row("IP address", item.ip, <Globe size={14}/>)}
+          {row("User agent", item.user_agent, <Monitor size={14}/>)}
+          {row("Accept-language", item.accept_language, <Translate size={14}/>)}
+          {row("Timestamp", item.timestamp ? new Date(item.timestamp).toLocaleString() : "—", <SignIn size={14}/>)}
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            {item.ip && (
+              <button onClick={() => onFilterIp(item.ip)}
+                className="h-8 px-3 text-[11.5px] border border-[#30363D] hover:border-[#484F58] text-slate-300 rounded inline-flex items-center gap-1.5">
+                <Funnel size={12}/> Other attempts from this IP
+              </button>
+            )}
+            {item.email && (
+              <button onClick={() => onFilterEmail(item.email)}
+                className="h-8 px-3 text-[11.5px] border border-[#30363D] hover:border-[#484F58] text-slate-300 rounded inline-flex items-center gap-1.5">
+                <Funnel size={12}/> Other attempts by this email
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LoginAuditTab() {
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [email, setEmail] = useState("");
   const [outcome, setOutcome] = useState(""); // "" | "success" | "failed"
+  const [ipFilter, setIpFilter] = useState("");
   const [page, setPage] = useState(0);
+  const [selected, setSelected] = useState(null); // login_audit row shown in detail modal
 
   const load = async () => {
     setLoading(true);
@@ -31,6 +87,7 @@ function LoginAuditTab() {
       const params = { limit: PAGE_SIZE, offset: page * PAGE_SIZE };
       if (email) params.email = email;
       if (outcome) params.success = outcome === "success";
+      if (ipFilter) params.ip = ipFilter;
       const r = await api.get("/v1/admin/login-audit", { params });
       setItems(r.data.items || []);
       setTotal(r.data.total || 0);
@@ -39,9 +96,12 @@ function LoginAuditTab() {
     } finally { setLoading(false); }
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load(); }, [page, email, outcome]);
+  useEffect(() => { load(); }, [page, email, outcome, ipFilter]);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  const filterByIp = (ip) => { setSelected(null); setEmail(""); setIpFilter(ip); setPage(0); };
+  const filterByEmail = (em) => { setSelected(null); setIpFilter(""); setEmail(em); setPage(0); };
 
   return (
     <div>
@@ -50,7 +110,7 @@ function LoginAuditTab() {
         standard web login actually exposes. A MAC address can't be captured here: it's link-layer information that
         never survives a router hop, and no browser API exposes it, so it's intentionally not tracked.
       </div>
-      <div className="flex gap-2 mb-4 flex-wrap">
+      <div className="flex gap-2 mb-4 flex-wrap items-center">
         <input value={email} onChange={e => { setEmail(e.target.value); setPage(0); }}
           placeholder="Filter by email…"
           className="h-9 w-56 bg-[#161B22] border border-[#30363D] rounded px-3 text-[12.5px] text-slate-100"/>
@@ -60,6 +120,12 @@ function LoginAuditTab() {
           <option value="success">Successful</option>
           <option value="failed">Failed</option>
         </select>
+        {ipFilter && (
+          <div className="h-9 px-3 flex items-center gap-2 bg-blue-500/10 border border-blue-500/30 rounded text-[12px] text-blue-200 font-mono">
+            IP: {ipFilter}
+            <button onClick={() => { setIpFilter(""); setPage(0); }} className="text-blue-300 hover:text-blue-100"><X size={12}/></button>
+          </div>
+        )}
       </div>
       {loading ? (
         <div className="text-[12.5px] text-slate-500 py-8 text-center">Loading…</div>
@@ -71,7 +137,8 @@ function LoginAuditTab() {
       ) : (
         <div className="border border-[#30363D] bg-[#0D1117] rounded-md divide-y divide-[#30363D]">
           {items.map(it => (
-            <div key={it.id} className="px-4 py-3 flex items-start justify-between gap-3">
+            <div key={it.id} onClick={() => setSelected(it)}
+              className="px-4 py-3 flex items-start justify-between gap-3 cursor-pointer hover:bg-slate-800/30">
               <div className="min-w-0 flex items-start gap-2">
                 {it.success ? <CheckCircle size={15} className="text-emerald-400 shrink-0 mt-0.5"/> : <XCircle size={15} className="text-red-400 shrink-0 mt-0.5"/>}
                 <div>
@@ -103,6 +170,7 @@ function LoginAuditTab() {
           </button>
         </div>
       </div>
+      <LoginAttemptDetail item={selected} onClose={() => setSelected(null)} onFilterIp={filterByIp} onFilterEmail={filterByEmail}/>
     </div>
   );
 }

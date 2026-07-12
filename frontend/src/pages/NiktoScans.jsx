@@ -57,6 +57,26 @@ export default function NiktoScans() {
     }
   };
 
+  // A timed-out scan is a dead end otherwise -- the config keeps whatever timeout_sec
+  // it had, and re-running "as is" would just time out again. This bumps the stored
+  // timeout (doubled, floored at 900s, capped at the 7200s server-side max) before
+  // kicking off another run, so retrying an actually-slow target's scan can succeed
+  // without the admin having to go find the edit form themselves.
+  const retryWithLongerTimeout = async (cfg) => {
+    const nextTimeout = Math.min(7200, Math.max(900, (cfg.timeout_sec || 600) * 2));
+    setRunningIds(prev => new Set(prev).add(cfg.id));
+    try {
+      await api.put(`/v1/admin/nikto/configs/${cfg.id}`, { ...cfg, timeout_sec: nextTimeout });
+      await api.post(`/v1/admin/nikto/configs/${cfg.id}/run-now`);
+      toast.success(`${cfg.name}: retrying with a ${nextTimeout}s timeout`);
+      await load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to retry scan");
+    } finally {
+      setRunningIds(prev => { const n = new Set(prev); n.delete(cfg.id); return n; });
+    }
+  };
+
   const remove = async (cfg) => {
     if (!window.confirm(`Delete web scan target "${cfg.name}"?`)) return;
     try {
@@ -112,6 +132,7 @@ export default function NiktoScans() {
               onEdit={() => { setEditing(cfg); setModalOpen(true); }}
               onDelete={() => remove(cfg)}
               onToggle={() => toggleEnabled(cfg)}
+              onRetryLonger={() => retryWithLongerTimeout(cfg)}
             />
           ))}
         </div>
@@ -129,7 +150,7 @@ export default function NiktoScans() {
   );
 }
 
-function ScanConfigRow({ cfg, running, onRun, onEdit, onDelete, onToggle }) {
+function ScanConfigRow({ cfg, running, onRun, onEdit, onDelete, onToggle, onRetryLonger }) {
   const [resultOpen, setResultOpen] = useState(false);
   const scheduleLabel = cfg.schedule_hours === 0
     ? "Manual only"
@@ -171,7 +192,10 @@ function ScanConfigRow({ cfg, running, onRun, onEdit, onDelete, onToggle }) {
               )}
             </div>
           )}
-          {resultOpen && <ScanResultModal cfg={cfg} result={result} onClose={() => setResultOpen(false)}/>}
+          {resultOpen && (
+            <ScanResultModal cfg={cfg} result={result} onClose={() => setResultOpen(false)}
+              onRetryLonger={() => { setResultOpen(false); onRetryLonger(); }}/>
+          )}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <button onClick={onRun} disabled={running}
@@ -194,7 +218,14 @@ function ScanConfigRow({ cfg, running, onRun, onEdit, onDelete, onToggle }) {
   );
 }
 
-function ScanResultModal({ cfg, result, onClose }) {
+function ScanResultModal({ cfg, result, onClose, onRetryLonger }) {
+  // Nikto's own kill message (nikto_scan.py's TimeoutError) always looks like
+  // "Nikto scan exceeded <N>s and was killed: <argv>" -- detect that specific shape
+  // so a timed-out scan gets a clear explanation and a one-click retry instead of a
+  // dead-end raw error/command dump.
+  const isTimeout = result?.ok === false && /exceeded \d+s and was killed/.test(result.error || "");
+  const nextTimeout = Math.min(7200, Math.max(900, (cfg.timeout_sec || 600) * 2));
+
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={onClose}>
       <div className="bg-[#0D1117] border border-[#30363D] rounded-md w-full max-w-lg max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
@@ -203,7 +234,23 @@ function ScanResultModal({ cfg, result, onClose }) {
           <button onClick={onClose} className="text-slate-500 hover:text-slate-200"><X size={18}/></button>
         </div>
         <div className="p-5 space-y-4">
-          {result?.ok === false ? (
+          {result?.ok === false && isTimeout ? (
+            <div>
+              <div className="border border-amber-500/30 bg-amber-500/5 rounded-md px-3 py-2.5 text-[12.5px] text-amber-200 mb-3">
+                This scan didn't finish within its {cfg.timeout_sec}s timeout and was stopped — that's a safety
+                limit, not necessarily a problem with the target. Larger sites or a broad tuning spec can
+                legitimately take longer than the default.
+              </div>
+              <button onClick={onRetryLonger}
+                className="h-9 px-3 text-[12.5px] bg-blue-500 hover:bg-blue-400 text-white rounded inline-flex items-center gap-1.5">
+                <Play size={13}/> Retry with a {nextTimeout}s timeout
+              </button>
+              <details className="mt-3 text-[11px] text-slate-500">
+                <summary className="cursor-pointer hover:text-slate-300">Show raw error</summary>
+                <div className="mt-1.5 font-mono break-all">{result.error}</div>
+              </details>
+            </div>
+          ) : result?.ok === false ? (
             <div className="border border-red-500/30 bg-red-500/5 rounded-md px-3 py-2.5 text-[12px] text-red-300">
               {result.error || "Scan failed"}
             </div>

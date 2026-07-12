@@ -47,6 +47,19 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (email, password) => {
     const r = await api.post("/auth/login", { email, password });
+    if (r.data.mfa_required) {
+      // Password was correct, but the account has MFA enabled -- no token/user yet,
+      // the caller (Login.jsx) needs to collect a code and call verifyMfa() below.
+      return { mfaRequired: true, mfaToken: r.data.mfa_token };
+    }
+    localStorage.setItem("vulnops_token", r.data.token);
+    setUser(r.data.user);
+    await loadModuleAccess(r.data.user);
+    return r.data.user;
+  };
+
+  const verifyMfa = async (mfaToken, code) => {
+    const r = await api.post("/auth/mfa/verify", { mfa_token: mfaToken, code });
     localStorage.setItem("vulnops_token", r.data.token);
     setUser(r.data.user);
     await loadModuleAccess(r.data.user);
@@ -65,7 +78,7 @@ export const AuthProvider = ({ children }) => {
   const canEdit = (moduleKey) => !moduleKey || moduleAccess === null || moduleAccess[moduleKey] === "edit";
 
   return (
-    <AuthCtx.Provider value={{ user, setUser, loading, login, logout, moduleAccess, canAccess, canEdit }}>
+    <AuthCtx.Provider value={{ user, setUser, loading, login, verifyMfa, logout, moduleAccess, canAccess, canEdit }}>
       {children}
     </AuthCtx.Provider>
   );

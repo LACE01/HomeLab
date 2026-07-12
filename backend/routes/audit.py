@@ -89,6 +89,7 @@ async def audit_log(
 async def login_audit(
     email: Optional[str] = None,
     success: Optional[bool] = None,
+    ip: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
     user: dict = Depends(require_role("admin")),
@@ -108,6 +109,8 @@ async def login_audit(
         flt["email"] = {"$regex": email, "$options": "i"}
     if success is not None:
         flt["success"] = success
+    if ip:
+        flt["ip"] = ip
     total = await db.login_audit.count_documents(flt)
     items = await db.login_audit.find(flt, {"_id": 0}).sort("timestamp", -1).skip(max(0, offset)).limit(min(max(1, limit), 500)).to_list(500)
     return {"items": items, "total": total}

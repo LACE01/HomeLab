@@ -34,8 +34,8 @@ def _validate(body: WebScanConfigBody) -> None:
         raise HTTPException(400, "You must confirm you're authorized to scan this target")
     if body.schedule_hours < 0 or body.schedule_hours > 24 * 30:
         raise HTTPException(400, "schedule_hours must be between 0 (manual only) and 720 (30 days)")
-    if body.timeout_sec < 30 or body.timeout_sec > 3600:
-        raise HTTPException(400, "timeout_sec must be between 30 and 3600")
+    if body.timeout_sec < 30 or body.timeout_sec > 7200:
+        raise HTTPException(400, "timeout_sec must be between 30 and 7200 (2 hours) -- full Nikto scans against large sites legitimately run long")
     from nikto_scan import validate_target_url
     try:
         validate_target_url(body.target_url)

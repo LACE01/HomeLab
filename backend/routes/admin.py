@@ -136,9 +136,31 @@ async def delete_user(user_id: str, user: dict = Depends(require_role("admin")))
         raise HTTPException(400, "Cannot delete your own account")
     res = await db.users.delete_one({"id": user_id})
     await db.user_sessions.delete_many({"user_id": user_id})
+    await db.active_sessions.update_many({"user_id": user_id, "revoked": {"$ne": True}},
+        {"$set": {"revoked": True, "revoked_at": now_iso(), "revoked_reason": "user_deleted"}})
     if res.deleted_count == 0:
         raise HTTPException(404, "User not found")
     return {"ok": True}
+
+
+@router.get("/v1/admin/users/{user_id}/sessions")
+async def list_user_sessions(user_id: str, user: dict = Depends(require_role("admin"))):
+    """Admin view of another user's active sessions -- for investigating a suspected
+    compromise (see the login_audit / UEBA work) without waiting on the user
+    themselves to notice and revoke it from their own end."""
+    items = await db.active_sessions.find(
+        {"user_id": user_id, "revoked": {"$ne": True}}, {"_id": 0, "jti": 0},
+    ).sort("created_at", -1).to_list(200)
+    return {"items": items}
+
+
+@router.post("/v1/admin/users/{user_id}/sessions/revoke-all")
+async def revoke_all_user_sessions(user_id: str, user: dict = Depends(require_role("admin"))):
+    res = await db.active_sessions.update_many(
+        {"user_id": user_id, "revoked": {"$ne": True}},
+        {"$set": {"revoked": True, "revoked_at": now_iso(), "revoked_reason": f"admin_revoked_by:{user['email']}"}},
+    )
+    return {"ok": True, "revoked_count": res.modified_count}
 
 
 # --------------------------- NOTIFICATION CHANNELS & RULES ---------------------------

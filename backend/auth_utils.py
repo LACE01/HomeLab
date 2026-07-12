@@ -24,11 +24,17 @@ def _secret() -> str:
     return os.environ["JWT_SECRET"]
 
 
-def create_access_token(user_id: str, email: str, role: str) -> str:
+def create_access_token(user_id: str, email: str, role: str, jti: Optional[str] = None) -> str:
+    # `jti` ties this specific token to a row in db.active_sessions (see routes/auth.py)
+    # so a session can be revoked (logout-this-device, admin force-logout) before its
+    # 12h natural expiry -- without it, a stolen/leaked token stays valid until it
+    # simply times out, no matter what the server does.
+    import uuid as _uuid
     payload = {
         "sub": user_id,
         "email": email,
         "role": role,
+        "jti": jti or _uuid.uuid4().hex,
         "exp": datetime.now(timezone.utc) + timedelta(hours=12),
         "type": "access",
     }
@@ -37,6 +43,27 @@ def create_access_token(user_id: str, email: str, role: str) -> str:
 
 def decode_token(token: str) -> dict:
     return jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
+
+
+def create_mfa_pending_token(user_id: str) -> str:
+    """A separate, short-lived token type issued after a password check succeeds for
+    an MFA-enabled account -- deliberately NOT an access token (no jti/session, 5min
+    exp, distinct "type") so it can't be used to call any real endpoint, only
+    /auth/mfa/verify. Keeps the "password-correct-but-not-yet-logged-in" window from
+    accidentally granting real access if this token leaked somewhere in the interim."""
+    payload = {
+        "sub": user_id,
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
+        "type": "mfa_pending",
+    }
+    return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
+
+
+def decode_mfa_pending_token(token: str) -> dict:
+    payload = jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
+    if payload.get("type") != "mfa_pending":
+        raise jwt.InvalidTokenError("Not an MFA-pending token")
+    return payload
 
 
 async def get_current_user(request: Request) -> dict:
@@ -76,6 +103,15 @@ async def get_current_user(request: Request) -> dict:
         payload = decode_token(token)
         if payload.get("type") != "access":
             raise HTTPException(status_code=401, detail="Invalid token type")
+        jti = payload.get("jti")
+        if jti:
+            # Tokens issued before session tracking existed have no jti and are let
+            # through here (they just expire naturally within 12h) -- anything issued
+            # from now on has one, and a missing/revoked session row means someone
+            # (the user, or an admin) explicitly logged this session out early.
+            session = await db.active_sessions.find_one({"jti": jti}, {"_id": 0})
+            if not session or session.get("revoked"):
+                raise HTTPException(status_code=401, detail="Session has been signed out")
         user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
