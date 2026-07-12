@@ -1,11 +1,11 @@
 import { useState, Children, isValidElement } from "react";
-import { NavLink, useNavigate } from "react-router-dom";
+import { NavLink, useNavigate, Link } from "react-router-dom";
 import { useAuth } from "@/lib/auth";
 import {
   ChartLineUp, ListChecks, HardDrives, Stack, Lightning, Ticket,
   ShieldCheck, PlugsConnected, FileArrowDown, GearSix, SignOut, Database, Bug,
   UsersThree, Bell, ShareNetwork, BookOpen, Robot, Globe, Certificate, Package, MagnifyingGlass, ClipboardText, SlackLogo, Heartbeat, HardDrive, Notepad, Virus, FlowArrow,
-  CaretDown, LockKey, CalendarBlank, FirstAidKit, Siren, SlidersHorizontal,
+  CaretDown, LockKey, CalendarBlank, FirstAidKit, Siren, SlidersHorizontal, Devices, Binoculars, Gauge, WebhooksLogo, Archive,
 } from "@phosphor-icons/react";
 
 const COLLAPSE_KEY = "vulnops.sidebar.collapsedGroups";
@@ -76,9 +76,12 @@ export default function Sidebar() {
       </div>
 
       <nav className="flex-1 overflow-y-auto py-3 px-2">
-        <Group title="Operations" collapsed={!!collapsed["Operations"]} onToggle={()=>toggleGroup("Operations")}>
+        <Group title="Overview" collapsed={!!collapsed["Overview"]} onToggle={()=>toggleGroup("Overview")}>
           <NavItem to="/" icon={ChartLineUp} label="Dashboard" testid="nav-dashboard" />
+          <NavItem to="/soc" icon={Gauge} label="SOC Overview" testid="nav-soc" />
           <NavItem to="/operational" icon={Lightning} label="Team Dashboards" testid="nav-operational" />
+        </Group>
+        <Group title="Vulnerability Management" collapsed={!!collapsed["Vulnerability Management"]} onToggle={()=>toggleGroup("Vulnerability Management")}>
           <NavItem to="/findings" icon={ListChecks} label="Findings" testid="nav-findings" />
           <NavItem to="/attack-paths" icon={ShareNetwork} label="Attack Paths" testid="nav-attack-paths" />
           <NavItem to="/exposure" icon={Globe} label="Exposure" testid="nav-exposure" />
@@ -89,12 +92,19 @@ export default function Sidebar() {
           <NavItem to="/admin/playbooks" icon={BookOpen} label="Playbooks" testid="nav-playbooks" />
           <NavItem to="/automation" icon={Robot} label="Automation" testid="nav-automation" />
         </Group>
-        <Group title="Inventory" collapsed={!!collapsed["Inventory"]} onToggle={()=>toggleGroup("Inventory")}>
+        <Group title="Detection & Response" collapsed={!!collapsed["Detection & Response"]} onToggle={()=>toggleGroup("Detection & Response")}>
+          <NavItem to="/alerts" icon={Siren} label="Security Alerts" testid="nav-alerts" />
+          <NavItem to="/admin/threat-intel" icon={Binoculars} label="Threat Intel Watchlist" testid="nav-threat-intel" />
+          <NavItem to="/ir/wizard" icon={FirstAidKit} label="Triage Wizard" testid="nav-ir-wizard" />
+          <NavItem to="/ir/cases" icon={Siren} label="IR Cases" testid="nav-ir-cases" />
+          <NavItem to="/admin/ir-setup" icon={SlidersHorizontal} label="IR Setup" testid="nav-ir-setup" />
+        </Group>
+        <Group title="Asset Inventory" collapsed={!!collapsed["Asset Inventory"]} onToggle={()=>toggleGroup("Asset Inventory")}>
           <NavItem to="/assets" icon={HardDrives} label="Assets" testid="nav-assets" />
           <NavItem to="/products" icon={Stack} label="Products" testid="nav-products" />
           <NavItem to="/engagements" icon={Lightning} label="Engagements" testid="nav-engagements" />
         </Group>
-        <Group title="Integrations" collapsed={!!collapsed["Integrations"]} onToggle={()=>toggleGroup("Integrations")}>
+        <Group title="Scanning & Integrations" collapsed={!!collapsed["Scanning & Integrations"]} onToggle={()=>toggleGroup("Scanning & Integrations")}>
           <NavItem to="/integrations" icon={PlugsConnected} label="Connectors" testid="nav-integrations" />
           <NavItem to="/imports" icon={Database} label="Import Jobs" testid="nav-imports" />
           <NavItem to="/admin/web-scans" icon={Database} label="Web Scan Uploads" testid="nav-web-scans" />
@@ -105,10 +115,15 @@ export default function Sidebar() {
           <NavItem to="/admin/sbom" icon={Package} label="SBOM / Dependencies" testid="nav-sbom" />
           <NavItem to="/admin/yara" icon={Virus} label="YARA Scanning" testid="nav-yara" />
           <NavItem to="/admin/scan-schedule" icon={CalendarBlank} label="Scan Schedule" testid="nav-scan-schedule" />
+          <NavItem to="/admin/splunk" icon={Database} label="Splunk" testid="nav-splunk" />
+          <NavItem to="/admin/wazuh" icon={ShieldCheck} label="Wazuh" testid="nav-wazuh" />
+          <NavItem to="/admin/ticketing" icon={WebhooksLogo} label="Ticketing / SOAR" testid="nav-ticketing" />
         </Group>
-        <Group title="Reports & Admin" collapsed={!!collapsed["Reports & Admin"]} onToggle={()=>toggleGroup("Reports & Admin")}>
+        <Group title="Reports & Compliance" collapsed={!!collapsed["Reports & Compliance"]} onToggle={()=>toggleGroup("Reports & Compliance")}>
           <NavItem to="/reports" icon={FileArrowDown} label="Reports" testid="nav-reports" />
           <NavItem to="/compliance" icon={ClipboardText} label="Compliance" testid="nav-compliance" />
+        </Group>
+        <Group title="Administration" collapsed={!!collapsed["Administration"]} onToggle={()=>toggleGroup("Administration")}>
           <NavItem to="/admin" icon={GearSix} label="Admin" testid="nav-admin" />
           <NavItem to="/admin/users" icon={UsersThree} label="Users" testid="nav-users" />
           <NavItem to="/admin/teams" icon={UsersThree} label="Teams" testid="nav-teams" />
@@ -116,17 +131,13 @@ export default function Sidebar() {
           <NavItem to="/admin/chatops" icon={SlackLogo} label="ChatOps" testid="nav-chatops" />
           <NavItem to="/admin/health" icon={Heartbeat} label="System Health" testid="nav-health" />
           <NavItem to="/admin/backups" icon={HardDrive} label="Backups" testid="nav-backups" />
+          <NavItem to="/admin/retention" icon={Archive} label="Data Retention" testid="nav-retention" />
           <NavItem to="/admin/audit-log" icon={Notepad} label="Audit Log" testid="nav-audit-log" />
           <NavItem to="/admin/assignment-rules" icon={GearSix} label="Assignment Rules" testid="nav-rules" />
           <NavItem to="/admin/ownership" icon={GearSix} label="Ownership Map" testid="nav-ownership" />
           <NavItem to="/admin/sla-policies" icon={ShieldCheck} label="SLA Policies" testid="nav-sla" />
           <NavItem to="/admin/approval-routing" icon={FlowArrow} label="Approval Routing" testid="nav-approval-routing" />
           <NavItem to="/admin/rbac" icon={LockKey} label="Role Access" testid="nav-rbac" />
-        </Group>
-        <Group title="Incident Response" collapsed={!!collapsed["Incident Response"]} onToggle={()=>toggleGroup("Incident Response")}>
-          <NavItem to="/ir/wizard" icon={FirstAidKit} label="Triage Wizard" testid="nav-ir-wizard" />
-          <NavItem to="/ir/cases" icon={Siren} label="IR Cases" testid="nav-ir-cases" />
-          <NavItem to="/admin/ir-setup" icon={SlidersHorizontal} label="IR Setup" testid="nav-ir-setup" />
         </Group>
       </nav>
 
@@ -136,6 +147,9 @@ export default function Sidebar() {
             <div className="text-[12px] text-slate-200 truncate">{user?.name}</div>
             <div className="text-[10px] text-slate-500 font-mono uppercase">{user?.role}</div>
           </div>
+          <Link to="/security" title="Security settings" className="text-slate-500 hover:text-slate-200 transition-colors">
+            <Devices size={18} />
+          </Link>
           <button
             data-testid="logout-btn"
             onClick={async () => { await logout(); nav("/login"); }}

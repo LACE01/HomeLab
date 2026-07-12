@@ -38,6 +38,11 @@ from routes.criticality import router as criticality_router
 from routes.charts import router as charts_router
 from routes.rbac import router as rbac_router
 from routes.scan_schedule import router as scan_schedule_router
+from routes.security_events import router as security_events_router
+from routes.splunk import router as splunk_router
+from routes.wazuh import router as wazuh_router
+from routes.threat_intel import router as threat_intel_router
+from routes.ticketing import router as ticketing_router
 from routes.certs import router as certs_router
 from routes.sbom import router as sbom_router
 from routes.easm import router as easm_router
@@ -45,6 +50,7 @@ from routes.compliance import router as compliance_router
 from routes.chatops import router as chatops_router
 from routes.health import router as health_router
 from routes.backups import router as backups_router
+from routes.retention import router as retention_router
 from routes.audit import router as audit_router
 from routes.yara import router as yara_router
 from routes.incident_response import router as incident_response_router
@@ -81,10 +87,16 @@ api.include_router(compliance_router)
 api.include_router(chatops_router)
 api.include_router(health_router)
 api.include_router(backups_router)
+api.include_router(retention_router)
 api.include_router(audit_router)
 api.include_router(yara_router)
 api.include_router(rbac_router)
 api.include_router(scan_schedule_router)
+api.include_router(security_events_router)
+api.include_router(splunk_router)
+api.include_router(wazuh_router)
+api.include_router(threat_intel_router)
+api.include_router(ticketing_router)
 api.include_router(incident_response_router)
 
 
@@ -114,6 +126,13 @@ async def on_startup():
     await db.findings.create_index("severity")
     await db.observations.create_index("finding_id")
     await db.api_keys.create_index("key", unique=True)
+    await db.active_sessions.create_index("jti", unique=True)
+    await db.active_sessions.create_index("user_id")
+    await db.login_audit.create_index([("email", 1), ("timestamp", -1)])
+    await db.login_audit.create_index([("ip", 1), ("timestamp", -1)])
+    await db.security_events.create_index([("dedupe_key", 1), ("status", 1)])
+    await db.security_events.create_index([("entity_id", 1), ("status", 1)])
+    await db.security_events.create_index([("status", 1), ("last_seen_at", -1)])
     # Hot-load SLA policy overrides if user has saved any
     try:
         from scoring import load_sla_overrides
@@ -156,6 +175,9 @@ async def on_startup():
     from easm import easm_scan_loop
     from backup import backup_loop
     from routes.automation import automation_scheduler_loop
+    from routes.splunk import splunk_sync_loop
+    from routes.wazuh import wazuh_sync_loop
+    from routes.threat_intel import threat_intel_watchlist_sync_loop
     _a.create_task(nightly_loop(db, interval_hours=24))
     # KEV / EPSS / active-attacks sync loop (12h) — was previously manual-trigger only
     _a.create_task(threat_intel_loop(db, interval_hours=12))
@@ -177,3 +199,15 @@ async def on_startup():
     # Automation rules with a daily/weekly/monthly schedule -- separate from the nightly
     # sweep so they can fire at a specific configured time (15min poll resolution)
     _a.create_task(automation_scheduler_loop(db, interval_minutes=15))
+    # Splunk scheduled saved-search polling loop (5min poll resolution) -- runs at
+    # most one configured search at a time, same reasoning as the other scanner loops
+    _a.create_task(splunk_sync_loop(db, interval_minutes=5))
+    # Wazuh scheduled indexer polling loop (5min poll resolution)
+    _a.create_task(wazuh_sync_loop(db, interval_minutes=5))
+    # Threat intel watchlist: bulk-pulls ThreatFox's recent IOC feed on a schedule
+    # (in addition to manual add/import) -- no-ops quietly if abuse.ch isn't configured
+    _a.create_task(threat_intel_watchlist_sync_loop(db, interval_hours=12))
+    # Data retention/archival: purges old records from enabled policies once a day,
+    # archiving to a compressed JSON file first (see retention.py)
+    from retention import retention_loop
+    _a.create_task(retention_loop(db, interval_hours=24))

@@ -172,3 +172,144 @@ async def get_control_findings(db, control_id: str, limit: int = 300) -> dict:
         "control_id": control_id, "name": CIS_CONTROLS.get(control_id, control_id),
         "total": len(matched), "items": matched[:limit],
     }
+
+
+# --------------------------------------------------------------------------
+# Operational control mapping (ISO 27001:2022 Annex A / SOC 2 Trust Services
+# Criteria) -- unlike the finding-based CIS/NIST mapping above, these checks
+# look at whether a *capability* is actually in place and being used (MFA
+# adoption, session revocation, threat intel feed populated, IR cases
+# actually opened, etc.), which is closer to what an auditor's control
+# questionnaire actually asks ("is MFA enforced", "is there an incident
+# response process") than a pure vulnerability count is. Still a heuristic,
+# still not a certified assessment -- same caveat applies.
+# --------------------------------------------------------------------------
+
+OPERATIONAL_CONTROLS = [
+    {"id": "mfa", "label": "Multi-factor authentication", "iso27001": ["A.8.5"], "soc2": ["CC6.1"]},
+    {"id": "session_management", "label": "Session revocation & management", "iso27001": ["A.8.5"], "soc2": ["CC6.1"]},
+    {"id": "login_lockout", "label": "Brute-force / account lockout protection", "iso27001": ["A.8.5"], "soc2": ["CC6.1"]},
+    {"id": "audit_logging", "label": "Authentication audit logging", "iso27001": ["A.8.15"], "soc2": ["CC7.2"]},
+    {"id": "security_monitoring", "label": "Security event monitoring & correlation", "iso27001": ["A.8.16"], "soc2": ["CC7.1"]},
+    {"id": "ueba", "label": "User & entity behavior analytics", "iso27001": ["A.8.16"], "soc2": ["CC7.2"]},
+    {"id": "threat_intelligence", "label": "Threat intelligence program", "iso27001": ["A.5.7"], "soc2": ["CC7.1"]},
+    {"id": "malware_protection", "label": "Malware detection", "iso27001": ["A.8.7"], "soc2": ["CC6.8"]},
+    {"id": "vulnerability_management", "label": "Technical vulnerability management", "iso27001": ["A.8.8"], "soc2": ["CC7.1"]},
+    {"id": "incident_response", "label": "Incident response process", "iso27001": ["A.5.24"], "soc2": ["CC7.4"]},
+    {"id": "crypto_pki", "label": "Cryptography / certificate management", "iso27001": ["A.8.24"], "soc2": ["CC6.7"]},
+    {"id": "backup_continuity", "label": "Backup & business continuity", "iso27001": ["A.5.30"], "soc2": ["A1.2"]},
+    {"id": "ticketing_soar", "label": "Incident ticketing / SOAR integration", "iso27001": ["A.5.24"], "soc2": ["CC7.4"]},
+]
+
+
+async def compute_operational_controls(db) -> list:
+    import os
+    results = []
+
+    total_users = await db.users.count_documents({})
+    mfa_users = await db.users.count_documents({"mfa_enabled": True})
+    mfa_pct = round((mfa_users / total_users) * 100, 1) if total_users else 0
+    if mfa_pct >= 80:
+        status, evidence = "implemented", f"{mfa_pct}% of users ({mfa_users}/{total_users}) have MFA enabled."
+    elif mfa_pct > 0:
+        status, evidence = "partial", f"Only {mfa_pct}% of users ({mfa_users}/{total_users}) have MFA enabled."
+    else:
+        status, evidence = "partial", f"MFA is available but no users ({0}/{total_users}) have enabled it yet."
+    results.append({"id": "mfa", "status": status, "evidence": evidence})
+
+    active_sessions = await db.active_sessions.count_documents({"revoked": {"$ne": True}})
+    results.append({"id": "session_management", "status": "implemented",
+                     "evidence": f"Sessions are individually revocable (JWT + session store); {active_sessions} active session(s) currently tracked."})
+
+    brute_force_blocked = await db.security_events.count_documents({"source": "login_audit", "event_type": {"$in": ["brute_force_ip", "brute_force_account"]}})
+    results.append({"id": "login_lockout", "status": "implemented",
+                     "evidence": f"Per-account and per-IP lockout enforced on repeated failures; {brute_force_blocked} lockout event(s) recorded to date."})
+
+    audit_count = await db.login_audit.count_documents({})
+    if audit_count > 0:
+        status, evidence = "implemented", f"{audit_count} authentication event(s) logged."
+    else:
+        status, evidence = "partial", "Audit logging is wired up but no login attempts have been recorded yet."
+    results.append({"id": "audit_logging", "status": status, "evidence": evidence})
+
+    event_count = await db.security_events.count_documents({})
+    correlated_count = await db.security_events.count_documents({"event_type": "correlated_alert"})
+    if event_count > 0:
+        status = "implemented"
+        evidence = f"{event_count} security event(s) recorded; {correlated_count} correlated across multiple sources."
+    else:
+        status, evidence = "partial", "The security event bus is wired up but hasn't recorded any events yet."
+    results.append({"id": "security_monitoring", "status": status, "evidence": evidence})
+
+    ueba_count = await db.security_events.count_documents({"source": "ueba"})
+    if ueba_count > 0:
+        status, evidence = "implemented", f"{ueba_count} behavioral signal(s) detected (new IP/country, impossible travel)."
+    else:
+        status, evidence = "partial", "UEBA is enabled but hasn't flagged any behavioral signals yet."
+    results.append({"id": "ueba", "status": status, "evidence": evidence})
+
+    watchlist_count = await db.ioc_watchlist.count_documents({})
+    if watchlist_count > 0:
+        status, evidence = "implemented", f"{watchlist_count} indicator(s) of compromise tracked on the watchlist."
+    else:
+        status, evidence = "partial", "The threat intel watchlist exists but has no IOCs loaded yet."
+    results.append({"id": "threat_intelligence", "status": status, "evidence": evidence})
+
+    yara_count = await db.yara_scan_history.count_documents({})
+    if yara_count > 0:
+        status, evidence = "implemented", f"{yara_count} file scan(s) performed via YARA."
+    else:
+        status, evidence = "partial", "YARA scanning is available but hasn't been run yet."
+    results.append({"id": "malware_protection", "status": status, "evidence": evidence})
+
+    open_states = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+    open_critical = await db.findings.count_documents({"status": {"$in": open_states}, "severity": "Critical"})
+    total_findings = await db.findings.count_documents({})
+    if total_findings == 0:
+        status, evidence = "partial", "No findings have been ingested yet -- vulnerability scanning isn't active."
+    elif open_critical > 0:
+        status, evidence = "gap", f"{open_critical} open Critical-severity finding(s) require remediation."
+    else:
+        status, evidence = "implemented", f"{total_findings} finding(s) tracked; no open Critical-severity findings."
+    results.append({"id": "vulnerability_management", "status": status, "evidence": evidence})
+
+    ir_count = await db.ir_cases.count_documents({})
+    if ir_count > 0:
+        open_ir = await db.ir_cases.count_documents({"status": "open"})
+        status, evidence = "implemented", f"{ir_count} incident response case(s) opened to date ({open_ir} currently open)."
+    else:
+        status, evidence = "partial", "The incident response module is available but no cases have been opened yet."
+    results.append({"id": "incident_response", "status": status, "evidence": evidence})
+
+    cert_count = await db.tls_certificates.count_documents({})
+    if cert_count > 0:
+        expiring = await db.tls_certificates.count_documents({"days_until_expiry": {"$lt": 30}})
+        status = "implemented" if expiring == 0 else "at_risk"
+        evidence = f"{cert_count} certificate(s) monitored" + (f"; {expiring} expiring within 30 days." if expiring else ".")
+    else:
+        status, evidence = "partial", "TLS certificate monitoring is available but no certificates are tracked yet."
+    results.append({"id": "crypto_pki", "status": status, "evidence": evidence})
+
+    backup_enabled = os.environ.get("BACKUP_SCHEDULE_ENABLED", "false").lower() in ("true", "1", "yes")
+    if backup_enabled:
+        status, evidence = "implemented", "Scheduled database backups are enabled."
+    else:
+        status, evidence = "not_implemented", "Scheduled backups are not enabled (set BACKUP_SCHEDULE_ENABLED=true)."
+    results.append({"id": "backup_continuity", "status": status, "evidence": evidence})
+
+    jira_cfg = await db.jira_config.find_one({"id": "singleton"}, {"_id": 0})
+    webhook_count = await db.webhook_destinations.count_documents({"enabled": True})
+    jira_on = bool(jira_cfg and jira_cfg.get("enabled") and jira_cfg.get("api_token"))
+    if jira_on or webhook_count > 0:
+        parts = []
+        if jira_on:
+            parts.append("Jira")
+        if webhook_count:
+            parts.append(f"{webhook_count} webhook destination(s)")
+        status, evidence = "implemented", f"Configured: {', '.join(parts)}."
+    else:
+        status, evidence = "partial", "Ticketing/SOAR export is available but no Jira connection or webhook destinations are configured yet."
+    results.append({"id": "ticketing_soar", "status": status, "evidence": evidence})
+
+    by_id = {r["id"]: r for r in results}
+    return [{**ctrl, **by_id.get(ctrl["id"], {"status": "not_implemented", "evidence": "Not evaluated."})} for ctrl in OPERATIONAL_CONTROLS]

@@ -41,6 +41,7 @@ import Compliance from "@/pages/Compliance";
 import ChatOps from "@/pages/ChatOps";
 import OpsHealth from "@/pages/OpsHealth";
 import Backups from "@/pages/Backups";
+import DataRetention from "@/pages/DataRetention";
 import AuditLog from "@/pages/AuditLog";
 import Yara from "@/pages/Yara";
 import RoleAccess from "@/pages/RoleAccess";
@@ -49,6 +50,13 @@ import IRWizard from "@/pages/IRWizard";
 import { IRCases, IRCaseDetail } from "@/pages/IRCases";
 import IRAdminSetup from "@/pages/IRAdminSetup";
 import ChangePassword from "@/pages/ChangePassword";
+import Security from "@/pages/Security";
+import SecurityAlerts from "@/pages/SecurityAlerts";
+import SplunkIntegration from "@/pages/SplunkIntegration";
+import WazuhIntegration from "@/pages/WazuhIntegration";
+import SocOverview from "@/pages/SocOverview";
+import TicketingSoar from "@/pages/TicketingSoar";
+import ThreatIntelWatchlist from "@/pages/ThreatIntelWatchlist";
 
 const Protected = ({ children, module }) => {
   const { user, loading, canAccess } = useAuth();
@@ -73,7 +81,7 @@ const Protected = ({ children, module }) => {
           <div className="text-slate-300 text-[15px] font-medium mb-1.5">Access restricted</div>
           <div className="text-slate-500 text-[13px] leading-relaxed">
             Your role ({user.role}) doesn't have access to this module. Ask an admin to grant it under
-            Reports & Admin → Role Access.
+            Administration → Role Access.
           </div>
         </div>
       </div>
@@ -98,6 +106,13 @@ const AppRouter = () => {
       <Route path="/login" element={<Login/>}/>
       <Route path="/auth/callback" element={<AuthCallback/>}/>
       <Route path="/change-password" element={<Protected><ChangePassword/></Protected>}/>
+      <Route path="/security" element={<Protected><Security/></Protected>}/>
+      <Route path="/alerts" element={<Protected><SecurityAlerts/></Protected>}/>
+      <Route path="/admin/splunk" element={<Protected><SplunkIntegration/></Protected>}/>
+      <Route path="/admin/wazuh" element={<Protected><WazuhIntegration/></Protected>}/>
+      <Route path="/soc" element={<Protected><SocOverview/></Protected>}/>
+      <Route path="/admin/ticketing" element={<Protected><TicketingSoar/></Protected>}/>
+      <Route path="/admin/threat-intel" element={<Protected><ThreatIntelWatchlist/></Protected>}/>
       <Route path="/" element={<Protected module="/"><Dashboard/></Protected>}/>
       <Route path="/findings" element={<Protected module="/findings"><Findings/></Protected>}/>
       <Route path="/findings/:id" element={<Protected module="/findings"><FindingDetail/></Protected>}/>
@@ -125,6 +140,7 @@ const AppRouter = () => {
       <Route path="/admin/chatops" element={<Protected module="/admin/chatops"><ChatOps/></Protected>}/>
       <Route path="/admin/health" element={<Protected module="/admin/health"><OpsHealth/></Protected>}/>
       <Route path="/admin/backups" element={<Protected module="/admin/backups"><Backups/></Protected>}/>
+      <Route path="/admin/retention" element={<Protected module="/admin/retention"><DataRetention/></Protected>}/>
       <Route path="/admin/audit-log" element={<Protected module="/admin/audit-log"><AuditLog/></Protected>}/>
       <Route path="/admin/assignment-rules" element={<Protected module="/admin/assignment-rules"><AssignmentRules/></Protected>}/>
       <Route path="/admin/ownership" element={<Protected module="/admin/ownership"><OwnershipMappings/></Protected>}/>

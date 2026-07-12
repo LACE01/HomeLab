@@ -4,13 +4,21 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { SevBadge } from "@/components/Badges";
-import { Info, DownloadSimple, CircleNotch, X, ArrowSquareOut } from "@phosphor-icons/react";
+import { Info, DownloadSimple, CircleNotch, X, ArrowSquareOut, CheckCircle, WarningCircle, Circle } from "@phosphor-icons/react";
 
 const STATUS_META = {
   gap: { label: "Gap", color: "text-red-400", bar: "bg-red-500" },
   at_risk: { label: "At risk", color: "text-orange-400", bar: "bg-orange-500" },
   monitor: { label: "Monitor", color: "text-amber-400", bar: "bg-amber-500" },
   clean: { label: "Clean", color: "text-emerald-400", bar: "bg-emerald-500" },
+};
+
+const OP_STATUS_META = {
+  implemented: { label: "Implemented", color: "text-emerald-400", icon: CheckCircle },
+  partial: { label: "Partial", color: "text-amber-400", icon: WarningCircle },
+  gap: { label: "Gap", color: "text-red-400", icon: WarningCircle },
+  at_risk: { label: "At risk", color: "text-orange-400", icon: WarningCircle },
+  not_implemented: { label: "Not implemented", color: "text-slate-500", icon: Circle },
 };
 
 const downloadBlob = async (path, filename) => {
@@ -56,7 +64,7 @@ export default function Compliance() {
   if (!summary) return null;
 
   return (
-    <Layout title="Compliance Coverage" subtitle="CIS Controls v8 and NIST CSF 2.0 coverage, derived from your open findings">
+    <Layout title="Compliance Coverage" subtitle="CIS Controls v8, NIST CSF 2.0, ISO 27001:2022, and SOC 2 coverage across findings and live security capabilities">
       <div className="border border-blue-500/30 bg-blue-500/5 rounded-md px-3 py-2.5 mb-5 text-[12px] text-blue-200 leading-relaxed flex items-start gap-2 max-w-3xl">
         <Info size={15} className="shrink-0 mt-0.5"/>
         <div>{summary.methodology_note}</div>
@@ -132,6 +140,35 @@ export default function Compliance() {
           </div>
         </div>
       </div>
+
+      {summary.operational_controls && (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md mt-5">
+          <div className="px-4 py-2 border-b border-[#30363D] flex items-center justify-between">
+            <h3 className="text-[11px] uppercase tracking-wider font-mono text-slate-400">ISO 27001:2022 / SOC 2 -- Operational Controls</h3>
+            <span className="text-[10.5px] text-slate-600">Capability &amp; usage based, not finding counts</span>
+          </div>
+          <div className="divide-y divide-[#30363D]">
+            {summary.operational_controls.map(c => {
+              const meta = OP_STATUS_META[c.status] || OP_STATUS_META.not_implemented;
+              const StatusIcon = meta.icon;
+              return (
+                <div key={c.id} className="px-4 py-3 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[12.5px] text-slate-200">{c.label}</div>
+                    <div className="text-[11px] text-slate-500 mt-0.5">{c.evidence}</div>
+                    <div className="text-[10.5px] text-slate-600 font-mono mt-1">
+                      ISO 27001: {c.iso27001.join(", ")} &middot; SOC 2: {c.soc2.join(", ")}
+                    </div>
+                  </div>
+                  <span className={`text-[11px] font-mono shrink-0 inline-flex items-center gap-1 ${meta.color}`}>
+                    <StatusIcon size={13}/> {meta.label}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {drillDownFor && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setDrillDownFor(null)}>

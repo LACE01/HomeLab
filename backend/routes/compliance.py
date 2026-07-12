@@ -14,8 +14,10 @@ router = APIRouter()
 
 @router.get("/v1/compliance/summary")
 async def compliance_summary(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/compliance"))):
-    from compliance import compute_compliance_summary
-    return await compute_compliance_summary(db)
+    from compliance import compute_compliance_summary, compute_operational_controls
+    summary = await compute_compliance_summary(db)
+    summary["operational_controls"] = await compute_operational_controls(db)
+    return summary
 
 
 @router.get("/v1/compliance/controls/{control_id}/findings")
@@ -29,9 +31,10 @@ async def export_compliance_pdf(user: dict = Depends(get_current_user)):
     from reportlab.platypus import Paragraph, Spacer
     import pdf_theme as theme
     from pdf_charts import bar_chart
-    from compliance import compute_compliance_summary
+    from compliance import compute_compliance_summary, compute_operational_controls
 
     summary = await compute_compliance_summary(db)
+    operational_controls = await compute_operational_controls(db)
     styles = theme.get_styles()
 
     buffer = io.BytesIO()
@@ -73,6 +76,16 @@ async def export_compliance_pdf(user: dict = Depends(get_current_user)):
         elements.append(Paragraph("NIST CSF 2.0 Functions", styles["h2"]))
         rows2 = [[f"{n['function']} — {n['label']}", n["critical"], n["high"], n["total"]] for n in summary["nist_functions"]]
         elements.append(theme.styled_table(["Function", "Critical", "High", "Total Open"], rows2, numeric_cols=(1, 2, 3)))
+
+    if operational_controls:
+        elements.append(Paragraph("ISO 27001:2022 / SOC 2 — Operational Controls", styles["h2"]))
+        elements.append(Paragraph(
+            "Capability- and usage-based controls (is the feature in place, is it actually being used) rather than "
+            "finding counts -- closer to what an auditor's control questionnaire asks.", styles["muted"]))
+        elements.append(Spacer(1, 6))
+        rows3 = [[c["label"], ", ".join(c["iso27001"]), ", ".join(c["soc2"]), c["status"].replace("_", " ").title()]
+                 for c in operational_controls]
+        elements.append(theme.styled_table(["Control", "ISO 27001", "SOC 2", "Status"], rows3, col_widths=[190, 80, 70, 70]))
 
     theme.build(doc, elements)
     buffer.seek(0)

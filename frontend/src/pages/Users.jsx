@@ -113,7 +113,7 @@ export default function Users() {
               <div>
                 <label className="text-[10px] uppercase font-mono text-slate-500">Team(s)</label>
                 <div className="flex flex-wrap gap-1.5 mt-1">
-                  {teamOptions.length === 0 && <div className="text-[11.5px] text-slate-500">No teams exist yet — create one under Reports & Admin → Teams.</div>}
+                  {teamOptions.length === 0 && <div className="text-[11.5px] text-slate-500">No teams exist yet — create one under Administration → Teams.</div>}
                   {teamOptions.map(name => {
                     const active = (form.teams||[]).includes(name);
                     return (

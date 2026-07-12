@@ -22,6 +22,10 @@ KNOWN_LOOPS = {
     "easm_scan_loop": {"label": "EASM Subdomain Discovery", "expected_interval_hours": 24},
     "backup_loop": {"label": "Database Backups", "expected_interval_hours": 24},
     "automation_scheduler_loop": {"label": "Automation Scheduled Rules", "expected_interval_hours": 0.25},
+    "splunk_sync_loop": {"label": "Splunk Saved-Search Polling", "expected_interval_hours": 0.084},
+    "wazuh_sync_loop": {"label": "Wazuh Indexer Polling", "expected_interval_hours": 0.084},
+    "threat_intel_watchlist_sync_loop": {"label": "ThreatFox Feed Sync", "expected_interval_hours": 12},
+    "retention_loop": {"label": "Data Retention Purge", "expected_interval_hours": 24},
 }
 
 

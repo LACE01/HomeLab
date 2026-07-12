@@ -3,7 +3,7 @@ role can see and use, instead of the admin/manager/analyst/executive role split 
 one fixed, hardcoded set of capabilities. Every org draws these lines differently (who
 counts as a "manager" and what they should see varies a lot) -- same philosophy as
 criticality.py's scoring rules: the mapping below is a sensible starting point that's
-fully editable from Reports & Admin -> Role Access, not a fixed policy.
+fully editable from Administration -> Role Access, not a fixed policy.
 
 A module's "key" is literally the frontend route path (e.g. "/findings",
 "/admin/users") -- there's exactly one place (this registry) that needs to agree with
@@ -41,7 +41,7 @@ from fastapi import Depends, HTTPException
 
 from auth_utils import get_current_user
 
-# The 4 roles this app shipped with. An admin can add more from Reports & Admin ->
+# The 4 roles this app shipped with. An admin can add more from Administration ->
 # Role Access ("Manage Roles") -- those are stored in db.roles and layered on top of
 # this fixed base list. Kept as BUILTIN_ROLES (rather than folding everything into
 # the DB) so the starter defaults below, and every `require_role("admin", ...)` call
@@ -70,65 +70,76 @@ async def configurable_roles(db) -> list:
     return [r for r in await all_roles(db) if r != "admin"]
 
 MODULE_REGISTRY = [
-    # --- Operations ---
-    {"key": "/", "label": "Dashboard", "group": "Operations"},
-    {"key": "/operational", "label": "Team Dashboards", "group": "Operations"},
-    {"key": "/findings", "label": "Findings", "group": "Operations"},
-    {"key": "/attack-paths", "label": "Attack Paths", "group": "Operations"},
-    {"key": "/exposure", "label": "Exposure", "group": "Operations"},
-    {"key": "/admin/tls-certs", "label": "TLS Certificates", "group": "Operations"},
-    {"key": "/easm", "label": "Attack Surface", "group": "Operations"},
-    {"key": "/tickets", "label": "Tickets", "group": "Operations"},
-    {"key": "/exceptions", "label": "Exceptions", "group": "Operations"},
-    {"key": "/admin/playbooks", "label": "Playbooks", "group": "Operations"},
-    {"key": "/automation", "label": "Automation", "group": "Operations"},
-    # --- Inventory ---
-    {"key": "/assets", "label": "Assets", "group": "Inventory"},
-    {"key": "/products", "label": "Products", "group": "Inventory"},
-    {"key": "/engagements", "label": "Engagements", "group": "Inventory"},
-    # --- Integrations ---
-    {"key": "/integrations", "label": "Connectors", "group": "Integrations"},
-    {"key": "/imports", "label": "Import Jobs", "group": "Integrations"},
-    {"key": "/admin/web-scans", "label": "Web Scan Uploads", "group": "Integrations"},
-    {"key": "/admin/nmap-scans", "label": "Nmap Scan Uploads", "group": "Integrations"},
-    {"key": "/admin/nikto-scans", "label": "Web App Scans (Nikto)", "group": "Integrations"},
-    {"key": "/admin/recon-osint", "label": "Recon & OSINT", "group": "Integrations"},
-    {"key": "/admin/criticality-scoring", "label": "Criticality Scoring", "group": "Integrations"},
-    {"key": "/admin/sbom", "label": "SBOM / Dependencies", "group": "Integrations"},
-    {"key": "/admin/yara", "label": "YARA Scanning", "group": "Integrations"},
-    {"key": "/admin/scan-schedule", "label": "Scan Schedule", "group": "Integrations"},
-    # --- Reports & Admin ---
-    {"key": "/reports", "label": "Reports", "group": "Reports & Admin"},
-    {"key": "/compliance", "label": "Compliance", "group": "Reports & Admin"},
-    {"key": "/admin", "label": "Admin", "group": "Reports & Admin"},
-    {"key": "/admin/users", "label": "Users", "group": "Reports & Admin"},
-    {"key": "/admin/teams", "label": "Teams", "group": "Reports & Admin"},
-    {"key": "/admin/notifications", "label": "Notifications", "group": "Reports & Admin"},
-    {"key": "/admin/chatops", "label": "ChatOps", "group": "Reports & Admin"},
-    {"key": "/admin/health", "label": "System Health", "group": "Reports & Admin"},
-    {"key": "/admin/backups", "label": "Backups", "group": "Reports & Admin"},
-    {"key": "/admin/audit-log", "label": "Audit Log", "group": "Reports & Admin"},
-    {"key": "/admin/assignment-rules", "label": "Assignment Rules", "group": "Reports & Admin"},
-    {"key": "/admin/ownership", "label": "Ownership Map", "group": "Reports & Admin"},
-    {"key": "/admin/sla-policies", "label": "SLA Policies", "group": "Reports & Admin"},
-    {"key": "/admin/approval-routing", "label": "Approval Routing", "group": "Reports & Admin"},
-    {"key": "/admin/rbac", "label": "Role Access", "group": "Reports & Admin"},
-    # --- Incident Response ---
-    {"key": "/ir/wizard", "label": "Triage Wizard", "group": "Incident Response"},
-    {"key": "/ir/cases", "label": "IR Cases", "group": "Incident Response"},
-    {"key": "/ir/case-approval", "label": "IR Case Approval", "group": "Incident Response"},
-    {"key": "/admin/ir-setup", "label": "IR Setup", "group": "Incident Response"},
+    # --- Overview (landing dashboards) ---
+    {"key": "/", "label": "Dashboard", "group": "Overview"},
+    {"key": "/soc", "label": "SOC Overview", "group": "Overview"},
+    {"key": "/operational", "label": "Team Dashboards", "group": "Overview"},
+    # --- Vulnerability Management ---
+    {"key": "/findings", "label": "Findings", "group": "Vulnerability Management"},
+    {"key": "/attack-paths", "label": "Attack Paths", "group": "Vulnerability Management"},
+    {"key": "/exposure", "label": "Exposure", "group": "Vulnerability Management"},
+    {"key": "/admin/tls-certs", "label": "TLS Certificates", "group": "Vulnerability Management"},
+    {"key": "/easm", "label": "Attack Surface", "group": "Vulnerability Management"},
+    {"key": "/tickets", "label": "Tickets", "group": "Vulnerability Management"},
+    {"key": "/exceptions", "label": "Exceptions", "group": "Vulnerability Management"},
+    {"key": "/admin/playbooks", "label": "Playbooks", "group": "Vulnerability Management"},
+    {"key": "/automation", "label": "Automation", "group": "Vulnerability Management"},
+    # --- Detection & Response (merges the former "Detection & Alerts" and
+    # "Incident Response" groups -- alerting and incident handling are the same
+    # workflow, splitting them into two nav groups never made sense) ---
+    {"key": "/alerts", "label": "Security Alerts", "group": "Detection & Response"},
+    {"key": "/admin/threat-intel", "label": "Threat Intel Watchlist", "group": "Detection & Response"},
+    {"key": "/ir/wizard", "label": "Triage Wizard", "group": "Detection & Response"},
+    {"key": "/ir/cases", "label": "IR Cases", "group": "Detection & Response"},
+    {"key": "/ir/case-approval", "label": "IR Case Approval", "group": "Detection & Response"},
+    {"key": "/admin/ir-setup", "label": "IR Setup", "group": "Detection & Response"},
+    # --- Asset Inventory ---
+    {"key": "/assets", "label": "Assets", "group": "Asset Inventory"},
+    {"key": "/products", "label": "Products", "group": "Asset Inventory"},
+    {"key": "/engagements", "label": "Engagements", "group": "Asset Inventory"},
+    # --- Scanning & Integrations ---
+    {"key": "/integrations", "label": "Connectors", "group": "Scanning & Integrations"},
+    {"key": "/imports", "label": "Import Jobs", "group": "Scanning & Integrations"},
+    {"key": "/admin/web-scans", "label": "Web Scan Uploads", "group": "Scanning & Integrations"},
+    {"key": "/admin/nmap-scans", "label": "Nmap Scan Uploads", "group": "Scanning & Integrations"},
+    {"key": "/admin/nikto-scans", "label": "Web App Scans (Nikto)", "group": "Scanning & Integrations"},
+    {"key": "/admin/recon-osint", "label": "Recon & OSINT", "group": "Scanning & Integrations"},
+    {"key": "/admin/criticality-scoring", "label": "Criticality Scoring", "group": "Scanning & Integrations"},
+    {"key": "/admin/sbom", "label": "SBOM / Dependencies", "group": "Scanning & Integrations"},
+    {"key": "/admin/yara", "label": "YARA Scanning", "group": "Scanning & Integrations"},
+    {"key": "/admin/scan-schedule", "label": "Scan Schedule", "group": "Scanning & Integrations"},
+    {"key": "/admin/splunk", "label": "Splunk", "group": "Scanning & Integrations"},
+    {"key": "/admin/wazuh", "label": "Wazuh", "group": "Scanning & Integrations"},
+    {"key": "/admin/ticketing", "label": "Ticketing / SOAR", "group": "Scanning & Integrations"},
+    # --- Reports & Compliance ---
+    {"key": "/reports", "label": "Reports", "group": "Reports & Compliance"},
+    {"key": "/compliance", "label": "Compliance", "group": "Reports & Compliance"},
+    # --- Administration ---
+    {"key": "/admin", "label": "Admin", "group": "Administration"},
+    {"key": "/admin/users", "label": "Users", "group": "Administration"},
+    {"key": "/admin/teams", "label": "Teams", "group": "Administration"},
+    {"key": "/admin/notifications", "label": "Notifications", "group": "Administration"},
+    {"key": "/admin/chatops", "label": "ChatOps", "group": "Administration"},
+    {"key": "/admin/health", "label": "System Health", "group": "Administration"},
+    {"key": "/admin/backups", "label": "Backups", "group": "Administration"},
+    {"key": "/admin/retention", "label": "Data Retention", "group": "Administration"},
+    {"key": "/admin/audit-log", "label": "Audit Log", "group": "Administration"},
+    {"key": "/admin/assignment-rules", "label": "Assignment Rules", "group": "Administration"},
+    {"key": "/admin/ownership", "label": "Ownership Map", "group": "Administration"},
+    {"key": "/admin/sla-policies", "label": "SLA Policies", "group": "Administration"},
+    {"key": "/admin/approval-routing", "label": "Approval Routing", "group": "Administration"},
+    {"key": "/admin/rbac", "label": "Role Access", "group": "Administration"},
 ]
 MODULE_KEYS = [m["key"] for m in MODULE_REGISTRY]
 
 # Modules that default to admin-only until an admin opts other roles in -- mostly the
-# sensitive/config-heavy corners of Reports & Admin. Everything else defaults to
+# sensitive/config-heavy corners of Administration. Everything else defaults to
 # "edit" for manager/analyst so turning this feature on doesn't immediately downgrade
 # anyone's current day-to-day capability; "executive" defaults to a small, view-only
 # set since that's the role most orgs actually want restricted out of the box.
 _ADMIN_ONLY_BY_DEFAULT = {
     "/admin/users", "/admin/notifications", "/admin/chatops", "/admin/health",
-    "/admin/backups", "/admin/audit-log", "/admin/assignment-rules", "/admin/sla-policies",
+    "/admin/backups", "/admin/retention", "/admin/audit-log", "/admin/assignment-rules", "/admin/sla-policies",
     "/admin/approval-routing", "/admin/rbac", "/admin/ir-setup",
     # IR case closure approval is deliberately admin-only by default -- the org's
     # designated security admins, not every manager, sign off that a case is truly
@@ -139,7 +150,7 @@ _ADMIN_ONLY_BY_DEFAULT = {
 
 def _default_access() -> dict:
     everyone_edit = {m["key"]: "edit" for m in MODULE_REGISTRY if m["key"] not in _ADMIN_ONLY_BY_DEFAULT}
-    executive_view = {k: "view" for k in ["/", "/operational", "/reports", "/compliance", "/exposure", "/findings", "/assets", "/ir/cases"]}
+    executive_view = {k: "view" for k in ["/", "/operational", "/reports", "/compliance", "/exposure", "/findings", "/assets", "/ir/cases", "/alerts", "/admin/threat-intel", "/soc"]}
     return {
         "manager": dict(everyone_edit),
         "analyst": dict(everyone_edit),
@@ -205,6 +216,6 @@ def require_module(module_key: str, level: str = "view"):
         granted = (await access_map_for_role(db, user.get("role"))).get(module_key)
         if not granted or not _meets(level, granted):
             verb = "edit" if level == "edit" else "access"
-            raise HTTPException(status_code=403, detail=f"Your role doesn't have {verb} permission on this module. Ask an admin under Reports & Admin -> Role Access.")
+            raise HTTPException(status_code=403, detail=f"Your role doesn't have {verb} permission on this module. Ask an admin under Administration -> Role Access.")
         return user
     return checker
