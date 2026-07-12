@@ -307,6 +307,9 @@ async def _upsert_asset(db, hostname: str, ip: str | None, os_name: str | None, 
         "ownership_rationale": "Auto-created from Qualys VMDR live sync (no tag rule match)",
     }
     await db.assets.insert_one(asset)
+    if ip:
+        from threat_intel_watchlist import check_and_emit
+        await check_and_emit(db, ip, entity_type="asset", entity_id=asset["id"], entity_label=hostname)
     return asset
 
 
@@ -399,6 +402,13 @@ async def _upsert_finding(db, det: dict, kb: dict, nvd_cache: dict | None = None
     new_finding["risk_score"] = risk["score"]
     new_finding["risk_breakdown"] = risk["breakdown"]
     await db.findings.insert_one(new_finding)
+    if severity in ("Critical", "High"):
+        from security_events import emit_event
+        await emit_event(db, source="findings", event_type="new_high_severity_finding", severity=severity,
+            title=f"{severity} finding on {asset['hostname']}: {new_finding['title']}",
+            entity_type="asset", entity_id=asset["id"], entity_label=asset["hostname"],
+            description=f"New {severity} finding (QID {qid}{', ' + cve if cve else ''}) detected by Qualys.",
+            raw={"finding_id": new_finding["id"], "cve": cve, "qid": qid})
     return "created"
 
 

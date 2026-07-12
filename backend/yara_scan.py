@@ -162,6 +162,23 @@ async def run_yara_scan(db, filename: str, content: bytes, label: str | None = N
     }
     await db.yara_scan_history.insert_one(dict(record))
 
+    # Check the file hash against the threat intel watchlist regardless of whether
+    # a YARA rule itself matched -- a known-bad hash is worth flagging even if no
+    # local rule happens to cover it yet.
+    from threat_intel_watchlist import check_and_emit
+    await check_and_emit(db, sha256, entity_type="asset" if asset_id else "file",
+                          entity_id=asset_id or sha256, entity_label=source_label)
+
+    if matches:
+        from security_events import emit_event
+        rule_names = ", ".join(sorted({m.get("rule_name", "unknown") for m in matches})[:5])
+        entity_id = asset_id or sha256
+        await emit_event(db, source="yara", event_type="yara_match", severity="High",
+            title=f"YARA match on {source_label}: {rule_names}",
+            entity_type="asset" if asset_id else "file", entity_id=entity_id, entity_label=source_label,
+            description=f"{len(matches)} rule(s) matched scanning {filename} (sha256 {sha256[:16]}...).",
+            raw={"scan_id": record["id"], "sha256": sha256, "matched_rules": rule_names})
+
     return {
         "id": record["id"], "filename": filename, "sha256": sha256,
         "rules_checked": len(compiled), "rules_broken": broken,

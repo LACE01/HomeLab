@@ -367,3 +367,120 @@ async def dashboards_teams_leaderboard(user: dict = Depends(get_current_user)):
         })
     items.sort(key=lambda x: (-x["overdue"], -x["critical_open"], -x["open"]))
     return {"items": items}
+
+
+@router.get("/v1/dashboards/soc")
+async def dashboard_soc(
+    user: dict = Depends(get_current_user),
+    _rbac: dict = Depends(require_module("/soc")),
+    range: Optional[str] = "7d",
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+):
+    """Unified SOC metrics -- one pane pulling from every detection/response
+    surface (security event bus, auth/session security, UEBA, threat intel
+    watchlist, Splunk/Wazuh connectors, YARA, IR cases) instead of making an
+    analyst hop between six separate admin pages to gauge posture. Deliberately
+    thin on any one topic -- each linked module page still has the full detail."""
+    start_iso, end_iso, days = parse_time_range(range, start, end)
+    range_flt = {"created_at": {"$gte": start_iso, "$lte": end_iso}} if start_iso else {}
+
+    # --- Security event bus ---
+    open_by_severity = {}
+    async for row in db.security_events.aggregate([
+        {"$match": {"status": "open"}},
+        {"$group": {"_id": "$severity", "count": {"$sum": 1}}},
+    ]):
+        open_by_severity[row["_id"]] = row["count"]
+    correlated_open = await db.security_events.count_documents({"status": "open", "event_type": "correlated_alert"})
+    events_in_range = await db.security_events.count_documents({**range_flt}) if range_flt else await db.security_events.count_documents({})
+
+    # MTTA / MTTR over events acknowledged/closed within the range (falls back to
+    # all-time if no range given) -- gives a rough sense of triage speed, not a
+    # precise SLA metric.
+    mtta_sum, mtta_n, mttr_sum, mttr_n = 0.0, 0, 0.0, 0
+    ack_flt = {"acknowledged_at": {"$ne": None}}
+    close_flt = {"closed_at": {"$ne": None}}
+    if start_iso:
+        ack_flt["acknowledged_at"] = {"$gte": start_iso, "$lte": end_iso}
+        close_flt["closed_at"] = {"$gte": start_iso, "$lte": end_iso}
+    async for ev in db.security_events.find(ack_flt, {"_id": 0, "created_at": 1, "acknowledged_at": 1}):
+        try:
+            c = datetime.fromisoformat(ev["created_at"].replace("Z", "+00:00"))
+            a = datetime.fromisoformat(ev["acknowledged_at"].replace("Z", "+00:00"))
+            mtta_sum += max(0, (a - c).total_seconds() / 60)
+            mtta_n += 1
+        except Exception:
+            pass
+    async for ev in db.security_events.find(close_flt, {"_id": 0, "created_at": 1, "closed_at": 1}):
+        try:
+            c = datetime.fromisoformat(ev["created_at"].replace("Z", "+00:00"))
+            z = datetime.fromisoformat(ev["closed_at"].replace("Z", "+00:00"))
+            mttr_sum += max(0, (z - c).total_seconds() / 3600)
+            mttr_n += 1
+        except Exception:
+            pass
+    mtta_minutes = round(mtta_sum / mtta_n, 1) if mtta_n else None
+    mttr_hours = round(mttr_sum / mttr_n, 1) if mttr_n else None
+
+    # --- Auth / session security ---
+    brute_force_events = await db.security_events.count_documents({
+        "source": "login_audit", "event_type": {"$in": ["brute_force_ip", "brute_force_account"]}, **range_flt,
+    })
+    active_sessions = await db.active_sessions.count_documents({"revoked": {"$ne": True}})
+    total_users = await db.users.count_documents({})
+    mfa_users = await db.users.count_documents({"mfa_enabled": True})
+    mfa_adoption_pct = round((mfa_users / total_users) * 100, 1) if total_users else 0
+
+    # --- UEBA signals ---
+    ueba_flt = {"source": "ueba", **range_flt}
+    new_ip_logins = await db.security_events.count_documents({**ueba_flt, "event_type": "new_ip_login"})
+    new_country_logins = await db.security_events.count_documents({**ueba_flt, "event_type": "new_country_login"})
+    impossible_travel = await db.security_events.count_documents({**ueba_flt, "event_type": "impossible_travel"})
+
+    # --- Threat intel watchlist ---
+    watchlist_total = await db.ioc_watchlist.count_documents({})
+    watchlist_with_hits = await db.ioc_watchlist.count_documents({"hits": {"$gt": 0}})
+    ioc_matches_in_range = await db.security_events.count_documents({"source": "threat_intel", **range_flt})
+
+    # --- Splunk / Wazuh connector health ---
+    splunk_configs = await db.splunk_configs.find({}, {"_id": 0, "enabled": 1, "last_result": 1, "last_run_at": 1}).to_list(200)
+    wazuh_configs = await db.wazuh_configs.find({}, {"_id": 0, "enabled": 1, "last_result": 1, "last_run_at": 1}).to_list(200)
+    def _connector_health(configs):
+        enabled = [c for c in configs if c.get("enabled")]
+        failing = [c for c in enabled if (c.get("last_result") or {}).get("ok") is False]
+        return {"configured": len(configs), "enabled": len(enabled), "failing": len(failing)}
+    splunk_health = _connector_health(splunk_configs)
+    wazuh_health = _connector_health(wazuh_configs)
+
+    # --- YARA ---
+    yara_matches_in_range = await db.yara_scan_history.count_documents(
+        {"matched_rule_count": {"$gt": 0}, **({"scanned_at": range_flt["created_at"]} if range_flt else {})}
+    )
+
+    # --- IR cases ---
+    ir_open = await db.ir_cases.count_documents({"status": "open"})
+    ir_opened_in_range = await db.ir_cases.count_documents({**({"opened_at": range_flt["created_at"]} if range_flt else {})})
+
+    return {
+        "range": range, "range_days": days, "range_start": start_iso, "range_end": end_iso,
+        "events": {
+            "open_by_severity": open_by_severity, "correlated_open": correlated_open,
+            "events_in_range": events_in_range, "mtta_minutes": mtta_minutes, "mttr_hours": mttr_hours,
+        },
+        "auth": {
+            "brute_force_events": brute_force_events, "active_sessions": active_sessions,
+            "mfa_adoption_pct": mfa_adoption_pct, "mfa_users": mfa_users, "total_users": total_users,
+        },
+        "ueba": {
+            "new_ip_logins": new_ip_logins, "new_country_logins": new_country_logins,
+            "impossible_travel": impossible_travel,
+        },
+        "threat_intel": {
+            "watchlist_total": watchlist_total, "watchlist_with_hits": watchlist_with_hits,
+            "matches_in_range": ioc_matches_in_range,
+        },
+        "connectors": {"splunk": splunk_health, "wazuh": wazuh_health},
+        "yara": {"matches_in_range": yara_matches_in_range},
+        "ir": {"open_cases": ir_open, "opened_in_range": ir_opened_in_range},
+    }
