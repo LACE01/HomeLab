@@ -5,10 +5,10 @@ import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import {
-  Plus, X, Trash, CircleNotch, Binoculars, UploadSimple, Siren, MagnifyingGlass,
+  Plus, X, Trash, CircleNotch, Binoculars, UploadSimple, Siren, MagnifyingGlass, Package,
 } from "@phosphor-icons/react";
 
-const IOC_TYPES = ["ip", "domain", "hash", "url"];
+const IOC_TYPES = ["ip", "domain", "hash", "url", "package"];
 const SEVERITIES = ["Info", "Low", "Medium", "High", "Critical"];
 
 const SEVERITY_COLOR = { Info: "slate", Low: "blue", Medium: "amber", High: "orange", Critical: "red" };
@@ -22,7 +22,7 @@ export default function ThreatIntelWatchlist() {
   const [q, setQ] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
-  const [syncing, setSyncing] = useState(false);
+  const [syncing, setSyncing] = useState(null); // "threatfox" | "opensourcemalware" | null
 
   const load = async () => {
     try {
@@ -53,14 +53,26 @@ export default function ThreatIntelWatchlist() {
   };
 
   const syncNow = async () => {
-    setSyncing(true);
+    setSyncing("threatfox");
     try {
       const r = await api.post("/v1/admin/threat-intel/sync-now");
       toast.success(`ThreatFox sync: ${r.data.added} new IOC(s) added (${r.data.seen ?? 0} seen)`);
       load();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Sync failed");
-    } finally { setSyncing(false); }
+    } finally { setSyncing(null); }
+  };
+
+  const syncOpenSourceMalware = async () => {
+    setSyncing("opensourcemalware");
+    try {
+      const r = await api.post("/v1/admin/threat-intel/sync-now/opensourcemalware");
+      const errNote = r.data.errors?.length ? ` (${r.data.errors.length} ecosystem error(s), see server logs)` : "";
+      toast.success(`OpenSourceMalware sync: ${r.data.added} new package IOC(s) added (${r.data.seen ?? 0} seen)${errNote}`);
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Sync failed");
+    } finally { setSyncing(null); }
   };
 
   return (
@@ -68,10 +80,15 @@ export default function ThreatIntelWatchlist() {
       subtitle="A living list of known-bad IPs, domains, hashes, and URLs -- checked automatically against new assets and file scans, not just on-demand lookups"
       actions={
         <div className="flex items-center gap-2">
-          <button onClick={syncNow} disabled={syncing}
+          <button onClick={syncNow} disabled={!!syncing}
             className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-slate-500 disabled:opacity-50 text-slate-300 rounded inline-flex items-center gap-1.5">
-            {syncing ? <CircleNotch size={14} className="animate-spin"/> : <Binoculars size={14}/>}
+            {syncing === "threatfox" ? <CircleNotch size={14} className="animate-spin"/> : <Binoculars size={14}/>}
             Sync ThreatFox feed
+          </button>
+          <button onClick={syncOpenSourceMalware} disabled={!!syncing}
+            className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-slate-500 disabled:opacity-50 text-slate-300 rounded inline-flex items-center gap-1.5">
+            {syncing === "opensourcemalware" ? <CircleNotch size={14} className="animate-spin"/> : <Package size={14}/>}
+            Sync OpenSourceMalware
           </button>
           <button onClick={() => setImportOpen(true)}
             className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-slate-500 text-slate-300 rounded inline-flex items-center gap-1.5">
@@ -84,10 +101,12 @@ export default function ThreatIntelWatchlist() {
         </div>
       }>
       <div className="border border-blue-500/30 bg-blue-500/5 rounded-md px-3 py-2.5 mb-4 text-[12px] text-blue-200 leading-relaxed max-w-3xl">
-        This list grows two ways: manually added/pasted IOCs, and a scheduled pull of abuse.ch's ThreatFox feed
+        This list grows three ways: manually added/pasted IOCs, a scheduled pull of abuse.ch's ThreatFox feed
         (reuses the same Auth-Key already configured under Integrations &rarr; abuse.ch (ThreatFox) for the
-        on-demand recon-ng lookup). New Qualys assets are checked against watchlisted IPs, and every YARA file scan
-        checks the file's hash -- both raise a Security Alert automatically on a match.
+        on-demand recon-ng lookup), and a scheduled pull of OpenSourceMalware.com's verified malicious open-source
+        package feed (needs an API token configured under Integrations &rarr; OpenSourceMalware). New Qualys assets
+        are checked against watchlisted IPs, every YARA file scan checks the file's hash, and every SBOM upload
+        checks each dependency's package name -- all three raise a Security Alert automatically on a match.
       </div>
 
       {stats && (

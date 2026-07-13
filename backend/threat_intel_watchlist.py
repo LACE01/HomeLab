@@ -1,30 +1,53 @@
 """Threat intel watchlist -- a persistent, growing list of known-bad IOCs (IPs,
-domains, hashes) that gets checked automatically against new assets/findings/
-files, instead of the existing recon-ng threat-intel modules which only check
-one target at a time when someone remembers to run them.
+domains, hashes, malicious packages) that gets checked automatically against new
+assets/findings/files/dependencies, instead of the existing recon-ng threat-intel
+modules which only check one target at a time when someone remembers to run them.
 
-Two ways IOCs land here: manually added/pasted by an analyst (source="manual"),
-or pulled in bulk from abuse.ch's ThreatFox feed on a schedule
-(source="abuse.ch_threatfox_feed", via sync_threatfox_feed below) -- reusing the
-same "abuse.ch (ThreatFox)" integration config (Auth-Key) the existing on-demand
-recon-ng module already uses, just calling ThreatFox's bulk `get_iocs` query
-instead of a per-target `search_ioc` lookup.
+Three ways IOCs land here: manually added/pasted by an analyst (source="manual"),
+pulled in bulk from abuse.ch's ThreatFox feed on a schedule
+(source="abuse.ch_threatfox_feed", via sync_threatfox_feed below), or pulled in
+bulk from OpenSourceMalware.com's feed of verified malicious open-source packages
+(source="opensourcemalware_feed", via sync_opensourcemalware_feed below). Both
+feed syncs reuse the same generic Integrations catalog config (endpoint + API
+key) the existing on-demand recon-ng lookup modules already use, rather than
+inventing a second credential store for the same accounts.
 
 match_ioc() is the one function other modules call to check a value against this
-list -- see its call sites in qualys_sync.py (new asset IP) and yara_scan.py (file
-hash) for the pattern to copy when wiring up a new one.
+list -- see its call sites in qualys_sync.py (new asset IP), yara_scan.py (file
+hash), and sbom.py (dependency package name) for the pattern to copy when wiring
+up a new one.
 """
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-IOC_TYPES = ["ip", "domain", "hash", "url"]
+IOC_TYPES = ["ip", "domain", "hash", "url", "package"]
 
-# ThreatFox's own ioc_type values, normalized down to our 4 buckets.
+# ThreatFox's own ioc_type values, normalized down to our buckets.
 _THREATFOX_TYPE_MAP = {
     "ip:port": "ip", "ip": "ip", "domain": "domain", "url": "url",
     "md5_hash": "hash", "sha1_hash": "hash", "sha256_hash": "hash",
 }
+
+# OpenSourceMalware.com ecosystem query-param values covered by the default bulk
+# sync. "domains"/"repositories"/"vscode"/"openvsx" are supported by their API
+# but deliberately left out of the default poll list -- this app doesn't have a
+# natural place to check a repo URL or VS Code extension against yet, and their
+# response shape for those categories isn't documented the same way packages are.
+# Pass an explicit `ecosystems` list to sync_opensourcemalware_feed to cover more.
+OSM_DEFAULT_ECOSYSTEMS = ["npm", "pypi", "crates", "nuget", "maven", "go", "packagist", "rubygems"]
+
+# Maps this app's own SBOM ecosystem labels (see sbom.py's ECOSYSTEM_MAP) to
+# OpenSourceMalware's query-param ecosystem keys, so a scanned dependency's
+# (ecosystem, name) can be turned into the same watchlist value format the feed
+# sync uses. Ecosystems OSM doesn't cover (Hex, Pub, Debian, Alpine) map to None.
+SBOM_TO_OSM_ECOSYSTEM = {
+    "npm": "npm", "PyPI": "pypi", "Maven": "maven", "Go": "go", "crates.io": "crates",
+    "NuGet": "nuget", "RubyGems": "rubygems", "Packagist": "packagist",
+    "Hex": None, "Pub": None, "Debian": None, "Alpine": None,
+}
+
+_OSM_SEVERITY_MAP = {"critical": "Critical", "high": "High", "medium": "Medium", "low": "Low"}
 
 
 def _now_iso() -> str:
@@ -131,3 +154,71 @@ async def sync_threatfox_feed(db, days: int = 3) -> dict:
         })
         added += 1
     return {"ok": True, "added": added, "seen": len(data.get("data") or [])}
+
+
+async def sync_opensourcemalware_feed(db, ecosystems: Optional[list] = None) -> dict:
+    """Pulls OpenSourceMalware.com's `query-latest` endpoint (up to 100 most-recent
+    verified threats per ecosystem) for each ecosystem in `ecosystems` (defaults to
+    OSM_DEFAULT_ECOSYSTEMS) and upserts them into the watchlist as ioc_type="package"
+    with value f"{ecosystem}:{package_name}". Requires an API token configured under
+    Integrations -> OpenSourceMalware (same "Bearer osm_..." token used for the
+    on-demand check-malicious lookup, if one gets added later)."""
+    import asyncio
+    import httpx
+
+    integration = await db.integrations.find_one({"name": "OpenSourceMalware"}, {"_id": 0})
+    cfg = (integration or {}).get("config") or {}
+    endpoint = cfg.get("endpoint") or "https://api.opensourcemalware.com"
+    api_key = cfg.get("api_key")
+    if not api_key:
+        raise ValueError("OpenSourceMalware isn't configured yet -- add an API token under Integrations -> "
+                          "OpenSourceMalware (free at https://opensourcemalware.com/auth) first.")
+
+    ecosystems = ecosystems or OSM_DEFAULT_ECOSYSTEMS
+    url = f"{endpoint.rstrip('/')}/functions/v1/query-latest"
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    added, seen, errors = 0, 0, []
+    async with httpx.AsyncClient(timeout=20) as client:
+        for i, eco in enumerate(ecosystems):
+            if i > 0:
+                await asyncio.sleep(1)  # stay well under the 60/min free-tier limit
+            try:
+                r = await client.get(url, headers=headers, params={"ecosystem": eco})
+            except httpx.HTTPError as e:
+                errors.append(f"{eco}: could not reach OpenSourceMalware ({e})")
+                continue
+            if r.status_code == 401:
+                raise RuntimeError("OpenSourceMalware rejected this API token (401) -- check it under "
+                                   "Integrations -> OpenSourceMalware.")
+            if r.status_code == 429:
+                errors.append(f"{eco}: rate limited (429), skipped this run")
+                continue
+            if r.status_code != 200:
+                errors.append(f"{eco}: HTTP {r.status_code}")
+                continue
+
+            data = r.json()
+            threats = data.get("threats") or []
+            seen += len(threats)
+            for threat in threats:
+                name = (threat.get("package_name") or "").strip()
+                if not name:
+                    continue
+                value = _normalize(f"{eco}:{name}")
+                existing = await db.ioc_watchlist.find_one({"value": value})
+                if existing:
+                    continue
+                severity = _OSM_SEVERITY_MAP.get((threat.get("severity_level") or "").lower(), "High")
+                tags = ", ".join(threat.get("tags") or [])
+                notes = threat.get("threat_description") or "Malicious package"
+                if tags:
+                    notes += f" (tags: {tags})"
+                await db.ioc_watchlist.insert_one({
+                    "id": str(uuid.uuid4()), "ioc_type": "package", "value": value,
+                    "source": "opensourcemalware_feed", "severity": severity, "notes": notes,
+                    "added_by": None, "added_at": _now_iso(), "hits": 0, "last_hit_at": None,
+                })
+                added += 1
+
+    return {"ok": True, "added": added, "seen": seen, "ecosystems": ecosystems, "errors": errors}

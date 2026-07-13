@@ -11,7 +11,7 @@ from db import db
 from rbac import require_module
 from auth_utils import get_current_user
 from routes.common import now_iso
-from threat_intel_watchlist import add_ioc, IOC_TYPES, sync_threatfox_feed
+from threat_intel_watchlist import add_ioc, IOC_TYPES, sync_threatfox_feed, sync_opensourcemalware_feed
 
 router = APIRouter()
 
@@ -117,6 +117,20 @@ async def sync_now(
     return result
 
 
+@router.post("/v1/admin/threat-intel/sync-now/opensourcemalware")
+async def sync_now_opensourcemalware(
+    user: dict = Depends(get_current_user),
+    _rbac: dict = Depends(require_module("/admin/threat-intel", level="edit")),
+):
+    try:
+        result = await sync_opensourcemalware_feed(db)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"OpenSourceMalware sync failed: {e}")
+    return result
+
+
 @router.get("/v1/admin/threat-intel/stats")
 async def stats(
     user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/admin/threat-intel")),
@@ -130,9 +144,10 @@ async def stats(
 
 
 async def threat_intel_watchlist_sync_loop(db, interval_hours: float = 12):
-    """Periodic bulk pull from ThreatFox, mirroring splunk_sync_loop/wazuh_sync_loop's
-    pattern. Silently no-ops (just logs) if abuse.ch isn't configured -- this loop is
-    always registered, configuring the integration is what turns it on."""
+    """Periodic bulk pull from ThreatFox and OpenSourceMalware, mirroring
+    splunk_sync_loop/wazuh_sync_loop's pattern. Silently no-ops (just logs) for
+    whichever feed isn't configured -- this loop is always registered, configuring
+    either integration is what turns that half of it on."""
     import asyncio
     import logging
     logger = logging.getLogger("threat_intel_watchlist_sync_loop")
@@ -145,4 +160,11 @@ async def threat_intel_watchlist_sync_loop(db, interval_hours: float = 12):
             pass  # not configured yet -- expected/quiet, not an error
         except Exception as e:
             logger.warning(f"ThreatFox feed sync failed: {e}")
+        try:
+            result = await sync_opensourcemalware_feed(db)
+            logger.info(f"OpenSourceMalware feed sync: {result}")
+        except ValueError:
+            pass  # not configured yet -- expected/quiet, not an error
+        except Exception as e:
+            logger.warning(f"OpenSourceMalware feed sync failed: {e}")
         await asyncio.sleep(interval_hours * 3600)

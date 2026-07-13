@@ -70,6 +70,12 @@ ENRICHMENT_CONNECTORS = [
      "default_config": {"endpoint": "https://otx.alienvault.com"}},
     {"name": "abuse.ch (ThreatFox)", "type": "threat_intel", "logo": "abusech",
      "default_config": {"endpoint": "https://threatfox-api.abuse.ch"}},
+    # Community malicious-open-source-package feed -- powers the Threat Intel
+    # Watchlist's "package" IOC type (npm/PyPI/Maven/NuGet/Go/crates.io/RubyGems/
+    # Packagist), matched automatically against SBOM-scanned dependencies. Token
+    # is a Bearer "osm_..." API token from the user's OpenSourceMalware profile.
+    {"name": "OpenSourceMalware", "type": "threat_intel", "logo": "opensourcemalware",
+     "default_config": {"endpoint": "https://api.opensourcemalware.com"}},
 ]
 
 

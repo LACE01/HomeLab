@@ -149,6 +149,26 @@ def _extract_cve(vuln: dict) -> str | None:
 async def import_sbom(db, content: bytes, filename: str = "", label: str | None = None,
                        asset_id: str | None = None) -> dict:
     components = parse_sbom(content)
+
+    # Check each unique dependency against the threat intel watchlist's malicious-
+    # package feed (OpenSourceMalware.com) -- independent of the OSV vuln lookup
+    # below, since a supply-chain-compromised package may have no assigned CVE at
+    # all. Raises a Security Alert on a match rather than a Finding, consistent
+    # with how the watchlist surfaces IP/hash matches elsewhere.
+    from threat_intel_watchlist import check_and_emit, SBOM_TO_OSM_ECOSYSTEM
+    checked_packages = set()
+    for comp in components:
+        osm_eco = SBOM_TO_OSM_ECOSYSTEM.get(comp["ecosystem"])
+        if not osm_eco:
+            continue
+        dedupe_key = (osm_eco, comp["name"].lower())
+        if dedupe_key in checked_packages:
+            continue
+        checked_packages.add(dedupe_key)
+        value = f"{osm_eco}:{comp['name']}"
+        await check_and_emit(db, value, entity_type="package", entity_id=value,
+                              entity_label=f"{comp['name']}@{comp['version']} ({comp['ecosystem']})")
+
     vuln_map = await _query_osv(components)
 
     all_vuln_ids = set()
