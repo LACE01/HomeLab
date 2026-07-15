@@ -126,83 +126,171 @@ function NewVendorModal({ meta, onClose, onCreated }) {
   );
 }
 
-function SuggestionsModal({ meta, onClose, onCreated }) {
-  const [suggestions, setSuggestions] = useState([]);
-  const [selected, setSelected] = useState(new Set());
+function ApprovalQueueModal({ onClose, onDecided }) {
+  const [candidates, setCandidates] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [selected, setSelected] = useState(new Set());
+  const [busyId, setBusyId] = useState(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
-  useEffect(() => {
-    api.get("/v1/vendors/suggestions").then(r => {
-      setSuggestions(r.data);
-      setSelected(new Set(r.data.map(s => s.name)));
-    }).finally(() => setLoading(false));
-  }, []);
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await api.get("/v1/vendors/candidates", { params: { status: "pending" } });
+      setCandidates(r.data.items);
+      setSelected(new Set());
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  const toggle = (name) => {
+  const rescan = async () => {
+    setScanning(true);
+    try {
+      const r = await api.post("/v1/vendors/candidates/scan");
+      if (r.data.created > 0) toast.success(`Found ${r.data.created} new candidate(s)`);
+      await load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Scan failed");
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  useEffect(() => { rescan(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  const toggle = (id) => {
     setSelected(prev => {
       const next = new Set(prev);
-      next.has(name) ? next.delete(name) : next.add(name);
+      next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
   };
+  const toggleAll = () => {
+    setSelected(prev => prev.size === candidates.length ? new Set() : new Set(candidates.map(c => c.id)));
+  };
 
-  const submit = async () => {
-    const chosen = suggestions.filter(s => selected.has(s.name));
-    if (chosen.length === 0) { toast.error("Select at least one vendor"); return; }
-    setSaving(true);
+  const approveOne = async (id) => {
+    setBusyId(id);
     try {
-      const r = await api.post("/v1/vendors/bulk", {
-        vendors: chosen.map(s => ({ name: s.name, category: s.category, org_criticality: 3 })),
-      });
-      toast.success(`Added ${r.data.created} vendor(s) from suggestions`);
-      onCreated();
+      await api.post(`/v1/vendors/candidates/${id}/approve`);
+      await load();
+      onDecided();
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Failed to bulk-add vendors");
+      toast.error(e.response?.data?.detail || "Approve failed");
     } finally {
-      setSaving(false);
+      setBusyId(null);
+    }
+  };
+
+  const denyOne = async (id) => {
+    setBusyId(id);
+    try {
+      await api.post(`/v1/vendors/candidates/${id}/deny`);
+      await load();
+      onDecided();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Deny failed");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const bulkApprove = async () => {
+    if (selected.size === 0) return;
+    setBulkBusy(true);
+    try {
+      const r = await api.post("/v1/vendors/candidates/bulk-approve", { ids: [...selected] });
+      toast.success(`Approved ${r.data.approved} vendor(s)`);
+      await load();
+      onDecided();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Bulk approve failed");
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const bulkDeny = async () => {
+    if (selected.size === 0) return;
+    setBulkBusy(true);
+    try {
+      const r = await api.post("/v1/vendors/candidates/bulk-deny", { ids: [...selected] });
+      toast.success(`Denied ${r.data.denied} candidate(s)`);
+      await load();
+      onDecided();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Bulk deny failed");
+    } finally {
+      setBulkBusy(false);
     }
   };
 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-6" onClick={onClose}>
-      <div className="bg-[#0D1117] border border-[#30363D] rounded-md max-w-lg w-full max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-[#0D1117] border border-[#30363D] rounded-md max-w-2xl w-full max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="px-5 py-3.5 border-b border-[#30363D] flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Sparkle size={15} className="text-amber-300" />
-            <span className="text-[13px] text-slate-200 font-medium">Suggested vendors</span>
+            <span className="text-[13px] text-slate-200 font-medium">Vendor approval queue</span>
           </div>
           <button onClick={onClose} className="text-slate-500 hover:text-slate-300"><X size={16} /></button>
         </div>
         <div className="p-5">
           <div className="text-[11.5px] text-slate-500 mb-3">
-            Detected from your asset inventory&#8217;s hardware manufacturer and OS fields &#8212; not already tracked as a vendor.
+            Auto-detected from your asset inventory&#8217;s hardware manufacturer and OS fields. Approve to add as a tracked
+            vendor with a computed risk profile, or deny to dismiss it for good &#8212; a denied candidate won&#8217;t
+            resurface on future scans.
+          </div>
+          <div className="flex items-center justify-between mb-2">
+            <button onClick={toggleAll} disabled={candidates.length === 0} className="text-[11px] text-slate-500 hover:text-slate-300 inline-flex items-center gap-1.5 disabled:opacity-40">
+              {selected.size > 0 && selected.size === candidates.length ? <CheckSquare size={13} /> : <Square size={13} />} Select all
+            </button>
+            <button onClick={rescan} disabled={scanning} className="text-[11px] text-blue-300 hover:text-blue-200 inline-flex items-center gap-1.5 disabled:opacity-40">
+              {scanning ? "Scanning…" : "Re-scan inventory"}
+            </button>
           </div>
           {loading && <div className="text-[12px] text-slate-500 py-4 text-center">Loading…</div>}
-          {!loading && suggestions.length === 0 && (
-            <div className="text-[12px] text-slate-500 py-4 text-center">No new suggestions &#8212; every detected manufacturer/OS vendor is already tracked.</div>
+          {!loading && candidates.length === 0 && (
+            <div className="text-[12px] text-slate-500 py-4 text-center">No pending candidates &#8212; every detected manufacturer/OS vendor is already tracked or has been reviewed.</div>
           )}
           <div className="space-y-1.5 max-h-[40vh] overflow-y-auto">
-            {suggestions.map(s => (
-              <div key={s.name} onClick={() => toggle(s.name)}
-                className="flex items-center justify-between px-2.5 py-1.5 rounded border border-[#21262D] hover:border-blue-500/30 cursor-pointer">
-                <div className="flex items-center gap-2">
-                  {selected.has(s.name) ? <CheckSquare size={14} className="text-blue-300" /> : <Square size={14} className="text-slate-500" />}
-                  <span className="text-[12.5px] text-slate-200">{s.name}</span>
-                  <Chip color="slate">{s.category}</Chip>
+            {candidates.map(c => (
+              <div key={c.id} className="flex items-center justify-between px-2.5 py-1.5 rounded border border-[#21262D]">
+                <div className="flex items-center gap-2 min-w-0 cursor-pointer" onClick={() => toggle(c.id)}>
+                  {selected.has(c.id) ? <CheckSquare size={14} className="text-blue-300 shrink-0" /> : <Square size={14} className="text-slate-500 shrink-0" />}
+                  <span className="text-[12.5px] text-slate-200 truncate">{c.name}</span>
+                  <Chip color="slate">{c.category}</Chip>
+                  <span className="text-[11px] text-slate-500 font-mono shrink-0">{c.asset_count} asset{c.asset_count === 1 ? "" : "s"}</span>
                 </div>
-                <span className="text-[11px] text-slate-500 font-mono">{s.asset_count} asset{s.asset_count === 1 ? "" : "s"}</span>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button onClick={() => approveOne(c.id)} disabled={busyId === c.id}
+                    className="h-6 px-2 text-[10.5px] border border-emerald-500/30 hover:bg-emerald-500/10 text-emerald-300 rounded disabled:opacity-40">
+                    Approve
+                  </button>
+                  <button onClick={() => denyOne(c.id)} disabled={busyId === c.id}
+                    className="h-6 px-2 text-[10.5px] border border-red-500/30 hover:bg-red-500/10 text-red-300 rounded disabled:opacity-40">
+                    Deny
+                  </button>
+                </div>
               </div>
             ))}
           </div>
         </div>
-        {suggestions.length > 0 && (
-          <div className="px-5 py-3.5 border-t border-[#30363D] flex justify-end gap-2">
-            <button onClick={onClose} className="h-8 px-3 text-[12px] text-slate-400 hover:text-slate-200">Cancel</button>
-            <button onClick={submit} disabled={saving}
-              className="h-8 px-3 text-[12px] bg-blue-500/15 border border-blue-500/40 hover:bg-blue-500/25 text-blue-300 rounded disabled:opacity-50">
-              {saving ? "Adding…" : `Add ${selected.size} vendor${selected.size === 1 ? "" : "s"}`}
-            </button>
+        {candidates.length > 0 && (
+          <div className="px-5 py-3.5 border-t border-[#30363D] flex items-center justify-between gap-2">
+            <span className="text-[11px] text-slate-500">{selected.size} selected</span>
+            <div className="flex items-center gap-2">
+              <button onClick={bulkDeny} disabled={bulkBusy || selected.size === 0}
+                className="h-8 px-3 text-[12px] border border-red-500/30 hover:bg-red-500/10 text-red-300 rounded disabled:opacity-40">
+                Deny selected
+              </button>
+              <button onClick={bulkApprove} disabled={bulkBusy || selected.size === 0}
+                className="h-8 px-3 text-[12px] bg-emerald-500/15 border border-emerald-500/40 hover:bg-emerald-500/25 text-emerald-300 rounded disabled:opacity-40">
+                Approve selected
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -220,7 +308,7 @@ export default function VendorManagement() {
   const [band, setBand] = useState("");
   const [q, setQ] = useState("");
   const [showNew, setShowNew] = useState(false);
-  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [showApprovalQueue, setShowApprovalQueue] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [renewals, setRenewals] = useState([]);
 
@@ -279,9 +367,9 @@ export default function VendorManagement() {
     <Layout title="Vendor & Third-Party Risk" subtitle="Third-party vendors and apps this org depends on &#8212; exposure, criticality, and compromise monitoring"
       actions={
         <div className="flex items-center gap-2">
-          <button onClick={() => setShowSuggestions(true)}
+          <button onClick={() => setShowApprovalQueue(true)}
             className="h-8 px-3 text-[12px] border border-amber-500/30 hover:bg-amber-500/10 text-amber-300 rounded inline-flex items-center gap-1.5">
-            <Sparkle size={14} /> Suggestions
+            <Sparkle size={14} /> Approval queue
           </button>
           <button onClick={() => setShowNew(true)}
             className="h-8 px-3 text-[12px] bg-blue-500/15 border border-blue-500/40 hover:bg-blue-500/25 text-blue-300 rounded inline-flex items-center gap-1.5">
@@ -416,7 +504,7 @@ export default function VendorManagement() {
               </tr>
             ))}
             {items.length === 0 && (
-              <tr><td colSpan={9} className="text-center text-slate-500 py-6 text-[12px]">No vendors match this view. Try &#8220;Suggestions&#8221; to auto-detect vendors from your asset inventory, or &#8220;Add vendor&#8221;.</td></tr>
+              <tr><td colSpan={9} className="text-center text-slate-500 py-6 text-[12px]">No vendors match this view. Try &#8220;Approval queue&#8221; to auto-detect vendors from your asset inventory, or &#8220;Add vendor&#8221;.</td></tr>
             )}
           </tbody>
         </table>
@@ -426,9 +514,9 @@ export default function VendorManagement() {
         <NewVendorModal meta={meta} onClose={() => setShowNew(false)}
           onCreated={(v) => { setShowNew(false); refreshAll(); navigate(`/vendors/${v.id}`); }} />
       )}
-      {showSuggestions && (
-        <SuggestionsModal meta={meta} onClose={() => setShowSuggestions(false)}
-          onCreated={() => { setShowSuggestions(false); refreshAll(); }} />
+      {showApprovalQueue && (
+        <ApprovalQueueModal onClose={() => setShowApprovalQueue(false)}
+          onDecided={refreshAll} />
       )}
     </Layout>
   );

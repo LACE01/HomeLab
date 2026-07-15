@@ -37,6 +37,7 @@ scheduled against it, same as any other recon-ng target, and results land in
 the existing db.osint_findings collection (keyed by target=domain) and fire
 the existing "osint_exposure_found" notification -- no new plumbing needed.
 """
+import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -331,3 +332,50 @@ async def get_vendor_risk_history(db, vendor_id: str, days: int = 180) -> list:
         {"vendor_id": vendor_id, "date": {"$gte": since}}, {"_id": 0}
     ).sort("date", 1).to_list(2000)
     return items
+
+
+async def scan_vendor_candidates(db) -> dict:
+    """Runs suggest_vendors() (asset hardware_info/os detection) and upserts each
+    hit into db.vendor_candidates as a pending approval -- the actual approve/deny
+    queue this drives, rather than the old "select checkboxes and instantly create
+    vendors" flow. A prior denial is remembered and excluded from future scans
+    (the whole point of a deny action); a still-pending candidate just gets its
+    asset_count/last_seen_at refreshed rather than duplicated."""
+    suggestions = await suggest_vendors(db)
+    existing = await db.vendor_candidates.find({}, {"_id": 0, "name": 1, "status": 1}).to_list(5000)
+    denied_names = {c["name"].strip().lower() for c in existing if c["status"] == "denied"}
+    pending_names = {c["name"].strip().lower() for c in existing if c["status"] == "pending"}
+
+    created = 0
+    refreshed = 0
+    now = _now_iso()
+    for s in suggestions:
+        key = s["name"].strip().lower()
+        if key in denied_names:
+            continue
+        if key in pending_names:
+            await db.vendor_candidates.update_one(
+                {"name": {"$regex": f"^{re.escape(s['name'])}$", "$options": "i"}, "status": "pending"},
+                {"$set": {"asset_count": s["asset_count"], "last_seen_at": now}},
+            )
+            refreshed += 1
+        else:
+            await db.vendor_candidates.insert_one({
+                "id": str(uuid.uuid4()), "name": s["name"], "category": s["category"],
+                "source": s["source"], "asset_count": s["asset_count"], "status": "pending",
+                "detected_at": now, "last_seen_at": now, "decided_at": None, "decided_by": None,
+            })
+            created += 1
+    return {"scanned": len(suggestions), "created": created, "refreshed": refreshed}
+
+
+async def deny_vendor_candidate(db, candidate_id: str, actor) -> Optional[dict]:
+    c = await db.vendor_candidates.find_one({"id": candidate_id}, {"_id": 0})
+    if not c:
+        return None
+    await db.vendor_candidates.update_one(
+        {"id": candidate_id},
+        {"$set": {"status": "denied", "decided_at": _now_iso(), "decided_by": actor}},
+    )
+    await _log(db, "candidate_denied", candidate_id, actor, f"Denied vendor candidate: {c['name']}")
+    return {**c, "status": "denied"}

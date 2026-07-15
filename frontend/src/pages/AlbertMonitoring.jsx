@@ -13,7 +13,7 @@ import {
 import {
   Broadcast, UploadSimple, Warning, ChartLine, Desktop, ShieldWarning,
   MagnifyingGlass, X, ArrowSquareOut, ArrowsClockwise, CaretRight,
-  CheckSquare, Square, ShieldStar, Flag, FirstAidKit, HardDrive, ListChecks, FileArrowDown,
+  CheckSquare, Square, ShieldStar, Flag, FirstAidKit, HardDrive, ListChecks, FileArrowDown, Terminal,
 } from "@phosphor-icons/react";
 
 const RANGE_OPTIONS = [7, 30, 90];
@@ -22,6 +22,7 @@ const SANKEY_NODE_COLORS = ["#60a5fa", "#a78bfa", "#34d399", "#fbbf24", "#f472b6
 const TREND_LINE_COLORS = ["#60a5fa", "#f87171", "#34d399", "#fbbf24", "#a78bfa", "#38bdf8", "#f472b6", "#94a3b8"];
 const ENRICH_STATUS_COLOR = { found: "text-red-300 border-red-500/30 bg-red-500/5", clean: "text-emerald-300 border-emerald-500/30 bg-emerald-500/5", not_configured: "text-slate-500 border-[#21262D]", error: "text-amber-300 border-amber-500/30 bg-amber-500/5" };
 const ENRICH_STATUS_LABEL = { found: "Hit", clean: "Clean", not_configured: "Not set up", error: "Error" };
+const PS_RISK_CHIP = { Critical: "red", High: "orange", Medium: "amber", Low: "slate" };
 
 function StatCard({ label, value, sub, icon: Icon, tone = "slate" }) {
   const toneMap = {
@@ -238,8 +239,10 @@ export default function AlbertMonitoring() {
       fd.append("file", file);
       const r = await api.post("/v1/admin/albert/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
       const wl = r.data.watchlist_matches ? `, ${r.data.watchlist_matches} watchlist match(es)` : "";
+      const dup = r.data.duplicates_merged ? `, ${r.data.duplicates_merged} duplicate(s) merged` : "";
+      const skip = r.data.rows_skipped ? `, ${r.data.rows_skipped} row(s) skipped (unparseable)` : "";
       const enr = r.data.auto_enrichment_queued?.length ? ` — checking ${r.data.auto_enrichment_queued.length} destination IP(s) against threat intel in the background` : "";
-      toast.success(`Imported ${r.data.rows_parsed} alerts (${r.data.disposition})${wl}${enr}`);
+      toast.success(`Imported ${r.data.rows_parsed} alerts (${r.data.disposition})${wl}${dup}${skip}${enr}`);
       loadDashboard(days);
       loadAlerts();
     } catch (e) {
@@ -248,6 +251,37 @@ export default function AlbertMonitoring() {
       setUploading(false);
       if (fileRef.current) fileRef.current.value = "";
     }
+  };
+
+  const uploadBulk = async (files) => {
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      for (const f of files) fd.append("files", f);
+      const r = await api.post("/v1/admin/albert/upload/bulk", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      const { files_succeeded, files_failed, totals } = r.data;
+      const dup = totals.duplicates_merged ? `, ${totals.duplicates_merged} duplicate(s) merged` : "";
+      if (files_failed > 0) {
+        const failedNames = r.data.results.filter(x => !x.ok).map(x => `${x.filename}: ${x.error}`).join("; ");
+        toast.warning(`${files_succeeded} file(s) imported (${totals.rows_parsed} alerts${dup}), ${files_failed} failed — ${failedNames}`);
+      } else {
+        toast.success(`Imported ${totals.rows_parsed} alerts from ${files_succeeded} file(s)${dup}`);
+      }
+      loadDashboard(days);
+      loadAlerts();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Bulk import failed");
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  const handleFilesSelected = (fileList) => {
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+    if (files.length === 1) upload(files[0]);
+    else uploadBulk(files);
   };
 
   const openAlert = async (a) => {
@@ -456,16 +490,16 @@ export default function AlbertMonitoring() {
     <Layout title="Albert Network Monitoring" subtitle="CIS/MS-ISAC network sensor alert exports — trends, breakdowns, and plain-English signature explanations">
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4 mb-5 flex items-center justify-between gap-4 flex-wrap">
         <div className="text-[12px] text-slate-400 max-w-2xl leading-relaxed">
-          Upload the .xlsx alert export from the CIS ANET portal. Each row's source/destination IP is checked against the
+          Upload one or more .xlsx alert exports from the CIS ANET portal (select multiple files for a bulk import). Each row's source/destination IP is checked against the
           existing <span className="text-slate-200">Threat Intel Watchlist</span>, and the busiest public destination IPs are
           automatically checked against <span className="text-slate-200">OpenCTI, GreyNoise, AlienVault OTX, and abuse.ch</span>.
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <input ref={fileRef} type="file" accept=".xlsx" className="hidden"
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) upload(f); }} />
+          <input ref={fileRef} type="file" accept=".xlsx" multiple className="hidden"
+            onChange={(e) => handleFilesSelected(e.target.files)} />
           <button onClick={() => fileRef.current?.click()} disabled={uploading}
             className="h-9 px-4 text-[12.5px] bg-blue-500 hover:bg-blue-400 disabled:opacity-40 text-white rounded inline-flex items-center gap-2">
-            <UploadSimple size={15} /> {uploading ? "Importing…" : "Upload Albert Export (.xlsx)"}
+            <UploadSimple size={15} /> {uploading ? "Importing…" : "Upload Albert Export(s) (.xlsx)"}
           </button>
         </div>
       </div>
@@ -966,7 +1000,14 @@ export default function AlbertMonitoring() {
               {(selected.stream_data || selected.stream_data_raw) && (
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
-                    <div className="text-slate-500 text-[10px] uppercase tracking-wider">Stream Data</div>
+                    <div className="flex items-center gap-1.5">
+                      <div className="text-slate-500 text-[10px] uppercase tracking-wider">Stream Data</div>
+                      {selected.stream_data_source && (
+                        <span className="text-[9.5px] text-slate-600 font-mono">
+                          {selected.stream_data_source === "hex" ? "decoded from hex" : "CIS text column"}
+                        </span>
+                      )}
+                    </div>
                     <button onClick={() => setShowRawStream(v => !v)} className="text-[10.5px] text-blue-300 hover:text-blue-200">
                       {showRawStream ? "Show cleaned" : "Show raw bytes"}
                     </button>
@@ -976,6 +1017,48 @@ export default function AlbertMonitoring() {
                   </pre>
                   {!showRawStream && (
                     <div className="text-[10px] text-slate-600 mt-1">Non-printable bytes collapsed to ⋯ for readability -- binary protocols like SMB naturally contain these.</div>
+                  )}
+                </div>
+              )}
+
+              {selected.powershell_analysis?.detected && (
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="flex items-center gap-1.5 text-slate-500 text-[10px] uppercase tracking-wider">
+                      <Terminal size={12} /> PowerShell Command Analysis
+                    </div>
+                    <Chip color={PS_RISK_CHIP[selected.powershell_analysis.overall_risk] || "slate"}>
+                      {selected.powershell_analysis.overall_risk} risk
+                    </Chip>
+                  </div>
+                  <div className="text-[11.5px] text-slate-300 leading-relaxed border border-[#21262D] rounded p-2.5 mb-2">
+                    {selected.powershell_analysis.plain_summary}
+                  </div>
+                  {selected.powershell_analysis.risk_indicators.length > 0 && (
+                    <div className="space-y-1 mb-2">
+                      {selected.powershell_analysis.risk_indicators.map((ind, i) => (
+                        <div key={i} className="flex items-start gap-2 px-2 py-1.5 rounded border border-[#21262D] text-[11px]">
+                          <Chip color={PS_RISK_CHIP[ind.risk] || "slate"}>{ind.label}</Chip>
+                          <span className="text-slate-400 leading-relaxed">{ind.explanation}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {selected.powershell_analysis.flags_explained.length > 0 && (
+                    <details className="text-[10.5px] text-slate-500 mb-2">
+                      <summary className="cursor-pointer text-slate-400 hover:text-slate-300">Launch flags ({selected.powershell_analysis.flags_explained.length})</summary>
+                      <ul className="mt-1 space-y-0.5 pl-3 list-disc">
+                        {selected.powershell_analysis.flags_explained.map((f, i) => <li key={i}>{f}</li>)}
+                      </ul>
+                    </details>
+                  )}
+                  {selected.powershell_analysis.decoded_command && (
+                    <div>
+                      <div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1">Decoded -EncodedCommand</div>
+                      <pre className="text-[10.5px] font-mono text-amber-200 bg-amber-500/5 border border-amber-500/20 rounded p-2.5 overflow-x-auto whitespace-pre-wrap max-h-40 overflow-y-auto">
+                        {selected.powershell_analysis.decoded_command}
+                      </pre>
+                    </div>
                   )}
                 </div>
               )}

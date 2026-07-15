@@ -82,6 +82,72 @@ async def upload_albert_export(
     return result
 
 
+@router.post("/v1/admin/albert/upload/bulk")
+async def upload_albert_export_bulk(
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(...),
+    user: dict = Depends(require_module("/admin/albert", level="edit")),
+):
+    """Same import as the single-file endpoint, run once per file -- one bad file
+    in the batch (wrong format, empty, etc.) is recorded as a per-file failure and
+    doesn't stop the rest from importing, since MS-ISAC exports often get pulled
+    as several date-range files at once."""
+    if not files:
+        raise HTTPException(400, "No files provided")
+    results = []
+    all_top_ips: List[str] = []
+    totals = {"rows_parsed": 0, "rows_skipped": 0, "duplicates_merged": 0, "watchlist_matches": 0}
+    for f in files:
+        started_at = now_iso()
+        if not f.filename or not f.filename.lower().endswith(".xlsx"):
+            results.append({"filename": f.filename, "ok": False, "error": "Not a .xlsx file"})
+            continue
+        content = await f.read()
+        if not content:
+            results.append({"filename": f.filename, "ok": False, "error": "File is empty"})
+            continue
+        try:
+            result = await import_albert_export(db, content, f.filename, uploaded_by=user.get("email"))
+        except ValueError as e:
+            await record_engagement(
+                db, name=f.filename, scanner="Albert (CIS/MS-ISAC)", scan_type="file_upload",
+                scan_method="manual_upload", status="failed", started_at=started_at, error=str(e),
+            )
+            results.append({"filename": f.filename, "ok": False, "error": str(e)})
+            continue
+        except Exception as e:
+            await record_engagement(
+                db, name=f.filename, scanner="Albert (CIS/MS-ISAC)", scan_type="file_upload",
+                scan_method="manual_upload", status="failed", started_at=started_at, error=str(e),
+            )
+            results.append({"filename": f.filename, "ok": False, "error": f"Couldn't process that file: {e}"})
+            continue
+
+        await record_engagement(
+            db, name=f.filename, scanner="Albert (CIS/MS-ISAC)", scan_type="file_upload",
+            scan_method="manual_upload", status="completed", started_at=started_at,
+            assets_scanned=result["rows_parsed"], findings_created=result["rows_parsed"],
+        )
+        top_ips = result.pop("top_public_destination_ips", [])
+        all_top_ips.extend(top_ips)
+        totals["rows_parsed"] += result["rows_parsed"]
+        totals["rows_skipped"] += result["rows_skipped"]
+        totals["duplicates_merged"] += result.get("duplicates_merged", 0)
+        totals["watchlist_matches"] += result.get("watchlist_matches", 0)
+        results.append({"filename": f.filename, "ok": True, **result})
+
+    dedup_top_ips = list(dict.fromkeys(all_top_ips))[:8]
+    if dedup_top_ips:
+        background_tasks.add_task(auto_enrich_top_ips, db, dedup_top_ips)
+
+    return {
+        "files_processed": len(files),
+        "files_succeeded": sum(1 for r in results if r["ok"]),
+        "files_failed": sum(1 for r in results if not r["ok"]),
+        "totals": totals, "results": results,
+    }
+
+
 @router.get("/v1/admin/albert/imports")
 async def list_albert_imports(user: dict = Depends(require_module("/admin/albert"))):
     docs = await db.albert_imports.find({}, {"_id": 0}).sort("uploaded_at", -1).to_list(200)
@@ -193,6 +259,8 @@ async def get_albert_alert(alert_id: str, user: dict = Depends(require_module("/
             asset = await db.assets.find_one({"ip": ip}, {"_id": 0, "id": 1, "hostname": 1, "criticality": 1, "environment": 1})
             if asset:
                 doc[out_key] = asset
+    from powershell_analysis import analyze_powershell
+    doc["powershell_analysis"] = analyze_powershell(doc.get("stream_data") or "")
     return doc
 
 

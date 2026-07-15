@@ -4,10 +4,14 @@ import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtDate, fmtRel, isOverdue } from "@/lib/utils-fmt";
-import { MagnifyingGlass, ArrowLeft, Stack, CaretLeft, CaretRight, LockKey, LockKeyOpen, Info, WindowsLogo, LinuxLogo, AppleLogo, Desktop, User, ArrowsClockwise, HandPalm } from "@phosphor-icons/react";
+import { MagnifyingGlass, ArrowLeft, Stack, CaretLeft, CaretRight, LockKey, LockKeyOpen, Info, WindowsLogo, LinuxLogo, AppleLogo, Desktop, User, ArrowsClockwise, HandPalm, Broadcast, ArrowSquareOut } from "@phosphor-icons/react";
 import TrendChart from "@/components/TrendChart";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
+import {
+  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+} from "recharts";
+
 
 const PAGE_SIZE = 50;
 const ENVIRONMENT_OPTIONS = ["production", "staging", "development", "test", "unknown"];
@@ -293,6 +297,7 @@ export function AssetDetail() {
   const [claimTeamChoice, setClaimTeamChoice] = useState("");
   const [claiming, setClaiming] = useState(false);
   const [findings, setFindings] = useState([]);
+  const [albertAlerts, setAlbertAlerts] = useState({ items: [], total: 0, severity_counts: {}, daily_trend: [] });
   const [history, setHistory] = useState({activity: [], observations: []});
   const [products, setProducts] = useState([]);
   const [savingProduct, setSavingProduct] = useState(false);
@@ -307,6 +312,7 @@ export function AssetDetail() {
   useEffect(() => {
     api.get(`/v1/assets/${id}`).then(r => setA(r.data));
     api.get(`/v1/assets/${id}/findings`).then(r => setFindings(r.data.items));
+    api.get(`/v1/assets/${id}/albert-alerts`).then(r => setAlbertAlerts(r.data)).catch(() => {});
     api.get(`/v1/assets/${id}/history`).then(r => setHistory(r.data));
     api.get("/v1/products").then(r => setProducts(r.data.items));
     api.get(`/v1/assets/${id}/patch-groups`).then(r => setPatchGroups(r.data.groups.filter(g => g.count > 1)));
@@ -604,6 +610,51 @@ export function AssetDetail() {
           </tbody>
         </table>
       </div>
+
+      {albertAlerts.total > 0 && (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden mb-4">
+          <div className="px-4 py-2 border-b border-[#30363D] flex items-center justify-between">
+            <h3 className="text-[11px] uppercase tracking-wider font-mono text-slate-400 flex items-center gap-1.5">
+              <Broadcast size={13} /> Albert Network Detections ({albertAlerts.total})
+            </h3>
+            <Link to="/admin/albert" className="text-[11px] text-blue-300 hover:text-blue-200 inline-flex items-center gap-1">
+              Open Albert Monitoring <ArrowSquareOut size={11} />
+            </Link>
+          </div>
+          {albertAlerts.daily_trend.length > 0 && (
+            <div className="px-4 pt-3">
+              <ResponsiveContainer width="100%" height={100}>
+                <BarChart data={albertAlerts.daily_trend}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#21262D" vertical={false} />
+                  <XAxis dataKey="day" tick={{ fill: "#8B949E", fontSize: 9 }} tickFormatter={(s) => s ? s.slice(5) : s} />
+                  <YAxis tick={{ fill: "#8B949E", fontSize: 9 }} allowDecimals={false} width={24} />
+                  <Tooltip contentStyle={{ background: "#161B22", border: "1px solid #30363D", fontSize: 12 }} />
+                  <Bar dataKey="count" fill="#60a5fa" radius={[2, 2, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+          <table className="dense w-full">
+            <thead><tr><th>Severity</th><th className="text-left">Alert</th><th>Category</th><th>Sensor</th><th>Time</th></tr></thead>
+            <tbody>
+              {albertAlerts.items.slice(0, 30).map(a => (
+                <tr key={a.id} className="border-t border-[#30363D]">
+                  <td><SevBadge severity={a.severity} /></td>
+                  <td className="text-slate-300 max-w-[320px] truncate">{a.alert_message}</td>
+                  <td><Chip color="slate">{a.category}</Chip></td>
+                  <td className="text-[11px] text-slate-400">{a.device}</td>
+                  <td className="font-mono text-[11px] text-slate-400">{fmtDate(a.time_gmt)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {albertAlerts.total > 30 && (
+            <div className="px-4 py-2 text-[10.5px] text-slate-500 border-t border-[#30363D]">
+              Showing 30 of {albertAlerts.total} -- open Albert Monitoring for the full history.
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">
         <div className="px-4 py-2 border-b border-[#30363D]"><h3 className="text-[11px] uppercase tracking-wider font-mono text-slate-400">Detection History</h3></div>

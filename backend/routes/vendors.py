@@ -13,7 +13,8 @@ from routes.common import now_iso
 from vendor_management import (
     CATEGORIES, MONITOR_MODULE_IDS, DPA_STATUSES, QUESTIONNAIRE_STATUSES, RENEWAL_WARN_DAYS,
     suggest_vendors, compute_vendor_risk, check_vendor_compromise, enable_vendor_monitoring,
-    disable_vendor_monitoring, get_vendor_risk_history, _clean, _log,
+    disable_vendor_monitoring, get_vendor_risk_history, scan_vendor_candidates,
+    deny_vendor_candidate, _clean, _log,
 )
 
 router = APIRouter()
@@ -112,6 +113,78 @@ async def create_vendors_bulk(body: BulkVendorBody, user: dict = Depends(require
     for v in body.vendors:
         created.append(await _create_vendor(v, user["email"]))
     return {"ok": True, "created": len(created), "vendors": created}
+
+
+# --- Vendor candidate approval queue -- detected-but-not-yet-decided vendors,
+# reviewed and explicitly approved or denied one at a time or in bulk, mirroring an
+# app-governance-style approval workflow rather than the old "select checkboxes and
+# instantly create vendors" suggestions flow. A denial is remembered (see
+# scan_vendor_candidates) so a dismissed candidate doesn't keep resurfacing. ---
+
+class CandidateIds(BaseModel):
+    ids: List[str]
+
+
+@router.post("/v1/vendors/candidates/scan")
+async def scan_candidates(user: dict = Depends(require_module("/vendors", level="edit"))):
+    return await scan_vendor_candidates(db)
+
+
+@router.get("/v1/vendors/candidates")
+async def list_candidates(status: str = "pending", user: dict = Depends(require_module("/vendors"))):
+    items = await db.vendor_candidates.find({"status": status}, {"_id": 0}).sort("asset_count", -1).to_list(2000)
+    return {"items": items, "total": len(items)}
+
+
+@router.post("/v1/vendors/candidates/{candidate_id}/approve")
+async def approve_candidate(candidate_id: str, user: dict = Depends(require_module("/vendors", level="edit"))):
+    c = await db.vendor_candidates.find_one({"id": candidate_id}, {"_id": 0})
+    if not c:
+        raise HTTPException(404, "Candidate not found")
+    if c["status"] != "pending":
+        raise HTTPException(400, f"Candidate is already {c['status']}")
+    vendor = await _create_vendor(VendorBody(name=c["name"], category=c["category"]), user["email"])
+    await db.vendor_candidates.update_one(
+        {"id": candidate_id},
+        {"$set": {"status": "approved", "decided_at": now_iso(), "decided_by": user["email"], "vendor_id": vendor["id"]}},
+    )
+    await _log(db, "candidate_approved", candidate_id, user["email"], f"Approved vendor candidate: {c['name']}")
+    return {"ok": True, "vendor": vendor}
+
+
+@router.post("/v1/vendors/candidates/{candidate_id}/deny")
+async def deny_candidate(candidate_id: str, user: dict = Depends(require_module("/vendors", level="edit"))):
+    result = await deny_vendor_candidate(db, candidate_id, user["email"])
+    if not result:
+        raise HTTPException(404, "Candidate not found")
+    return {"ok": True, "candidate": result}
+
+
+@router.post("/v1/vendors/candidates/bulk-approve")
+async def bulk_approve_candidates(body: CandidateIds, user: dict = Depends(require_module("/vendors", level="edit"))):
+    approved = []
+    for cid in body.ids:
+        c = await db.vendor_candidates.find_one({"id": cid}, {"_id": 0})
+        if not c or c["status"] != "pending":
+            continue
+        vendor = await _create_vendor(VendorBody(name=c["name"], category=c["category"]), user["email"])
+        await db.vendor_candidates.update_one(
+            {"id": cid},
+            {"$set": {"status": "approved", "decided_at": now_iso(), "decided_by": user["email"], "vendor_id": vendor["id"]}},
+        )
+        await _log(db, "candidate_approved", cid, user["email"], f"Approved vendor candidate (bulk): {c['name']}")
+        approved.append(vendor)
+    return {"ok": True, "approved": len(approved), "vendors": approved}
+
+
+@router.post("/v1/vendors/candidates/bulk-deny")
+async def bulk_deny_candidates(body: CandidateIds, user: dict = Depends(require_module("/vendors", level="edit"))):
+    denied = 0
+    for cid in body.ids:
+        result = await deny_vendor_candidate(db, cid, user["email"])
+        if result:
+            denied += 1
+    return {"ok": True, "denied": denied}
 
 
 @router.get("/v1/vendors")

@@ -89,6 +89,53 @@ async def asset_findings(asset_id: str, user: dict = Depends(get_current_user)):
     return {"items": items}
 
 
+@router.get("/v1/assets/{asset_id}/albert-alerts")
+async def asset_albert_alerts(asset_id: str, days: int = 90, user: dict = Depends(get_current_user)):
+    """Albert (CIS/MS-ISAC) network sensor alerts linked to this asset -- same shape
+    as the Vulnerabilities panel above, but for network-detection alerts instead of
+    scanner findings. An alert is "linked" the same way routes/albert.py's single-alert
+    view resolves source/destination assets: a manual link override
+    (source_asset_id_override / destination_asset_id_override) always wins, falling
+    back to a plain IP match against this asset's ip field."""
+    a = await db.assets.find_one({"id": asset_id}, {"_id": 0, "ip": 1})
+    ip = (a or {}).get("ip")
+
+    ors = [{"source_asset_id_override": asset_id}, {"destination_asset_id_override": asset_id}]
+    if ip:
+        ors += [{"source_ip": ip}, {"destination_ip": ip}]
+
+    candidates = await db.albert_alerts.find({"$or": ors}, {"_id": 0}).sort("time_gmt", -1).to_list(2000)
+
+    def _resolves_here(alert, ip_field, override_field):
+        override = alert.get(override_field)
+        if override:
+            return override == asset_id
+        return ip is not None and alert.get(ip_field) == ip
+
+    items = [
+        al for al in candidates
+        if _resolves_here(al, "source_ip", "source_asset_id_override")
+        or _resolves_here(al, "destination_ip", "destination_asset_id_override")
+    ]
+
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    severity_counts: dict = {}
+    daily_counts: dict = {}
+    for al in items:
+        severity_counts[al.get("severity") or "Unknown"] = severity_counts.get(al.get("severity") or "Unknown", 0) + 1
+        t = al.get("time_gmt") or ""
+        if t >= cutoff:
+            day = t[:10]
+            daily_counts[day] = daily_counts.get(day, 0) + 1
+
+    return {
+        "items": items[:200], "total": len(items),
+        "severity_counts": severity_counts,
+        "daily_trend": [{"day": d, "count": c} for d, c in sorted(daily_counts.items())],
+    }
+
+
 @router.get("/v1/assets/{asset_id}/tickets")
 async def asset_tickets(asset_id: str, user: dict = Depends(get_current_user)):
     items = await db.tickets.find({"asset_id": asset_id}, {"_id": 0}).to_list(100)
