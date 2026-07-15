@@ -8,7 +8,7 @@ import {
   CartesianGrid, Tooltip, Cell, ReferenceLine,
 } from "recharts";
 import {
-  Radar, UploadSimple, Warning, ChartLine, Desktop, ShieldWarning,
+  Broadcast, UploadSimple, Warning, ChartLine, Desktop, ShieldWarning,
   MagnifyingGlass, X, ArrowSquareOut,
 } from "@phosphor-icons/react";
 
@@ -137,7 +137,7 @@ export default function AlbertMonitoring() {
 
       {!loading && (!stats || stats.total_alerts === 0) ? (
         <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-10 text-center">
-          <Radar size={32} className="text-slate-600 mx-auto mb-3" />
+          <Broadcast size={32} className="text-slate-600 mx-auto mb-3" />
           <div className="text-[13px] text-slate-300 mb-1">No Albert alerts imported yet</div>
           <div className="text-[12px] text-slate-500">Upload an alert export above to see trends and breakdowns.</div>
         </div>
@@ -153,7 +153,7 @@ export default function AlbertMonitoring() {
           </div>
 
           <div className="grid grid-cols-4 gap-3 mb-4">
-            <StatCard label="Total Alerts" value={stats?.total_alerts ?? "—"} sub={`last ${stats?.range_days ?? days} days`} icon={Radar} />
+            <StatCard label="Total Alerts" value={stats?.total_alerts ?? "—"} sub={`last ${stats?.range_days ?? days} days`} icon={Broadcast} />
             <StatCard label="High Severity" value={stats?.severity_counts?.High ?? 0} icon={ShieldWarning} tone="orange" />
             <StatCard label="Sensors Reporting" value={deviceData.length} icon={Desktop} />
             <StatCard label="Anomaly Days Flagged" value={stats?.anomalies?.length ?? 0} icon={Warning} tone={(stats?.anomalies?.length ?? 0) > 0 ? "red" : "slate"} />
