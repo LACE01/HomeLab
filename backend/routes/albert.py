@@ -6,9 +6,10 @@ the SBOM upload in routes/sbom.py), not a scheduled sync.
 """
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from db import db
 from rbac import require_module
@@ -18,6 +19,10 @@ from albert_ingest import (
     compute_albert_sankey, _is_public_ip,
 )
 from albert_enrichment import enrich_ip, get_enrichment, auto_enrich_top_ips
+from albert_allowlist import (
+    list_allowlist, add_allowlist_entry, delete_allowlist_entry, reapply_allowlist,
+)
+from threat_intel_watchlist import add_ioc
 
 router = APIRouter()
 
@@ -81,9 +86,9 @@ async def list_albert_imports(user: dict = Depends(require_module("/admin/albert
 
 
 @router.get("/v1/admin/albert/stats")
-async def albert_stats(days: int = 30, user: dict = Depends(require_module("/admin/albert"))):
+async def albert_stats(days: int = 30, include_suppressed: bool = False, user: dict = Depends(require_module("/admin/albert"))):
     days = max(1, min(days, 365))
-    return await compute_albert_stats(db, days=days)
+    return await compute_albert_stats(db, days=days, include_suppressed=include_suppressed)
 
 
 @router.get("/v1/admin/albert/signatures")
@@ -118,11 +123,17 @@ async def list_albert_alerts(
     device: Optional[str] = None,
     q: Optional[str] = None,
     alert_message: Optional[str] = None,
+    acknowledged: Optional[bool] = None,
+    include_suppressed: bool = False,
     page: int = 1,
     page_size: int = 50,
     user: dict = Depends(require_module("/admin/albert")),
 ):
     flt = {}
+    if not include_suppressed:
+        flt["suppressed"] = {"$ne": True}
+    if acknowledged is not None:
+        flt["acknowledged"] = acknowledged if acknowledged else {"$ne": True}
     if severity:
         flt["severity"] = severity
     if category:
@@ -153,4 +164,89 @@ async def get_albert_alert(alert_id: str, user: dict = Depends(require_module("/
     doc = await db.albert_alerts.find_one({"id": alert_id}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Alert not found")
+    # Match source/destination IPs against inventory so the alert can link straight
+    # to an asset page instead of just showing a bare IP -- asset docs store a
+    # single "ip" field (see routes/inventory.py's IP search filter).
+    for field, out_key in (("source_ip", "source_asset"), ("destination_ip", "destination_asset")):
+        ip = doc.get(field)
+        doc[out_key] = None
+        if ip:
+            asset = await db.assets.find_one({"ip": ip}, {"_id": 0, "id": 1, "hostname": 1, "criticality": 1, "environment": 1})
+            if asset:
+                doc[out_key] = asset
     return doc
+
+
+class BulkAlertIds(BaseModel):
+    alert_ids: List[str]
+
+
+class BulkWatchlistBody(BaseModel):
+    alert_ids: List[str]
+    field: str = "destination_ip"  # "source_ip" | "destination_ip"
+    severity: str = "High"
+
+
+@router.post("/v1/admin/albert/alerts/bulk-acknowledge")
+async def bulk_acknowledge_alerts(body: BulkAlertIds, user: dict = Depends(require_module("/admin/albert", level="edit"))):
+    if not body.alert_ids:
+        raise HTTPException(400, "No alerts selected")
+    result = await db.albert_alerts.update_many(
+        {"id": {"$in": body.alert_ids}}, {"$set": {"acknowledged": True, "acknowledged_by": user["email"], "acknowledged_at": now_iso()}},
+    )
+    return {"ok": True, "updated": getattr(result, "modified_count", len(body.alert_ids))}
+
+
+@router.post("/v1/admin/albert/alerts/bulk-unacknowledge")
+async def bulk_unacknowledge_alerts(body: BulkAlertIds, user: dict = Depends(require_module("/admin/albert", level="edit"))):
+    if not body.alert_ids:
+        raise HTTPException(400, "No alerts selected")
+    result = await db.albert_alerts.update_many(
+        {"id": {"$in": body.alert_ids}}, {"$set": {"acknowledged": False}},
+    )
+    return {"ok": True, "updated": getattr(result, "modified_count", len(body.alert_ids))}
+
+
+@router.post("/v1/admin/albert/alerts/bulk-watchlist")
+async def bulk_add_to_watchlist(body: BulkWatchlistBody, user: dict = Depends(require_module("/admin/albert", level="edit"))):
+    if not body.alert_ids:
+        raise HTTPException(400, "No alerts selected")
+    if body.field not in ("source_ip", "destination_ip"):
+        raise HTTPException(400, "field must be source_ip or destination_ip")
+    alerts = await db.albert_alerts.find({"id": {"$in": body.alert_ids}}, {"_id": 0, body.field: 1}).to_list(len(body.alert_ids))
+    ips = sorted({a[body.field] for a in alerts if a.get(body.field) and _is_public_ip(a[body.field])})
+    added = []
+    for ip in ips:
+        await add_ioc(db, ioc_type="ip", value=ip, source="albert_manual", severity=body.severity,
+                       notes=f"Added from Albert alert bulk action by {user['email']}", added_by=user["email"])
+        added.append(ip)
+    return {"ok": True, "added": added, "skipped_private_or_missing": len(alerts) - len(ips)}
+
+
+@router.get("/v1/admin/albert/allowlist")
+async def get_allowlist(user: dict = Depends(require_module("/admin/albert"))):
+    return await list_allowlist(db)
+
+
+@router.post("/v1/admin/albert/allowlist")
+async def post_allowlist(body: dict, user: dict = Depends(require_module("/admin/albert", level="edit"))):
+    source_ip = (body or {}).get("source_ip")
+    notes = (body or {}).get("notes")
+    try:
+        entry = await add_allowlist_entry(db, source_ip, notes=notes, added_by=user["email"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return entry
+
+
+@router.delete("/v1/admin/albert/allowlist/{entry_id}")
+async def remove_allowlist_entry(entry_id: str, user: dict = Depends(require_module("/admin/albert", level="edit"))):
+    ok = await delete_allowlist_entry(db, entry_id)
+    if not ok:
+        raise HTTPException(404, "Allowlist entry not found")
+    return {"ok": True}
+
+
+@router.post("/v1/admin/albert/allowlist/reapply")
+async def post_reapply_allowlist(user: dict = Depends(require_module("/admin/albert", level="edit"))):
+    return await reapply_allowlist(db)

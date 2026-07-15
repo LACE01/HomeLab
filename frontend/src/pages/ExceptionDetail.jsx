@@ -9,7 +9,9 @@ import { fmtDate, fmtRel } from "@/lib/utils-fmt";
 import {
   ArrowLeft, CheckCircle, XCircle, ArrowClockwise, Clock, Ticket as TicketIcon,
   User, EnvelopeSimple, ShieldCheck, X, ChatCircle, Paperclip, Radioactive, TrendUp,
+  Flag, LinkSimple,
 } from "@phosphor-icons/react";
+import NewRiskModal from "@/components/NewRiskModal";
 
 const STATUS_COLOR = { pending_approval: "amber", active: "green", expired: "slate", rejected: "red", revoked: "red" };
 
@@ -197,11 +199,16 @@ export default function ExceptionDetail() {
   const [newNote, setNewNote] = useState("");
   const [noteAttachments, setNoteAttachments] = useState([]);
   const [signals, setSignals] = useState(null);
+  const [linkedRisks, setLinkedRisks] = useState([]);
+  const [showRiskModal, setShowRiskModal] = useState(false);
 
   const load = useCallback(() => {
     api.get(`/v1/exceptions/${id}`).then(r => setExc(r.data)).catch(() => setExc(false));
   }, [id]);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    api.get("/v1/risk-register", { params: { exception_id: id } }).then(r => setLinkedRisks(r.data)).catch(() => setLinkedRisks([]));
+  }, [id]);
   useEffect(() => {
     if (exc && exc.status === "active") {
       api.get(`/v1/exceptions/${id}/risk-signals`).then(r => setSignals(r.data)).catch(() => setSignals(null));
@@ -339,6 +346,24 @@ export default function ExceptionDetail() {
                 </Link>
               ))}
               {(!exc.findings || exc.findings.length === 0) && <div className="text-[12px] text-slate-500">No findings attached.</div>}
+            </div>
+          </div>
+
+          <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-[13px] font-medium text-slate-100 flex items-center gap-1.5"><Flag size={15}/> Risk Register</div>
+              <button onClick={() => setShowRiskModal(true)} className="text-[11px] text-blue-300 hover:text-blue-200 inline-flex items-center gap-1">
+                <LinkSimple size={11}/> Add to Risk Register
+              </button>
+            </div>
+            <div className="space-y-1.5">
+              {linkedRisks.map(r => (
+                <Link key={r.id} to={`/risk-register/${r.id}`} className="flex items-center justify-between border border-[#30363D] rounded px-2.5 py-1.5 hover:border-[#484F58]">
+                  <span className="text-[12px] text-slate-200 truncate flex-1">{r.title}</span>
+                  <Chip color="slate">{r.status}</Chip>
+                </Link>
+              ))}
+              {linkedRisks.length === 0 && <div className="text-[12px] text-slate-500">Not tracked in the Risk Register yet.</div>}
             </div>
           </div>
 
@@ -505,6 +530,25 @@ export default function ExceptionDetail() {
       {modal === "reject" && <RejectModal exc={exc} onClose={() => setModal(null)} onDone={() => { setModal(null); load(); }} />}
       {modal === "renew" && <RenewModal exc={exc} onClose={() => setModal(null)} onDone={() => { setModal(null); load(); }} />}
       {modal === "revoke" && <RevokeModal exc={exc} onClose={() => setModal(null)} onDone={() => { setModal(null); load(); }} />}
+      {showRiskModal && (
+        <NewRiskModal onClose={() => setShowRiskModal(false)}
+          prefill={{
+            title: exc.finding_title || exc.target_value || "Risk from accepted exception",
+            description: exc.business_justification || exc.rationale || "",
+            category: "Technical",
+            linked_finding_ids: exc.finding_ids?.length ? exc.finding_ids : (exc.finding_id ? [exc.finding_id] : []),
+            linked_exception_ids: [exc.id],
+            external_reference: exc.asset_hostname || "",
+            tags: ["exception"],
+            contextLabel: `From risk acceptance for ${exc.finding_title || exc.target_value || "this exception"}`,
+          }}
+          onCreated={() => {
+            setShowRiskModal(false);
+            toast.success("Linked to Risk Register");
+            api.get("/v1/risk-register", { params: { exception_id: id } }).then(r => setLinkedRisks(r.data)).catch(() => {});
+          }}
+        />
+      )}
     </Layout>
   );
 }

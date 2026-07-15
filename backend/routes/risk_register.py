@@ -71,6 +71,8 @@ class RiskBody(BaseModel):
     linked_finding_ids: List[str] = []
     linked_asset_ids: List[str] = []
     linked_exception_ids: List[str] = []
+    linked_albert_alert_ids: List[str] = []
+    external_reference: Optional[str] = None  # freeform device/domain/website context that isn't a tracked asset
     tags: List[str] = []
 
 
@@ -90,6 +92,8 @@ class RiskUpdateBody(BaseModel):
     linked_finding_ids: Optional[List[str]] = None
     linked_asset_ids: Optional[List[str]] = None
     linked_exception_ids: Optional[List[str]] = None
+    linked_albert_alert_ids: Optional[List[str]] = None
+    external_reference: Optional[str] = None
     tags: Optional[List[str]] = None
 
 
@@ -107,6 +111,8 @@ async def risk_register_meta(user: dict = Depends(require_module("/risk-register
 async def list_risks(
     status: Optional[str] = None, category: Optional[str] = None, owner: Optional[str] = None,
     band: Optional[str] = None, q: Optional[str] = None,
+    exception_id: Optional[str] = None, finding_id: Optional[str] = None,
+    asset_id: Optional[str] = None, albert_alert_id: Optional[str] = None,
     user: dict = Depends(require_module("/risk-register")),
 ):
     flt = {}
@@ -116,6 +122,16 @@ async def list_risks(
         flt["category"] = category
     if owner:
         flt["owner"] = owner
+    if exception_id:
+        # Reverse lookup -- "which risk register entries reference this exception",
+        # used by Exception Detail to show/link back to any risks it's tied to.
+        flt["linked_exception_ids"] = exception_id
+    if finding_id:
+        flt["linked_finding_ids"] = finding_id
+    if asset_id:
+        flt["linked_asset_ids"] = asset_id
+    if albert_alert_id:
+        flt["linked_albert_alert_ids"] = albert_alert_id
     if q:
         flt["$or"] = [{"title": {"$regex": q, "$options": "i"}}, {"description": {"$regex": q, "$options": "i"}}]
     docs = await db.risks.find(flt, {"_id": 0}).sort("inherent_score", -1).to_list(2000)

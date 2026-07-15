@@ -7,7 +7,7 @@ import { Chip } from "@/components/Badges";
 import { fmtDate } from "@/lib/utils-fmt";
 import {
   ArrowLeft, ChatCircle, ClockCounterClockwise, CheckCircle, PencilSimple,
-  Trash, FloppyDisk, X, Warning,
+  Trash, FloppyDisk, X, Warning, LinkSimple, ShieldCheck, Plus,
 } from "@phosphor-icons/react";
 
 const BAND_COLOR = { Critical: "#f87171", High: "#fb923c", Medium: "#fbbf24", Low: "#60a5fa" };
@@ -28,6 +28,10 @@ export default function RiskDetail() {
   const [timeline, setTimeline] = useState([]);
   const [newNote, setNewNote] = useState("");
   const [editing, setEditing] = useState(false);
+  const [linkedExceptions, setLinkedExceptions] = useState([]);
+  const [showLinkException, setShowLinkException] = useState(false);
+  const [allExceptions, setAllExceptions] = useState([]);
+  const [exceptionSearch, setExceptionSearch] = useState("");
   const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
 
@@ -44,10 +48,51 @@ export default function RiskDetail() {
       setMeta(metaR.data);
       setComments(commentsR.data);
       setTimeline(timelineR.data);
+      if (riskR.data.linked_exception_ids?.length > 0) {
+        const excs = await Promise.all(
+          riskR.data.linked_exception_ids.map(eid => api.get(`/v1/exceptions/${eid}`).then(r => r.data).catch(() => null))
+        );
+        setLinkedExceptions(excs.filter(Boolean));
+      } else {
+        setLinkedExceptions([]);
+      }
     } catch (e) {
       toast.error("Couldn't load this risk");
     }
   }, [id]);
+
+  const openLinkException = async () => {
+    setShowLinkException(true);
+    if (allExceptions.length === 0) {
+      try {
+        const r = await api.get("/v1/exceptions");
+        setAllExceptions(r.data.items || []);
+      } catch (e) { /* non-fatal */ }
+    }
+  };
+
+  const linkExisting = async (exceptionId) => {
+    try {
+      const next = [...new Set([...(risk.linked_exception_ids || []), exceptionId])];
+      await api.patch(`/v1/risk-register/${id}`, { linked_exception_ids: next });
+      toast.success("Linked");
+      setShowLinkException(false);
+      setExceptionSearch("");
+      load();
+    } catch (e) {
+      toast.error("Failed to link");
+    }
+  };
+
+  const unlinkException = async (exceptionId) => {
+    try {
+      const next = (risk.linked_exception_ids || []).filter(eid => eid !== exceptionId);
+      await api.patch(`/v1/risk-register/${id}`, { linked_exception_ids: next });
+      load();
+    } catch (e) {
+      toast.error("Failed to unlink");
+    }
+  };
 
   useEffect(() => { load(); }, [load]);
 
@@ -284,18 +329,71 @@ export default function RiskDetail() {
             )}
           </div>
 
-          {(risk.linked_finding_ids?.length > 0 || risk.linked_asset_ids?.length > 0 || risk.linked_exception_ids?.length > 0) && (
+          {(risk.linked_finding_ids?.length > 0 || risk.linked_asset_ids?.length > 0) && (
             <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
               <div className="text-[13px] font-medium text-slate-100 mb-2">Linked Items</div>
               <div className="space-y-1.5 text-[12px]">
                 {(risk.linked_finding_ids || []).map(fid => <Link key={fid} to={`/findings/${fid}`} className="block text-blue-300 hover:underline">Finding {fid.slice(0, 8)}</Link>)}
                 {(risk.linked_asset_ids || []).map(aid => <Link key={aid} to={`/assets/${aid}`} className="block text-blue-300 hover:underline">Asset {aid.slice(0, 8)}</Link>)}
-                {(risk.linked_exception_ids || []).map(eid => <Link key={eid} to={`/exceptions/${eid}`} className="block text-blue-300 hover:underline">Exception {eid.slice(0, 8)}</Link>)}
               </div>
             </div>
           )}
+
+          <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-[13px] font-medium text-slate-100 flex items-center gap-1.5"><ShieldCheck size={15} /> Linked Exceptions</div>
+              <button onClick={openLinkException} className="text-[11px] text-blue-300 hover:text-blue-200 inline-flex items-center gap-1"><LinkSimple size={11} /> Link existing</button>
+            </div>
+            <div className="space-y-1.5 text-[12px] mb-2">
+              {linkedExceptions.map(exc => (
+                <div key={exc.id} className="flex items-center justify-between border border-[#21262D] rounded px-2 py-1.5">
+                  <Link to={`/exceptions/${exc.id}`} className="text-blue-300 hover:underline truncate">{exc.finding_title || exc.target_value || exc.id.slice(0, 8)}</Link>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Chip color="slate">{exc.status}</Chip>
+                    <button onClick={() => unlinkException(exc.id)} className="text-slate-500 hover:text-red-400"><X size={12} /></button>
+                  </div>
+                </div>
+              ))}
+              {linkedExceptions.length === 0 && <div className="text-slate-500">No exceptions linked yet.</div>}
+            </div>
+            {risk.linked_finding_ids?.length > 0 && (
+              <Link to={`/exceptions/new?finding_id=${risk.linked_finding_ids[0]}`}
+                className="text-[11px] text-blue-300 hover:text-blue-200 inline-flex items-center gap-1">
+                <Plus size={11} /> Request a new exception for the linked finding
+              </Link>
+            )}
+          </div>
         </div>
       </div>
+
+      {showLinkException && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4" onClick={() => setShowLinkException(false)}>
+          <div className="bg-[#0D1117] border border-[#30363D] rounded-md w-full max-w-md max-h-[70vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="px-4 py-3 border-b border-[#30363D] flex items-center justify-between sticky top-0 bg-[#0D1117]">
+              <h3 className="text-[13px] font-medium text-slate-100">Link an existing exception</h3>
+              <button onClick={() => setShowLinkException(false)} className="text-slate-500 hover:text-slate-300"><X size={16} /></button>
+            </div>
+            <div className="p-3">
+              <input value={exceptionSearch} onChange={e => setExceptionSearch(e.target.value)} placeholder="Search by finding, asset, or CVE…"
+                className="w-full h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12.5px] text-slate-200 mb-2" />
+              <div className="space-y-1">
+                {allExceptions
+                  .filter(e => !exceptionSearch || `${e.finding_title} ${e.asset_hostname} ${e.cve}`.toLowerCase().includes(exceptionSearch.toLowerCase()))
+                  .filter(e => !(risk.linked_exception_ids || []).includes(e.id))
+                  .slice(0, 30)
+                  .map(e => (
+                    <button key={e.id} onClick={() => linkExisting(e.id)}
+                      className="w-full text-left px-2.5 py-1.5 border border-[#21262D] hover:border-blue-500/40 rounded text-[12px] text-slate-300">
+                      <div className="truncate">{e.finding_title || e.target_value}</div>
+                      <div className="text-[10.5px] text-slate-500 font-mono">{e.asset_hostname} · {e.status}</div>
+                    </button>
+                  ))}
+                {allExceptions.length === 0 && <div className="text-[12px] text-slate-500 text-center py-4">No exceptions found.</div>}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </Layout>
   );
 }

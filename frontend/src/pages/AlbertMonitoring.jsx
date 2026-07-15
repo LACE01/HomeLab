@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate, Link } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { SevBadge, Chip } from "@/components/Badges";
+import NewRiskModal from "@/components/NewRiskModal";
 import {
   ResponsiveContainer, BarChart, Bar, AreaChart, Area, XAxis, YAxis,
   CartesianGrid, Tooltip, Cell, ReferenceLine, Sankey, Layer, Rectangle,
@@ -10,6 +12,7 @@ import {
 import {
   Broadcast, UploadSimple, Warning, ChartLine, Desktop, ShieldWarning,
   MagnifyingGlass, X, ArrowSquareOut, ArrowsClockwise, CaretRight,
+  CheckSquare, Square, ShieldStar, Flag, FirstAidKit, HardDrive, ListChecks,
 } from "@phosphor-icons/react";
 
 const RANGE_OPTIONS = [7, 30, 90];
@@ -144,6 +147,14 @@ export default function AlbertMonitoring() {
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState(null);
   const [showRawStream, setShowRawStream] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [showRiskModal, setShowRiskModal] = useState(false);
+  const [allowlist, setAllowlist] = useState([]);
+  const [showAllowlist, setShowAllowlist] = useState(false);
+  const [newAllowlistIp, setNewAllowlistIp] = useState("");
+  const [includeSuppressed, setIncludeSuppressed] = useState(false);
+  const navigate = useNavigate();
 
   const loadDashboard = async (rangeDays) => {
     setLoading(true);
@@ -167,7 +178,7 @@ export default function AlbertMonitoring() {
 
   const loadAlerts = async () => {
     try {
-      const params = { page, page_size: 25 };
+      const params = { page, page_size: 25, include_suppressed: includeSuppressed };
       if (q) params.q = q;
       if (severity) params.severity = severity;
       if (category) params.category = category;
@@ -175,11 +186,20 @@ export default function AlbertMonitoring() {
       if (alertMessage) params.alert_message = alertMessage;
       const r = await api.get("/v1/admin/albert/alerts", { params });
       setAlerts(r.data);
+      setSelectedIds(new Set());
+    } catch (e) { /* non-fatal */ }
+  };
+
+  const loadAllowlist = async () => {
+    try {
+      const r = await api.get("/v1/admin/albert/allowlist");
+      setAllowlist(r.data);
     } catch (e) { /* non-fatal */ }
   };
 
   useEffect(() => { loadDashboard(days); }, [days]);
-  useEffect(() => { loadAlerts(); }, [page, q, severity, category, device, alertMessage]);
+  useEffect(() => { loadAlerts(); }, [page, q, severity, category, device, alertMessage, includeSuppressed]);
+  useEffect(() => { loadAllowlist(); }, []);
 
   const scrollToAlerts = () => {
     setTimeout(() => alertsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
@@ -213,7 +233,110 @@ export default function AlbertMonitoring() {
     }
   };
 
-  const openAlert = (a) => { setShowRawStream(false); setSelected(a); };
+  const openAlert = async (a) => {
+    setShowRawStream(false);
+    setSelected(a);
+    try {
+      const r = await api.get(`/v1/admin/albert/alerts/${a.id}`);
+      setSelected(r.data);
+    } catch (e) { /* keep the row data we already have */ }
+  };
+
+  const toggleSelect = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    setSelectedIds(prev => prev.size === alerts.items.length ? new Set() : new Set(alerts.items.map(a => a.id)));
+  };
+
+  const bulkAcknowledge = async () => {
+    if (selectedIds.size === 0) return;
+    setBulkBusy(true);
+    try {
+      await api.post("/v1/admin/albert/alerts/bulk-acknowledge", { alert_ids: [...selectedIds] });
+      toast.success(`Acknowledged ${selectedIds.size} alert(s)`);
+      loadAlerts();
+    } catch (e) {
+      toast.error("Bulk acknowledge failed");
+    } finally { setBulkBusy(false); }
+  };
+
+  const bulkWatchlist = async (field) => {
+    if (selectedIds.size === 0) return;
+    setBulkBusy(true);
+    try {
+      const r = await api.post("/v1/admin/albert/alerts/bulk-watchlist", { alert_ids: [...selectedIds], field, severity: "High" });
+      toast.success(r.data.added.length > 0 ? `Added ${r.data.added.length} IP(s) to the Threat Intel Watchlist` : "No public IPs found in the selection");
+    } catch (e) {
+      toast.error("Bulk watchlist add failed");
+    } finally { setBulkBusy(false); }
+  };
+
+  const addAllowlistEntry = async () => {
+    if (!newAllowlistIp.trim()) return;
+    try {
+      await api.post("/v1/admin/albert/allowlist", { source_ip: newAllowlistIp.trim() });
+      setNewAllowlistIp("");
+      loadAllowlist();
+      toast.success("Added to allowlist -- click \"Re-apply to existing alerts\" to suppress past matches too");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to add");
+    }
+  };
+
+  const removeAllowlistEntry = async (id) => {
+    try {
+      await api.delete(`/v1/admin/albert/allowlist/${id}`);
+      loadAllowlist();
+    } catch (e) { toast.error("Failed to remove"); }
+  };
+
+  const reapplyAllowlist = async () => {
+    try {
+      const r = await api.post("/v1/admin/albert/allowlist/reapply");
+      toast.success(`${r.data.suppressed} suppressed, ${r.data.unsuppressed} un-suppressed`);
+      loadDashboard(days);
+      loadAlerts();
+    } catch (e) { toast.error("Re-apply failed"); }
+  };
+
+  const openIrCase = async () => {
+    if (!selected) return;
+    try {
+      const r = await api.post("/v1/ir/cases", {
+        title: `Albert alert: ${selected.alert_message} on ${selected.device}`,
+        classification: selected.severity === "High" || selected.severity === "Critical" ? "Moderate" : "Minor",
+        initial_intake: `Detected by Albert (CIS/MS-ISAC) sensor ${selected.device} at ${selected.time_gmt}.\n\n`
+          + `${selected.explanation}\n\nSource: ${selected.source_ip}:${selected.source_port} -> Destination: ${selected.destination_ip}:${selected.destination_port}`,
+      });
+      toast.success(`IR case ${r.data.case_number} opened`);
+      navigate(`/ir/cases/${r.data.id}`);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to open IR case");
+    }
+  };
+
+  const riskPrefillFromAlert = () => {
+    if (!selected) return {};
+    const asset = selected.destination_asset || selected.source_asset;
+    return {
+      title: `${selected.alert_message} (${selected.device})`,
+      description: `${selected.explanation}\n\nSource: ${selected.source_ip}:${selected.source_port} -> Destination: ${selected.destination_ip}:${selected.destination_port}`,
+      category: "Technical",
+      likelihood: selected.severity === "High" ? 3 : 2,
+      impact: selected.severity === "High" ? 4 : 2,
+      linked_asset_ids: asset ? [asset.id] : [],
+      linked_albert_alert_ids: [selected.id],
+      external_reference: asset ? "" : (selected.destination_ip || selected.source_ip || ""),
+      tags: ["albert"],
+      contextLabel: `From Albert alert on ${selected.device}${asset ? ` -- linked to asset ${asset.hostname}` : ""}`,
+    };
+  };
 
   const categories = Object.keys(stats?.category_counts || {});
   const devices = Object.keys(stats?.device_counts || {});
@@ -431,6 +554,14 @@ export default function AlbertMonitoring() {
                 <option value="">All sensors</option>
                 {devices.map(d => <option key={d} value={d}>{d}</option>)}
               </select>
+              <label className="flex items-center gap-1 text-[11px] text-slate-400 cursor-pointer">
+                <input type="checkbox" checked={includeSuppressed} onChange={(e) => { setPage(1); setIncludeSuppressed(e.target.checked); }} />
+                Show suppressed
+              </label>
+              <button onClick={() => setShowAllowlist(v => !v)}
+                className="h-7 px-2 text-[11px] border border-[#30363D] hover:border-[#484F58] text-slate-400 rounded">
+                Allowlist ({allowlist.length})
+              </button>
               {anyFilterActive && (
                 <button onClick={clearFilters} className="h-7 px-2 text-[11px] text-slate-500 hover:text-slate-300 inline-flex items-center gap-1">
                   <X size={11} /> Clear
@@ -439,11 +570,47 @@ export default function AlbertMonitoring() {
             </div>
           }
         >
+          {showAllowlist && (
+            <div className="mb-3 border border-[#21262D] rounded p-3 bg-[#161B22]">
+              <div className="text-[11.5px] text-slate-300 mb-2 leading-relaxed">
+                Known-good source IPs (patch management, automation, admin jump hosts) -- their PowerShell-over-SMB and similar alerts
+                are suppressed from stats and hidden from the table by default.
+              </div>
+              <div className="flex items-center gap-2 mb-2">
+                <input value={newAllowlistIp} onChange={(e) => setNewAllowlistIp(e.target.value)} placeholder="Source IP, e.g. 192.168.13.138"
+                  className="h-7 flex-1 bg-[#0D1117] border border-[#30363D] rounded px-2 text-[11.5px] text-slate-200" />
+                <button onClick={addAllowlistEntry} className="h-7 px-3 text-[11px] bg-blue-500/20 border border-blue-500/40 text-blue-200 rounded">Add</button>
+                <button onClick={reapplyAllowlist} className="h-7 px-3 text-[11px] border border-[#30363D] hover:border-blue-500/40 hover:text-blue-300 text-slate-300 rounded">
+                  Re-apply to existing alerts
+                </button>
+              </div>
+              <div className="space-y-1">
+                {allowlist.map(e => (
+                  <div key={e.id} className="flex items-center justify-between text-[11.5px] text-slate-300 font-mono">
+                    <span>{e.source_ip} {e.notes && <span className="text-slate-500 font-sans">— {e.notes}</span>}</span>
+                    <button onClick={() => removeAllowlistEntry(e.id)} className="text-red-400 hover:text-red-300"><X size={12} /></button>
+                  </div>
+                ))}
+                {allowlist.length === 0 && <div className="text-[11px] text-slate-500">No allowlist entries yet.</div>}
+              </div>
+            </div>
+          )}
+
           {alertMessage && (
             <div className="mb-2 text-[11.5px] text-blue-300 flex items-center gap-1.5">
               <CaretRight size={11} /> Showing alerts for signature: <span className="font-medium">{alertMessage}</span>
             </div>
           )}
+
+          {selectedIds.size > 0 && (
+            <div className="mb-2 flex items-center gap-2 text-[11.5px] bg-blue-500/5 border border-blue-500/30 rounded px-3 py-2">
+              <span className="text-blue-300">{selectedIds.size} selected</span>
+              <button disabled={bulkBusy} onClick={bulkAcknowledge} className="h-6 px-2 border border-[#30363D] hover:border-blue-500/40 text-slate-300 rounded">Acknowledge</button>
+              <button disabled={bulkBusy} onClick={() => bulkWatchlist("destination_ip")} className="h-6 px-2 border border-[#30363D] hover:border-blue-500/40 text-slate-300 rounded">Watchlist destination IPs</button>
+              <button disabled={bulkBusy} onClick={() => bulkWatchlist("source_ip")} className="h-6 px-2 border border-[#30363D] hover:border-blue-500/40 text-slate-300 rounded">Watchlist source IPs</button>
+            </div>
+          )}
+
           {alerts.items.length === 0 ? (
             <div className="text-center py-8 text-[12.5px] text-slate-500">No alerts match these filters.</div>
           ) : (
@@ -451,6 +618,11 @@ export default function AlbertMonitoring() {
               <table className="w-full text-[12px]">
                 <thead>
                   <tr className="border-b border-[#21262D] text-[10px] uppercase tracking-wider text-slate-500">
+                    <th className="text-left px-3 py-2 w-8">
+                      <button onClick={toggleSelectAll} className="text-slate-500 hover:text-slate-300">
+                        {selectedIds.size === alerts.items.length ? <CheckSquare size={14} /> : <Square size={14} />}
+                      </button>
+                    </th>
                     <th className="text-left px-3 py-2 font-mono">Time (GMT)</th>
                     <th className="text-left px-3 py-2 font-mono">Sensor</th>
                     <th className="text-left px-3 py-2 font-mono">Alert</th>
@@ -460,12 +632,19 @@ export default function AlbertMonitoring() {
                 </thead>
                 <tbody className="divide-y divide-[#21262D]">
                   {alerts.items.map(a => (
-                    <tr key={a.id} onClick={() => openAlert(a)} className="cursor-pointer hover:bg-[#161B22]">
-                      <td className="px-3 py-2 font-mono text-slate-400 whitespace-nowrap">{a.time_gmt ? new Date(a.time_gmt).toLocaleString() : "—"}</td>
-                      <td className="px-3 py-2 text-slate-300">{a.device}</td>
-                      <td className="px-3 py-2 text-slate-200 max-w-[280px] truncate">{a.alert_message}</td>
-                      <td className="px-3 py-2 font-mono text-slate-400 whitespace-nowrap">{a.source_ip}:{a.source_port} → {a.destination_ip}:{a.destination_port}</td>
-                      <td className="px-3 py-2"><SevBadge severity={a.severity} /></td>
+                    <tr key={a.id} className={`hover:bg-[#161B22] ${a.suppressed ? "opacity-50" : ""}`}>
+                      <td className="px-3 py-2" onClick={(e) => { e.stopPropagation(); toggleSelect(a.id); }}>
+                        <button className="text-slate-500 hover:text-slate-300">
+                          {selectedIds.has(a.id) ? <CheckSquare size={14} /> : <Square size={14} />}
+                        </button>
+                      </td>
+                      <td className="px-3 py-2 font-mono text-slate-400 whitespace-nowrap cursor-pointer" onClick={() => openAlert(a)}>{a.time_gmt ? new Date(a.time_gmt).toLocaleString() : "—"}</td>
+                      <td className="px-3 py-2 text-slate-300 cursor-pointer" onClick={() => openAlert(a)}>{a.device}</td>
+                      <td className="px-3 py-2 text-slate-200 max-w-[280px] truncate cursor-pointer" onClick={() => openAlert(a)}>
+                        {a.alert_message} {a.acknowledged && <Chip color="green">ack'd</Chip>} {a.suppressed && <Chip color="slate">suppressed</Chip>}
+                      </td>
+                      <td className="px-3 py-2 font-mono text-slate-400 whitespace-nowrap cursor-pointer" onClick={() => openAlert(a)}>{a.source_ip}:{a.source_port} → {a.destination_ip}:{a.destination_port}</td>
+                      <td className="px-3 py-2 cursor-pointer" onClick={() => openAlert(a)}><SevBadge severity={a.severity} /></td>
                     </tr>
                   ))}
                 </tbody>
@@ -519,6 +698,18 @@ export default function AlbertMonitoring() {
                 <Chip color="slate">{selected.category}</Chip>
                 <span className="text-[13px] text-slate-100 font-medium">{selected.alert_message}</span>
               </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                <button onClick={() => setShowRiskModal(true)}
+                  className="h-7 px-2.5 text-[11.5px] border border-[#30363D] hover:border-blue-500/40 hover:text-blue-300 text-slate-300 rounded inline-flex items-center gap-1.5">
+                  <Flag size={13} /> Add to Risk Register
+                </button>
+                <button onClick={openIrCase}
+                  className="h-7 px-2.5 text-[11.5px] border border-[#30363D] hover:border-red-500/40 hover:text-red-300 text-slate-300 rounded inline-flex items-center gap-1.5">
+                  <FirstAidKit size={13} /> Open IR case
+                </button>
+              </div>
+
               <div className="text-[12.5px] text-slate-300 leading-relaxed border border-[#21262D] rounded p-3">{selected.explanation}</div>
               {selected.mitre_technique && (
                 <div className="text-[11.5px] text-slate-500 font-mono">MITRE ATT&CK: {selected.mitre_technique}</div>
@@ -526,8 +717,24 @@ export default function AlbertMonitoring() {
               <div className="grid grid-cols-2 gap-3 text-[12px]">
                 <div><div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1">Time (GMT)</div><div className="font-mono text-slate-300">{selected.time_gmt ? new Date(selected.time_gmt).toLocaleString() : "—"}</div></div>
                 <div><div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1">Sensor</div><div className="text-slate-300">{selected.device}</div></div>
-                <div><div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1">Source</div><div className="font-mono text-slate-300">{selected.source_ip}:{selected.source_port}</div></div>
-                <div><div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1">Destination</div><div className="font-mono text-slate-300">{selected.destination_ip}:{selected.destination_port}</div></div>
+                <div>
+                  <div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1">Source</div>
+                  <div className="font-mono text-slate-300">{selected.source_ip}:{selected.source_port}</div>
+                  {selected.source_asset && (
+                    <Link to={`/assets/${selected.source_asset.id}`} className="text-[10.5px] text-blue-300 hover:text-blue-200 inline-flex items-center gap-1 mt-0.5">
+                      <HardDrive size={10} /> {selected.source_asset.hostname}
+                    </Link>
+                  )}
+                </div>
+                <div>
+                  <div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1">Destination</div>
+                  <div className="font-mono text-slate-300">{selected.destination_ip}:{selected.destination_port}</div>
+                  {selected.destination_asset && (
+                    <Link to={`/assets/${selected.destination_asset.id}`} className="text-[10.5px] text-blue-300 hover:text-blue-200 inline-flex items-center gap-1 mt-0.5">
+                      <HardDrive size={10} /> {selected.destination_asset.hostname}
+                    </Link>
+                  )}
+                </div>
                 <div><div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1">Protocol</div><div className="text-slate-300">{selected.protocol_name || selected.protocol}</div></div>
                 <div><div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1">Disposition</div><div className="text-slate-300 capitalize">{selected.disposition}</div></div>
               </div>
@@ -562,6 +769,11 @@ export default function AlbertMonitoring() {
             </div>
           </div>
         </div>
+      )}
+
+      {showRiskModal && (
+        <NewRiskModal onClose={() => setShowRiskModal(false)} prefill={riskPrefillFromAlert()}
+          onCreated={() => { setShowRiskModal(false); toast.success("Linked to Risk Register"); navigate("/risk-register"); }} />
       )}
     </Layout>
   );

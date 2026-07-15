@@ -200,6 +200,9 @@ async def import_albert_export(db, content: bytes, filename: str, uploaded_by: O
     disposition = _infer_disposition(filename, sheet_name)
 
     from threat_intel_watchlist import check_and_emit
+    from albert_allowlist import _allowlisted_ips
+
+    allowlisted_ips = await _allowlisted_ips(db)
 
     docs = []
     skipped = 0
@@ -219,6 +222,7 @@ async def import_albert_export(db, content: bytes, filename: str, uploaded_by: O
             protocol = int(protocol)
         except (TypeError, ValueError):
             protocol = None
+        suppressed = raw["source_ip"] in allowlisted_ips if raw["source_ip"] else False
         doc = {
             "id": str(uuid.uuid4()), "time_gmt": time_iso, "device": raw["device"],
             "alert_message": raw["alert_message"], "category": knowledge["category"],
@@ -230,6 +234,8 @@ async def import_albert_export(db, content: bytes, filename: str, uploaded_by: O
             "stream_data": _clean_stream_data((raw["stream_data"] or "")[:2000]),
             "stream_data_raw": (raw["stream_data"] or "")[:2000], "stream_data_length": raw["stream_data_length"],
             "disposition": disposition, "imported_at": datetime.now(timezone.utc).isoformat(),
+            "acknowledged": False, "suppressed": suppressed,
+            "suppressed_reason": f"Source IP {raw['source_ip']} is on the known-good allowlist" if suppressed else None,
         }
         docs.append(doc)
 
@@ -350,22 +356,32 @@ async def compute_albert_sankey(db, days: int = 30) -> dict:
     return {"nodes": nodes, "links": links}
 
 
-async def compute_albert_stats(db, days: int = 30) -> dict:
+async def compute_albert_stats(db, days: int = 30, include_suppressed: bool = False) -> dict:
     """Dashboard aggregates over the last `days` of ingested Albert alerts, plus a
-    lightweight baseline check: for each alert category, compares each day's count
-    in the requested range against the mean+stddev of that category's daily counts
-    across ALL stored history (not just the range), flagging days that spike well
-    above normal. This is a simple statistical heuristic, not a certified anomaly
-    detector -- it's meant to draw attention to "this is unusually high for this
-    category," not to make a verdict on its own.
+    lightweight baseline check: for each (sensor, category) pair, compares each
+    day's count in the requested range against the mean+stddev of that pair's
+    daily counts across ALL stored history (not just the range), flagging days
+    that spike well above normal. Grouping by sensor as well as category (not
+    just category org-wide) means a single noisy sensor shows up even when the
+    org-wide average for that category still looks normal. This is a simple
+    statistical heuristic, not a certified anomaly detector -- it's meant to draw
+    attention to "this is unusually high for this sensor+category," not to make
+    a verdict on its own.
+
+    Alerts matching the known-good allowlist (see albert_allowlist.py) are
+    suppressed=True and excluded from these aggregates by default, the same way
+    a SIEM lets you mute a known-noisy, known-good source without deleting the
+    underlying events -- pass include_suppressed=True to include them anyway.
     """
     now = datetime.now(timezone.utc)
     cutoff = (now - timedelta(days=days)).isoformat()
 
-    all_alerts = await db.albert_alerts.find({}, {
+    query = {} if include_suppressed else {"suppressed": {"$ne": True}}
+    all_alerts = await db.albert_alerts.find(query, {
         "_id": 0, "time_gmt": 1, "severity": 1, "category": 1, "device": 1,
         "source_ip": 1, "destination_ip": 1, "disposition": 1,
     }).to_list(200000)
+    suppressed_count = await db.albert_alerts.count_documents({"suppressed": True, "time_gmt": {"$gte": cutoff}})
 
     def _day(iso):
         return (iso or "")[:10]
@@ -373,20 +389,22 @@ async def compute_albert_stats(db, days: int = 30) -> dict:
     severity_counts, category_counts, device_counts = {}, {}, {}
     src_ip_counts, dst_ip_counts = {}, {}
     daily_counts = {}  # day -> count (within range)
-    category_daily_all = {}  # category -> {day: count} across ALL history
+    dev_cat_daily_all = {}  # (device, category) -> {day: count} across ALL history
 
     in_range_count = 0
     for a in all_alerts:
         day = _day(a.get("time_gmt"))
         cat = a.get("category") or "Uncategorized"
-        category_daily_all.setdefault(cat, {})
-        category_daily_all[cat][day] = category_daily_all[cat].get(day, 0) + 1
+        dev = a.get("device") or "Unknown sensor"
+        key = (dev, cat)
+        dev_cat_daily_all.setdefault(key, {})
+        dev_cat_daily_all[key][day] = dev_cat_daily_all[key].get(day, 0) + 1
 
         if a.get("time_gmt") and a["time_gmt"] >= cutoff:
             in_range_count += 1
             severity_counts[a.get("severity")] = severity_counts.get(a.get("severity"), 0) + 1
             category_counts[cat] = category_counts.get(cat, 0) + 1
-            device_counts[a.get("device")] = device_counts.get(a.get("device"), 0) + 1
+            device_counts[dev] = device_counts.get(dev, 0) + 1
             if a.get("source_ip"):
                 src_ip_counts[a["source_ip"]] = src_ip_counts.get(a["source_ip"], 0) + 1
             if a.get("destination_ip"):
@@ -403,14 +421,14 @@ async def compute_albert_stats(db, days: int = 30) -> dict:
 
     anomalies = []
     range_days = {_day(a.get("time_gmt")) for a in all_alerts if a.get("time_gmt") and a["time_gmt"] >= cutoff}
-    for cat, day_map in category_daily_all.items():
+    for (dev, cat), day_map in dev_cat_daily_all.items():
         mean, std = _mean_std(list(day_map.values()))
         threshold = mean + 2 * std
         for day in sorted(range_days):
             count = day_map.get(day, 0)
             if count > 0 and count > threshold and count > mean * 1.5 and threshold > 0:
                 anomalies.append({
-                    "day": day, "category": cat, "count": count,
+                    "day": day, "device": dev, "category": cat, "count": count,
                     "baseline_mean": round(mean, 1), "baseline_stddev": round(std, 1),
                 })
     anomalies.sort(key=lambda x: x["day"], reverse=True)
@@ -419,7 +437,7 @@ async def compute_albert_stats(db, days: int = 30) -> dict:
         return [{"value": k, "count": v} for k, v in sorted(counter.items(), key=lambda kv: -kv[1])[:n] if k]
 
     return {
-        "range_days": days, "total_alerts": in_range_count,
+        "range_days": days, "total_alerts": in_range_count, "suppressed_count": suppressed_count,
         "severity_counts": severity_counts, "category_counts": category_counts,
         "device_counts": device_counts,
         "daily_trend": [{"day": d, "count": c} for d, c in sorted(daily_counts.items())],
