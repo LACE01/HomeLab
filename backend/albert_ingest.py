@@ -125,6 +125,23 @@ def _infer_disposition(filename: str, sheet_name: str) -> str:
     return "flagged"
 
 
+_NONPRINTABLE_RUN_RE = re.compile(r"[^\x09\x0A\x0D\x20-\x7E]+")
+
+
+def _clean_stream_data(raw):
+    """Albert's STREAM DATA column is the raw captured payload verbatim --
+    perfectly readable for HTTP/plaintext protocols, but SMB and other binary
+    protocols embed non-printable control bytes that render as mojibake in a UI
+    (a wall of accented/box-drawing characters). This collapses every run of
+    non-printable bytes into a single placeholder marker so the printable parts
+    (commands, filenames, hostnames, headers) stay legible. The original,
+    uncleaned capture is kept separately (stream_data_raw) for anyone who
+    specifically wants to see the exact bytes."""
+    if not raw:
+        return raw
+    return _NONPRINTABLE_RUN_RE.sub(" \u22ef ", raw).strip()
+
+
 def _is_public_ip(ip: str) -> bool:
     try:
         addr = ipaddress.ip_address(ip)
@@ -210,7 +227,8 @@ async def import_albert_export(db, content: bytes, filename: str, uploaded_by: O
             "source_ip": raw["source_ip"], "destination_ip": raw["destination_ip"],
             "source_port": raw["source_port"], "destination_port": raw["destination_port"],
             "protocol": protocol, "protocol_name": PROTOCOL_NAMES.get(protocol, str(protocol) if protocol else None),
-            "stream_data": (raw["stream_data"] or "")[:2000], "stream_data_length": raw["stream_data_length"],
+            "stream_data": _clean_stream_data((raw["stream_data"] or "")[:2000]),
+            "stream_data_raw": (raw["stream_data"] or "")[:2000], "stream_data_length": raw["stream_data_length"],
             "disposition": disposition, "imported_at": datetime.now(timezone.utc).isoformat(),
         }
         docs.append(doc)
@@ -245,14 +263,20 @@ async def import_albert_export(db, content: bytes, filename: str, uploaded_by: O
     await db.albert_imports.insert_one(record)
 
     severity_counts = {}
+    dest_ip_counts = {}
     for d in docs:
         severity_counts[d["severity"]] = severity_counts.get(d["severity"], 0) + 1
+        ip = d.get("destination_ip")
+        if ip and _is_public_ip(ip):
+            dest_ip_counts[ip] = dest_ip_counts.get(ip, 0) + 1
+    top_public_destination_ips = [ip for ip, _ in sorted(dest_ip_counts.items(), key=lambda kv: -kv[1])]
 
     return {
         "import_id": record["id"], "rows_parsed": len(docs), "rows_skipped": skipped,
         "sheet_name": sheet_name, "disposition": disposition,
         "date_range_start": record["date_range_start"], "date_range_end": record["date_range_end"],
         "severity_counts": severity_counts, "watchlist_matches": watchlist_matches,
+        "top_public_destination_ips": top_public_destination_ips,
     }
 
 
@@ -282,6 +306,48 @@ async def compute_albert_signatures(db, days: int = 90) -> list:
 
     _sev_rank = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
     return sorted(by_message.values(), key=lambda e: (_sev_rank.get(e["severity"], 9), -e["count"]))
+
+
+async def compute_albert_sankey(db, days: int = 30) -> dict:
+    """Device -> Category -> Severity flow for a Sankey diagram -- makes it easy
+    to see at a glance which sensor is generating which kind of alert, and how
+    severe those alerts skew, without reading three separate bar charts. Node
+    names are namespaced by layer (dev:/cat:/sev:) internally to keep the three
+    layers from colliding if a device and category ever happened to share a
+    name, then given clean display labels."""
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=days)).isoformat()
+    alerts = await db.albert_alerts.find(
+        {"time_gmt": {"$gte": cutoff}},
+        {"_id": 0, "device": 1, "category": 1, "severity": 1},
+    ).to_list(200000)
+
+    dev_cat_counts, cat_sev_counts = {}, {}
+    for a in alerts:
+        dev, cat, sev = a.get("device") or "Unknown sensor", a.get("category") or "Uncategorized", a.get("severity") or "Medium"
+        dev_cat_counts[(dev, cat)] = dev_cat_counts.get((dev, cat), 0) + 1
+        cat_sev_counts[(cat, sev)] = cat_sev_counts.get((cat, sev), 0) + 1
+
+    node_index = {}
+
+    def _node(key, label):
+        if key not in node_index:
+            node_index[key] = len(node_index)
+            nodes.append({"name": label})
+        return node_index[key]
+
+    nodes = []
+    links = []
+    for (dev, cat), count in sorted(dev_cat_counts.items(), key=lambda kv: -kv[1]):
+        si = _node(f"dev:{dev}", dev)
+        ti = _node(f"cat:{cat}", cat)
+        links.append({"source": si, "target": ti, "value": count})
+    for (cat, sev), count in sorted(cat_sev_counts.items(), key=lambda kv: -kv[1]):
+        si = _node(f"cat:{cat}", cat)
+        ti = _node(f"sev:{sev}", sev)
+        links.append({"source": si, "target": ti, "value": count})
+
+    return {"nodes": nodes, "links": links}
 
 
 async def compute_albert_stats(db, days: int = 30) -> dict:

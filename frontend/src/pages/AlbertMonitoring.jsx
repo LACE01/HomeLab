@@ -5,15 +5,18 @@ import Layout from "@/components/Layout";
 import { SevBadge, Chip } from "@/components/Badges";
 import {
   ResponsiveContainer, BarChart, Bar, AreaChart, Area, XAxis, YAxis,
-  CartesianGrid, Tooltip, Cell, ReferenceLine,
+  CartesianGrid, Tooltip, Cell, ReferenceLine, Sankey, Layer, Rectangle,
 } from "recharts";
 import {
   Broadcast, UploadSimple, Warning, ChartLine, Desktop, ShieldWarning,
-  MagnifyingGlass, X, ArrowSquareOut,
+  MagnifyingGlass, X, ArrowSquareOut, ArrowsClockwise, CaretRight,
 } from "@phosphor-icons/react";
 
 const RANGE_OPTIONS = [7, 30, 90];
 const SEV_COLOR = { Critical: "#f87171", High: "#fb923c", Medium: "#fbbf24", Low: "#60a5fa" };
+const SANKEY_NODE_COLORS = ["#60a5fa", "#a78bfa", "#34d399", "#fbbf24", "#f472b6", "#38bdf8"];
+const ENRICH_STATUS_COLOR = { found: "text-red-300 border-red-500/30 bg-red-500/5", clean: "text-emerald-300 border-emerald-500/30 bg-emerald-500/5", not_configured: "text-slate-500 border-[#21262D]", error: "text-amber-300 border-amber-500/30 bg-amber-500/5" };
+const ENRICH_STATUS_LABEL = { found: "Hit", clean: "Clean", not_configured: "Not set up", error: "Error" };
 
 function StatCard({ label, value, sub, icon: Icon, tone = "slate" }) {
   const toneMap = {
@@ -43,12 +46,92 @@ function Panel({ title, actions, children }) {
   );
 }
 
+function SankeyNode({ x, y, width, height, index, payload, containerWidth }) {
+  const color = SEV_COLOR[payload.name] || SANKEY_NODE_COLORS[index % SANKEY_NODE_COLORS.length];
+  const isOut = x + width + 6 > containerWidth - 4;
+  return (
+    <Layer key={`sankey-node-${index}`}>
+      <Rectangle x={x} y={y} width={width} height={height} fill={color} fillOpacity={0.9} />
+      <text x={isOut ? x - 6 : x + width + 6} y={y + height / 2} textAnchor={isOut ? "end" : "start"}
+        dominantBaseline="middle" fontSize={11} fill="#C9D1D9">
+        {payload.name}
+      </text>
+    </Layer>
+  );
+}
+
+function IpIntelPanel({ ip, label }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [checking, setChecking] = useState(false);
+
+  const load = () => {
+    setLoading(true);
+    api.get(`/v1/admin/albert/enrichment/${encodeURIComponent(ip)}`)
+      .then(r => setData(r.data))
+      .catch(() => setData(null))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { if (ip) load(); }, [ip]); // eslint-disable-line
+
+  const checkNow = async () => {
+    setChecking(true);
+    try {
+      const r = await api.post(`/v1/admin/albert/enrichment/${encodeURIComponent(ip)}/refresh`);
+      setData(r.data);
+      const hits = (r.data.results || []).filter(x => x.status === "found").length;
+      toast[hits > 0 ? "warning" : "success"](hits > 0 ? `${hits} connector(s) flagged ${ip}` : `${ip} came back clean`);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Enrichment failed");
+    } finally { setChecking(false); }
+  };
+
+  if (!ip) return null;
+
+  return (
+    <div className="border border-[#21262D] rounded p-3">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-[11.5px] text-slate-300 font-mono">{label}: {ip}</div>
+        <button onClick={checkNow} disabled={checking}
+          className="h-6 px-2 text-[10.5px] border border-[#30363D] hover:border-blue-500/40 hover:text-blue-300 disabled:opacity-40 text-slate-400 rounded inline-flex items-center gap-1">
+          <ArrowsClockwise size={11} className={checking ? "animate-spin" : ""} /> {data?.checked_at ? "Recheck" : "Check now"}
+        </button>
+      </div>
+      {loading ? (
+        <div className="text-[11px] text-slate-500">Loading…</div>
+      ) : !data?.checked_at ? (
+        <div className="text-[11px] text-slate-500">Not checked yet against threat-intel connectors.</div>
+      ) : (
+        <div className="space-y-1.5">
+          {(data.results || []).map((r, i) => (
+            <div key={i} className={`text-[11px] border rounded px-2 py-1 flex items-center justify-between ${ENRICH_STATUS_COLOR[r.status] || "text-slate-400 border-[#21262D]"}`}>
+              <span>{r.source}</span>
+              <span className="font-mono">{ENRICH_STATUS_LABEL[r.status] || r.status}</span>
+            </div>
+          ))}
+          {(data.results || []).some(r => r.status === "found") && (
+            <div className="text-[10.5px] text-slate-500 mt-1">
+              {(data.results || []).filter(r => r.status === "found").flatMap(r => r.rows).map((row, i) => (
+                <div key={i} className="mt-1">{row.name}: {row.detail}</div>
+              ))}
+            </div>
+          )}
+          <div className="text-[10px] text-slate-600">Last checked {new Date(data.checked_at).toLocaleString()}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AlbertMonitoring() {
   const fileRef = useRef(null);
+  const alertsRef = useRef(null);
   const [uploading, setUploading] = useState(false);
   const [imports, setImports] = useState([]);
   const [stats, setStats] = useState(null);
   const [signatures, setSignatures] = useState([]);
+  const [sankey, setSankey] = useState(null);
   const [days, setDays] = useState(30);
   const [loading, setLoading] = useState(true);
 
@@ -57,20 +140,24 @@ export default function AlbertMonitoring() {
   const [severity, setSeverity] = useState("");
   const [category, setCategory] = useState("");
   const [device, setDevice] = useState("");
+  const [alertMessage, setAlertMessage] = useState("");
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState(null);
+  const [showRawStream, setShowRawStream] = useState(false);
 
   const loadDashboard = async (rangeDays) => {
     setLoading(true);
     try {
-      const [statsR, sigR, impR] = await Promise.all([
+      const [statsR, sigR, impR, sankeyR] = await Promise.all([
         api.get("/v1/admin/albert/stats", { params: { days: rangeDays } }),
         api.get("/v1/admin/albert/signatures", { params: { days: rangeDays } }),
         api.get("/v1/admin/albert/imports"),
+        api.get("/v1/admin/albert/sankey", { params: { days: rangeDays } }),
       ]);
       setStats(statsR.data);
       setSignatures(sigR.data);
       setImports(impR.data);
+      setSankey(sankeyR.data);
     } catch (e) {
       // non-fatal -- no data yet is a valid empty state
     } finally {
@@ -85,13 +172,27 @@ export default function AlbertMonitoring() {
       if (severity) params.severity = severity;
       if (category) params.category = category;
       if (device) params.device = device;
+      if (alertMessage) params.alert_message = alertMessage;
       const r = await api.get("/v1/admin/albert/alerts", { params });
       setAlerts(r.data);
     } catch (e) { /* non-fatal */ }
   };
 
   useEffect(() => { loadDashboard(days); }, [days]);
-  useEffect(() => { loadAlerts(); }, [page, q, severity, category, device]);
+  useEffect(() => { loadAlerts(); }, [page, q, severity, category, device, alertMessage]);
+
+  const scrollToAlerts = () => {
+    setTimeout(() => alertsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  };
+
+  const filterBy = (setter, value, resetOthers = true) => {
+    setPage(1);
+    if (resetOthers) { setQ(""); setSeverity(""); setCategory(""); setDevice(""); setAlertMessage(""); }
+    setter(value);
+    scrollToAlerts();
+  };
+
+  const clearFilters = () => { setQ(""); setSeverity(""); setCategory(""); setDevice(""); setAlertMessage(""); setPage(1); };
 
   const upload = async (file) => {
     setUploading(true);
@@ -100,7 +201,8 @@ export default function AlbertMonitoring() {
       fd.append("file", file);
       const r = await api.post("/v1/admin/albert/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
       const wl = r.data.watchlist_matches ? `, ${r.data.watchlist_matches} watchlist match(es)` : "";
-      toast.success(`Imported ${r.data.rows_parsed} alerts (${r.data.disposition})${wl}`);
+      const enr = r.data.auto_enrichment_queued?.length ? ` — checking ${r.data.auto_enrichment_queued.length} destination IP(s) against threat intel in the background` : "";
+      toast.success(`Imported ${r.data.rows_parsed} alerts (${r.data.disposition})${wl}${enr}`);
       loadDashboard(days);
       loadAlerts();
     } catch (e) {
@@ -111,19 +213,23 @@ export default function AlbertMonitoring() {
     }
   };
 
+  const openAlert = (a) => { setShowRawStream(false); setSelected(a); };
+
   const categories = Object.keys(stats?.category_counts || {});
   const devices = Object.keys(stats?.device_counts || {});
   const severityData = Object.entries(stats?.severity_counts || {}).map(([name, count]) => ({ name, count }));
   const categoryData = Object.entries(stats?.category_counts || {}).map(([name, count]) => ({ name, count }));
   const deviceData = Object.entries(stats?.device_counts || {}).map(([name, count]) => ({ name, count }));
   const anomalyDays = new Set((stats?.anomalies || []).map(a => a.day));
+  const anyFilterActive = q || severity || category || device || alertMessage;
 
   return (
     <Layout title="Albert Network Monitoring" subtitle="CIS/MS-ISAC network sensor alert exports — trends, breakdowns, and plain-English signature explanations">
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4 mb-5 flex items-center justify-between gap-4 flex-wrap">
         <div className="text-[12px] text-slate-400 max-w-2xl leading-relaxed">
           Upload the .xlsx alert export from the CIS ANET portal. Each row's source/destination IP is checked against the
-          existing <span className="text-slate-200">Threat Intel Watchlist</span> and any match raises a Security Alert automatically.
+          existing <span className="text-slate-200">Threat Intel Watchlist</span>, and the busiest public destination IPs are
+          automatically checked against <span className="text-slate-200">OpenCTI, GreyNoise, AlienVault OTX, and abuse.ch</span>.
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <input ref={fileRef} type="file" accept=".xlsx" className="hidden"
@@ -193,14 +299,14 @@ export default function AlbertMonitoring() {
               </ResponsiveContainer>
             </Panel>
 
-            <Panel title="Severity Breakdown">
+            <Panel title="Severity Breakdown" actions={<span className="text-[10px] text-slate-500">click to filter</span>}>
               <ResponsiveContainer width="100%" height={220}>
                 <BarChart data={severityData} layout="vertical" margin={{ left: 10 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#21262D" horizontal={false} />
                   <XAxis type="number" tick={{ fontSize: 10, fill: "#8B949E" }} allowDecimals={false} />
                   <YAxis dataKey="name" type="category" tick={{ fontSize: 11, fill: "#C9D1D9" }} width={70} />
                   <Tooltip contentStyle={{ background: "#161B22", border: "1px solid #30363D", fontSize: 12 }} />
-                  <Bar dataKey="count" radius={[0, 3, 3, 0]}>
+                  <Bar dataKey="count" radius={[0, 3, 3, 0]} cursor="pointer" onClick={(d) => filterBy(setSeverity, d.name)}>
                     {severityData.map((d, i) => <Cell key={i} fill={SEV_COLOR[d.name] || "#8B949E"} />)}
                   </Bar>
                 </BarChart>
@@ -209,36 +315,51 @@ export default function AlbertMonitoring() {
           </div>
 
           <div className="grid grid-cols-2 gap-4 mb-4">
-            <Panel title="Category Breakdown">
+            <Panel title="Category Breakdown" actions={<span className="text-[10px] text-slate-500">click to filter</span>}>
               <ResponsiveContainer width="100%" height={200}>
                 <BarChart data={categoryData} layout="vertical" margin={{ left: 10 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#21262D" horizontal={false} />
                   <XAxis type="number" tick={{ fontSize: 10, fill: "#8B949E" }} allowDecimals={false} />
                   <YAxis dataKey="name" type="category" tick={{ fontSize: 10, fill: "#C9D1D9" }} width={150} />
                   <Tooltip contentStyle={{ background: "#161B22", border: "1px solid #30363D", fontSize: 12 }} />
-                  <Bar dataKey="count" fill="#a78bfa" radius={[0, 3, 3, 0]} />
+                  <Bar dataKey="count" fill="#a78bfa" radius={[0, 3, 3, 0]} cursor="pointer" onClick={(d) => filterBy(setCategory, d.name)} />
                 </BarChart>
               </ResponsiveContainer>
             </Panel>
 
-            <Panel title="Per-Sensor / Site Comparison">
+            <Panel title="Per-Sensor / Site Comparison" actions={<span className="text-[10px] text-slate-500">click to filter</span>}>
               <ResponsiveContainer width="100%" height={200}>
                 <BarChart data={deviceData} layout="vertical" margin={{ left: 10 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#21262D" horizontal={false} />
                   <XAxis type="number" tick={{ fontSize: 10, fill: "#8B949E" }} allowDecimals={false} />
                   <YAxis dataKey="name" type="category" tick={{ fontSize: 10, fill: "#C9D1D9" }} width={150} />
                   <Tooltip contentStyle={{ background: "#161B22", border: "1px solid #30363D", fontSize: 12 }} />
-                  <Bar dataKey="count" fill="#34d399" radius={[0, 3, 3, 0]} />
+                  <Bar dataKey="count" fill="#34d399" radius={[0, 3, 3, 0]} cursor="pointer" onClick={(d) => filterBy(setDevice, d.name)} />
                 </BarChart>
               </ResponsiveContainer>
             </Panel>
           </div>
 
+          {sankey && sankey.nodes?.length > 0 && (
+            <div className="mb-4">
+              <Panel title="Sensor → Category → Severity Flow">
+                <div className="overflow-x-auto">
+                  <Sankey width={1040} height={Math.max(240, sankey.nodes.length * 26)} data={sankey}
+                    node={<SankeyNode />} nodePadding={18} margin={{ top: 10, right: 140, bottom: 10, left: 140 }}
+                    link={{ stroke: "#484F58", strokeOpacity: 0.35 }}>
+                    <Tooltip contentStyle={{ background: "#161B22", border: "1px solid #30363D", fontSize: 12 }} />
+                  </Sankey>
+                </div>
+              </Panel>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-4 mb-4">
             <Panel title="Top Source IPs">
               <div className="space-y-1.5">
                 {(stats?.top_source_ips || []).slice(0, 8).map((ip, i) => (
-                  <div key={i} className="flex items-center justify-between text-[12px]">
+                  <div key={i} className="flex items-center justify-between text-[12px] cursor-pointer hover:text-blue-300"
+                    onClick={() => filterBy(setQ, ip.value)}>
                     <span className="font-mono text-slate-300">{ip.value}</span>
                     <span className="text-slate-500">{ip.count}</span>
                   </div>
@@ -249,7 +370,8 @@ export default function AlbertMonitoring() {
             <Panel title="Top Destination IPs">
               <div className="space-y-1.5">
                 {(stats?.top_destination_ips || []).slice(0, 8).map((ip, i) => (
-                  <div key={i} className="flex items-center justify-between text-[12px]">
+                  <div key={i} className="flex items-center justify-between text-[12px] cursor-pointer hover:text-blue-300"
+                    onClick={() => filterBy(setQ, ip.value)}>
                     <span className="font-mono text-slate-300">{ip.value}</span>
                     <span className="text-slate-500">{ip.count}</span>
                   </div>
@@ -259,15 +381,19 @@ export default function AlbertMonitoring() {
             </Panel>
           </div>
 
-          <Panel title="Alert Signatures Explained" actions={<span className="text-[10.5px] text-slate-500">what each alert type actually means</span>}>
+          <Panel title="Alert Signatures Explained" actions={<span className="text-[10.5px] text-slate-500">click a signature to see its alerts</span>}>
             <div className="space-y-2.5">
               {signatures.map((s, i) => (
-                <div key={i} className="border border-[#21262D] rounded p-3">
+                <div key={i} onClick={() => filterBy(setAlertMessage, s.alert_message)}
+                  className="border border-[#21262D] rounded p-3 cursor-pointer hover:border-blue-500/40 hover:bg-blue-500/5 transition-colors group">
                   <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                     <SevBadge severity={s.severity} />
                     <Chip color="slate">{s.category}</Chip>
                     <span className="text-[12px] text-slate-200 font-medium">{s.alert_message}</span>
-                    <span className="text-[10.5px] text-slate-500 ml-auto">{s.count} occurrence{s.count === 1 ? "" : "s"}</span>
+                    <span className="text-[10.5px] text-slate-500 ml-auto flex items-center gap-1">
+                      {s.count} occurrence{s.count === 1 ? "" : "s"}
+                      <CaretRight size={11} className="text-slate-600 group-hover:text-blue-300" />
+                    </span>
                   </div>
                   <div className="text-[12px] text-slate-400 leading-relaxed">{s.explanation}</div>
                   {s.mitre_technique && (
@@ -281,13 +407,13 @@ export default function AlbertMonitoring() {
         </>
       )}
 
-      <div className="mt-4">
+      <div className="mt-4" ref={alertsRef}>
         <Panel title="Alerts"
           actions={
             <div className="flex items-center gap-1.5">
               <div className="relative">
                 <MagnifyingGlass size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" />
-                <input value={q} onChange={(e) => { setPage(1); setQ(e.target.value); }} placeholder="Search message/IP…"
+                <input value={q} onChange={(e) => { setPage(1); setAlertMessage(""); setQ(e.target.value); }} placeholder="Search message/IP…"
                   className="h-7 w-48 bg-[#161B22] border border-[#30363D] rounded pl-6 pr-2 text-[11.5px] text-slate-200" />
               </div>
               <select value={severity} onChange={(e) => { setPage(1); setSeverity(e.target.value); }}
@@ -305,9 +431,19 @@ export default function AlbertMonitoring() {
                 <option value="">All sensors</option>
                 {devices.map(d => <option key={d} value={d}>{d}</option>)}
               </select>
+              {anyFilterActive && (
+                <button onClick={clearFilters} className="h-7 px-2 text-[11px] text-slate-500 hover:text-slate-300 inline-flex items-center gap-1">
+                  <X size={11} /> Clear
+                </button>
+              )}
             </div>
           }
         >
+          {alertMessage && (
+            <div className="mb-2 text-[11.5px] text-blue-300 flex items-center gap-1.5">
+              <CaretRight size={11} /> Showing alerts for signature: <span className="font-medium">{alertMessage}</span>
+            </div>
+          )}
           {alerts.items.length === 0 ? (
             <div className="text-center py-8 text-[12.5px] text-slate-500">No alerts match these filters.</div>
           ) : (
@@ -324,7 +460,7 @@ export default function AlbertMonitoring() {
                 </thead>
                 <tbody className="divide-y divide-[#21262D]">
                   {alerts.items.map(a => (
-                    <tr key={a.id} onClick={() => setSelected(a)} className="cursor-pointer hover:bg-[#161B22]">
+                    <tr key={a.id} onClick={() => openAlert(a)} className="cursor-pointer hover:bg-[#161B22]">
                       <td className="px-3 py-2 font-mono text-slate-400 whitespace-nowrap">{a.time_gmt ? new Date(a.time_gmt).toLocaleString() : "—"}</td>
                       <td className="px-3 py-2 text-slate-300">{a.device}</td>
                       <td className="px-3 py-2 text-slate-200 max-w-[280px] truncate">{a.alert_message}</td>
@@ -395,15 +531,32 @@ export default function AlbertMonitoring() {
                 <div><div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1">Protocol</div><div className="text-slate-300">{selected.protocol_name || selected.protocol}</div></div>
                 <div><div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1">Disposition</div><div className="text-slate-300 capitalize">{selected.disposition}</div></div>
               </div>
-              {selected.source_ip && (
-                <a href={`/admin/threat-intel?value=${selected.source_ip}`} className="inline-flex items-center gap-1 text-[11.5px] text-blue-300 hover:text-blue-200">
-                  <ArrowSquareOut size={12} /> Check source IP against Threat Intel Watchlist
+
+              <div>
+                <div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1.5">Threat Intel</div>
+                <div className="space-y-2">
+                  {selected.destination_ip && <IpIntelPanel ip={selected.destination_ip} label="Destination" />}
+                  {selected.source_ip && <IpIntelPanel ip={selected.source_ip} label="Source" />}
+                </div>
+                <a href={`/admin/threat-intel?value=${selected.source_ip}`} className="inline-flex items-center gap-1 text-[11px] text-blue-300 hover:text-blue-200 mt-2">
+                  <ArrowSquareOut size={11} /> Also check the local Threat Intel Watchlist
                 </a>
-              )}
-              {selected.stream_data && (
+              </div>
+
+              {(selected.stream_data || selected.stream_data_raw) && (
                 <div>
-                  <div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1.5">Stream Data</div>
-                  <pre className="text-[10.5px] font-mono text-slate-400 bg-black/30 rounded p-2.5 overflow-x-auto whitespace-pre-wrap max-h-40 overflow-y-auto">{selected.stream_data}</pre>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="text-slate-500 text-[10px] uppercase tracking-wider">Stream Data</div>
+                    <button onClick={() => setShowRawStream(v => !v)} className="text-[10.5px] text-blue-300 hover:text-blue-200">
+                      {showRawStream ? "Show cleaned" : "Show raw bytes"}
+                    </button>
+                  </div>
+                  <pre className="text-[10.5px] font-mono text-slate-400 bg-black/30 rounded p-2.5 overflow-x-auto whitespace-pre-wrap max-h-40 overflow-y-auto">
+                    {showRawStream ? selected.stream_data_raw : selected.stream_data}
+                  </pre>
+                  {!showRawStream && (
+                    <div className="text-[10px] text-slate-600 mt-1">Non-printable bytes collapsed to ⋯ for readability -- binary protocols like SMB naturally contain these.</div>
+                  )}
                 </div>
               )}
             </div>

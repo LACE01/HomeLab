@@ -8,12 +8,16 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 
 from db import db
 from rbac import require_module
 from routes.common import record_engagement, now_iso
-from albert_ingest import import_albert_export, compute_albert_stats, compute_albert_signatures
+from albert_ingest import (
+    import_albert_export, compute_albert_stats, compute_albert_signatures,
+    compute_albert_sankey, _is_public_ip,
+)
+from albert_enrichment import enrich_ip, get_enrichment, auto_enrich_top_ips
 
 router = APIRouter()
 
@@ -26,6 +30,7 @@ def _clean(d: dict) -> dict:
 
 @router.post("/v1/admin/albert/upload")
 async def upload_albert_export(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     user: dict = Depends(require_module("/admin/albert", level="edit")),
 ):
@@ -56,6 +61,16 @@ async def upload_albert_export(
         scan_method="manual_upload", status="completed", started_at=started_at,
         assets_scanned=result["rows_parsed"], findings_created=result["rows_parsed"],
     )
+
+    # Auto-enrich the top public destination IPs from this import against the
+    # existing threat-intel connectors, in the background so the upload response
+    # doesn't wait on a handful of external API calls. Bounded (see
+    # auto_enrich_top_ips) to stay well under tight free-tier rate limits.
+    top_ips = result.pop("top_public_destination_ips", [])
+    if top_ips:
+        background_tasks.add_task(auto_enrich_top_ips, db, top_ips)
+        result["auto_enrichment_queued"] = top_ips[:8]
+
     return result
 
 
@@ -77,12 +92,32 @@ async def albert_signatures(days: int = 90, user: dict = Depends(require_module(
     return await compute_albert_signatures(db, days=days)
 
 
+@router.get("/v1/admin/albert/sankey")
+async def albert_sankey(days: int = 30, user: dict = Depends(require_module("/admin/albert"))):
+    days = max(1, min(days, 365))
+    return await compute_albert_sankey(db, days=days)
+
+
+@router.get("/v1/admin/albert/enrichment/{ip}")
+async def get_ip_enrichment(ip: str, user: dict = Depends(require_module("/admin/albert"))):
+    doc = await get_enrichment(db, ip)
+    return doc or {"ip": ip, "results": [], "checked_at": None}
+
+
+@router.post("/v1/admin/albert/enrichment/{ip}/refresh")
+async def refresh_ip_enrichment(ip: str, user: dict = Depends(require_module("/admin/albert", level="edit"))):
+    if not _is_public_ip(ip):
+        raise HTTPException(400, "Only public IPs can be checked against external threat-intel connectors")
+    return await enrich_ip(db, ip)
+
+
 @router.get("/v1/admin/albert/alerts")
 async def list_albert_alerts(
     severity: Optional[str] = None,
     category: Optional[str] = None,
     device: Optional[str] = None,
     q: Optional[str] = None,
+    alert_message: Optional[str] = None,
     page: int = 1,
     page_size: int = 50,
     user: dict = Depends(require_module("/admin/albert")),
@@ -94,6 +129,12 @@ async def list_albert_alerts(
         flt["category"] = category
     if device:
         flt["device"] = device
+    if alert_message:
+        # Exact match, used for "drill into this exact signature" clicks from the
+        # Alert Signatures Explained panel -- deliberately not folded into `q`
+        # (regex substring search) since signature text can contain regex
+        # metacharacters (., -, parentheses) that would otherwise need escaping.
+        flt["alert_message"] = alert_message
     if q:
         flt["$or"] = [
             {"alert_message": {"$regex": q, "$options": "i"}},
