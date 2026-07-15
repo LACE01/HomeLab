@@ -26,7 +26,7 @@ TRIGGERS = [
     "comment_mention", "exception_expiring", "finding_reopened", "kev_match",
     "tls_cert_expiring", "exception_revoked", "exception_risk_escalated",
     "osint_exposure_found", "ir_case_opened", "ir_obligation_notify",
-    "albert_allowlist_review_due",
+    "albert_allowlist_review_due", "vendor_compromise_found", "vendor_contract_renewal_due",
 ]
 
 CHANNELS = ["email", "discord", "slack", "teams", "webhook", "sms"]
@@ -111,6 +111,23 @@ TEMPLATES = {
             "• **Detail:** {detail}\n\nOpen: {url}"
         ),
     },
+    "vendor_compromise_found": {
+        "subject": "[Nightwatch] Vendor compromise signal: {vendor_name}",
+        "body": (
+            "🚨 A compromise-monitoring module found something worth a look on a tracked vendor's domain.\n\n"
+            "• **Vendor:** {vendor_name}\n• **Module:** {module}\n• **Domain:** {target}\n"
+            "• **Finding:** {label}\n• **Detail:** {detail}\n\nOpen: {url}"
+        ),
+    },
+    "vendor_contract_renewal_due": {
+        "subject": "[Nightwatch] Vendor contract renewal due: {vendor_name}",
+        "body": (
+            "📅 A tracked vendor's contract renewal date has arrived or is approaching.\n\n"
+            "• **Vendor:** {vendor_name}\n• **Renewal date:** {renewal_date}\n"
+            "• **Contract owner:** {contract_owner}\n• **DPA status:** {dpa_status}\n"
+            "• **Security questionnaire:** {questionnaire_status}\n\nOpen: {url}"
+        ),
+    },
     "tls_cert_expiring": {
         "subject": "[Nightwatch] TLS certificate expiring: {hostname}",
         "body": (
@@ -136,7 +153,7 @@ TEMPLATES = {
         ),
     },
     "ir_obligation_notify": {
-        "subject": "[VulnOps IR] {obligation_name} — {case_number}: {title}",
+        "subject": "[Nightwatch IR] {obligation_name} — {case_number}: {title}",
         "body": (
             "This is a notification for a reporting obligation attached to IR case {case_number}.\n\n"
             "• **Obligation:** {obligation_name}\n• **Trigger:** {trigger_description}\n"
@@ -147,24 +164,33 @@ TEMPLATES = {
 }
 
 
+class _SafeCtx(dict):
+    """dict subclass for str.format_map() -- any template placeholder not present in
+    ctx renders as an em dash instead of raising KeyError. Fixes a real bug: the
+    previous implementation used a hardcoded whitelist of ctx keys that was never
+    kept in sync as new templates were added (osint_exposure_found, tls_cert_expiring,
+    albert_allowlist_review_due, exception_revoked, exception_risk_escalated, and both
+    new vendor_* templates below all reference keys the whitelist didn't have),
+    which meant render() either dropped real values silently or raised KeyError
+    outright for any of those triggers -- immediate-frequency dispatch swallowed the
+    KeyError per-channel (so it just looked like nothing was ever delivered), but the
+    digest-queue path in dispatch() calls render() with no try/except at all, so a
+    digest-frequency rule on any of those triggers would have crashed the caller."""
+    def __missing__(self, key):
+        return "—"
+
+
 def render(template_id: str, ctx: dict) -> dict:
     """Return {subject, body} after substituting ctx into TEMPLATES[template_id]."""
     tpl = TEMPLATES.get(template_id) or TEMPLATES["new_assignment"]
-    safe = {k: ctx.get(k, "—") for k in [
-        "severity", "title", "cve", "asset", "owner_team", "risk_score", "due_at",
-        "url", "days_left", "days_overdue", "date", "open_critical", "new_today",
-        "closed_today", "overdue", "kev", "approver", "expires_at",
-        "cadence", "rule_name", "count", "items_text",
-        "case_number", "classification", "category", "confidence_pct",
-        "obligation_name", "trigger_description", "reporting_target", "timeline_text", "summary",
-    ]}
-    return {"subject": tpl["subject"].format(**safe), "body": tpl["body"].format(**safe)}
+    safe = _SafeCtx(ctx)
+    return {"subject": tpl["subject"].format_map(safe), "body": tpl["body"].format_map(safe)}
 
 
 async def _send_discord(webhook_url: str, subject: str, body: str) -> dict:
     """Discord incoming webhook — uses content + embed."""
     payload = {
-        "username": "VulnOps",
+        "username": "Nightwatch",
         "embeds": [{"title": subject[:256], "description": body[:4000], "color": 0xEF4444}],
     }
     async with httpx.AsyncClient(timeout=10) as c:
@@ -204,7 +230,7 @@ async def _send_smtp(to_addr: str, subject: str, body: str) -> dict:
     port = int(os.environ.get("SMTP_PORT", "587"))
     username = os.environ.get("SMTP_USERNAME")
     password = os.environ.get("SMTP_PASSWORD")
-    from_addr = os.environ.get("SMTP_FROM", "VulnOps <noreply@vulnops.local>")
+    from_addr = os.environ.get("SMTP_FROM", "Nightwatch <noreply@vulnops.local>")
     use_tls = os.environ.get("SMTP_USE_TLS", "true").lower() not in ("false", "0", "no")
 
     def _send():
@@ -267,7 +293,7 @@ async def _send_email(to_addr: str, subject: str, body: str) -> dict:
         async with httpx.AsyncClient(timeout=10) as c:
             r = await c.post("https://api.resend.com/emails",
                              headers={"Authorization": f"Bearer {api_key}"},
-                             json={"from": "VulnOps <noreply@vulnops.io>",
+                             json={"from": "Nightwatch <noreply@vulnops.io>",
                                    "to": [to_addr], "subject": subject,
                                    "html": body.replace("\n", "<br>")})
         return {"status_code": r.status_code, "ok": 200 <= r.status_code < 300, "text": r.text[:200]}

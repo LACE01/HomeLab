@@ -523,5 +523,21 @@ async def nightly_loop(db, interval_hours: int = 24):
         except Exception as e:
             logger.exception(f"Albert allowlist review check failed: {e}")
             ok, detail["albert_allowlist_reviews_error"] = False, str(e)
+        try:
+            from vendor_management import check_vendor_renewals
+            renewal_result = await check_vendor_renewals(db)
+            logger.info(f"Vendor renewal check: {renewal_result}")
+            detail["vendor_renewals"] = renewal_result
+        except Exception as e:
+            logger.exception(f"Vendor renewal check failed: {e}")
+            ok, detail["vendor_renewals_error"] = False, str(e)
+        try:
+            from vendor_management import snapshot_vendor_risk_history
+            snapshot_result = await snapshot_vendor_risk_history(db)
+            logger.info(f"Vendor risk history snapshot: {snapshot_result}")
+            detail["vendor_risk_snapshot"] = snapshot_result
+        except Exception as e:
+            logger.exception(f"Vendor risk history snapshot failed: {e}")
+            ok, detail["vendor_risk_snapshot_error"] = False, str(e)
         await record_heartbeat(db, "nightly_loop", "ok" if ok else "error", detail)
         await asyncio.sleep(interval_hours * 3600)

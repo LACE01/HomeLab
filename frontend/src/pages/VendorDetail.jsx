@@ -6,10 +6,11 @@ import Layout from "@/components/Layout";
 import { Chip, RiskBar, SevBadge } from "@/components/Badges";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell,
+  LineChart, Line,
 } from "recharts";
 import {
   ArrowLeft, PencilSimple, Trash, HardDrive, Warning,
-  ArrowsClockwise, CheckCircle, XCircle, MinusCircle, Globe, FloppyDisk, X,
+  ArrowsClockwise, CheckCircle, XCircle, MinusCircle, Globe, FloppyDisk, X, CalendarBlank,
 } from "@phosphor-icons/react";
 
 const BAND_CHIP = { Critical: "red", High: "orange", Medium: "amber", Low: "blue" };
@@ -17,6 +18,12 @@ const BAND_COLOR = { Critical: "#f87171", High: "#fb923c", Medium: "#fbbf24", Lo
 const SEV_COLOR = { Critical: "#f87171", High: "#fb923c", Medium: "#fbbf24", Low: "#60a5fa", Unknown: "#8B949E" };
 const STATUS_LABEL = { active: "Active", inactive: "Inactive", under_review: "Under Review" };
 const STATUS_OPTIONS = ["active", "inactive", "under_review"];
+const DPA_STATUSES = ["not_required", "requested", "in_review", "signed"];
+const DPA_LABEL = { not_required: "Not required", requested: "Requested", in_review: "In review", signed: "Signed" };
+const DPA_CHIP = { not_required: "slate", requested: "amber", in_review: "amber", signed: "green" };
+const QUESTIONNAIRE_STATUSES = ["not_started", "in_progress", "completed"];
+const QUESTIONNAIRE_LABEL = { not_started: "Not started", in_progress: "In progress", completed: "Completed" };
+const QUESTIONNAIRE_CHIP = { not_started: "slate", in_progress: "amber", completed: "green" };
 const MONITOR_STATUS_META = {
   found: { label: "Hit", icon: Warning, cls: "text-red-300 border-red-500/30 bg-red-500/5" },
   clean: { label: "Clean", icon: CheckCircle, cls: "text-emerald-300 border-emerald-500/30 bg-emerald-500/5" },
@@ -45,11 +52,15 @@ export default function VendorDetail() {
   const [form, setForm] = useState(null);
   const [checking, setChecking] = useState(false);
   const [checkResults, setCheckResults] = useState(null);
+  const [riskHistory, setRiskHistory] = useState([]);
 
   const load = async () => {
-    const [vR, metaR] = await Promise.all([api.get(`/v1/vendors/${id}`), api.get("/v1/vendors/meta")]);
+    const [vR, metaR, historyR] = await Promise.all([
+      api.get(`/v1/vendors/${id}`), api.get("/v1/vendors/meta"), api.get(`/v1/vendors/${id}/risk-history`),
+    ]);
     setVendor(vR.data);
     setMeta(metaR.data);
+    setRiskHistory(historyR.data.items);
   };
 
   useEffect(() => { load(); }, [id]);
@@ -64,6 +75,10 @@ export default function VendorDetail() {
       description: vendor.description || "", match_terms: (vendor.match_terms || []).join(", "),
       org_criticality: vendor.org_criticality, status: vendor.status, tags: (vendor.tags || []).join(", "),
       notes: vendor.notes || "",
+      contract_start_date: vendor.contract_start_date || "", contract_end_date: vendor.contract_end_date || "",
+      renewal_date: vendor.renewal_date || "", contract_owner: vendor.contract_owner || "",
+      dpa_status: vendor.dpa_status || "not_required",
+      security_questionnaire_status: vendor.security_questionnaire_status || "not_started",
     });
     setEditing(true);
   };
@@ -227,6 +242,62 @@ export default function VendorDetail() {
         </Panel>
       </div>
 
+      <div className="grid grid-cols-2 gap-4 mb-5">
+        <Panel title="Risk Score Trend">
+          {riskHistory.length < 2 ? (
+            <div className="text-[11.5px] text-slate-500 py-6 text-center">
+              Not enough history yet &#8212; a nightly snapshot builds one point per day. Check back after a day or two.
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={160}>
+              <LineChart data={riskHistory} margin={{ left: -10, top: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#21262D" />
+                <XAxis dataKey="date" tick={{ fill: "#8B949E", fontSize: 10 }} tickFormatter={(s) => s ? s.slice(5) : s} />
+                <YAxis domain={[0, 25]} tick={{ fill: "#8B949E", fontSize: 10 }} allowDecimals={false} />
+                <Tooltip contentStyle={{ background: "#161B22", border: "1px solid #30363D", fontSize: 12 }} />
+                <Line type="monotone" dataKey="risk_score" stroke="#60a5fa" strokeWidth={2} dot={{ r: 2 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </Panel>
+        <Panel title="Contract & Compliance">
+          <div className="grid grid-cols-2 gap-3 text-[12px]">
+            <div>
+              <div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1">Renewal Date</div>
+              <div className="text-slate-200 font-mono flex items-center gap-1.5">
+                <CalendarBlank size={12} className="text-slate-500" />
+                {vendor.renewal_date ? new Date(vendor.renewal_date).toLocaleDateString() : "—"}
+                {vendor.renewal_date && vendor.renewal_date < new Date().toISOString().slice(0, 10) && (
+                  <Warning size={12} className="text-amber-400" />
+                )}
+              </div>
+            </div>
+            <div>
+              <div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1">Contract Owner</div>
+              <div className="text-slate-200">{vendor.contract_owner || "—"}</div>
+            </div>
+            <div>
+              <div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1">Contract Term</div>
+              <div className="text-slate-300 text-[11px]">
+                {vendor.contract_start_date ? new Date(vendor.contract_start_date).toLocaleDateString() : "—"}
+                {" – "}
+                {vendor.contract_end_date ? new Date(vendor.contract_end_date).toLocaleDateString() : "—"}
+              </div>
+            </div>
+            <div>
+              <div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1">DPA Status</div>
+              <Chip color={DPA_CHIP[vendor.dpa_status] || "slate"}>{DPA_LABEL[vendor.dpa_status] || vendor.dpa_status}</Chip>
+            </div>
+            <div className="col-span-2">
+              <div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1">Security Questionnaire</div>
+              <Chip color={QUESTIONNAIRE_CHIP[vendor.security_questionnaire_status] || "slate"}>
+                {QUESTIONNAIRE_LABEL[vendor.security_questionnaire_status] || vendor.security_questionnaire_status}
+              </Chip>
+            </div>
+          </div>
+        </Panel>
+      </div>
+
       {vendor.exposure.length > 0 && (
         <Panel title="OSINT Exposure History" actions={<Warning size={13} className="text-amber-400" />}>
           <div className="space-y-1.5">
@@ -336,6 +407,49 @@ export default function VendorDetail() {
                 <label className="text-[10px] uppercase tracking-wider text-slate-500 mb-1 block">Notes</label>
                 <textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} rows={3}
                   className="w-full bg-[#161B22] border border-[#30363D] rounded px-2.5 py-1.5 text-[12px] text-slate-200" />
+              </div>
+              <div className="border-t border-[#21262D] pt-3">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-2">Contract &amp; Compliance</div>
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div>
+                    <label className="text-[10px] uppercase tracking-wider text-slate-500 mb-1 block">Contract start</label>
+                    <input type="date" value={form.contract_start_date} onChange={(e) => setForm({ ...form, contract_start_date: e.target.value })}
+                      className="h-8 w-full bg-[#161B22] border border-[#30363D] rounded px-2.5 text-[12px] text-slate-200" />
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase tracking-wider text-slate-500 mb-1 block">Contract end</label>
+                    <input type="date" value={form.contract_end_date} onChange={(e) => setForm({ ...form, contract_end_date: e.target.value })}
+                      className="h-8 w-full bg-[#161B22] border border-[#30363D] rounded px-2.5 text-[12px] text-slate-200" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div>
+                    <label className="text-[10px] uppercase tracking-wider text-slate-500 mb-1 block">Renewal date</label>
+                    <input type="date" value={form.renewal_date} onChange={(e) => setForm({ ...form, renewal_date: e.target.value })}
+                      className="h-8 w-full bg-[#161B22] border border-[#30363D] rounded px-2.5 text-[12px] text-slate-200" />
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase tracking-wider text-slate-500 mb-1 block">Contract owner</label>
+                    <input value={form.contract_owner} onChange={(e) => setForm({ ...form, contract_owner: e.target.value })}
+                      className="h-8 w-full bg-[#161B22] border border-[#30363D] rounded px-2.5 text-[12px] text-slate-200" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] uppercase tracking-wider text-slate-500 mb-1 block">DPA status</label>
+                    <select value={form.dpa_status} onChange={(e) => setForm({ ...form, dpa_status: e.target.value })}
+                      className="h-8 w-full bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-300">
+                      {DPA_STATUSES.map(s => <option key={s} value={s}>{DPA_LABEL[s]}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase tracking-wider text-slate-500 mb-1 block">Security questionnaire</label>
+                    <select value={form.security_questionnaire_status} onChange={(e) => setForm({ ...form, security_questionnaire_status: e.target.value })}
+                      className="h-8 w-full bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-300">
+                      {QUESTIONNAIRE_STATUSES.map(s => <option key={s} value={s}>{QUESTIONNAIRE_LABEL[s]}</option>)}
+                    </select>
+                  </div>
+                </div>
               </div>
             </div>
             <div className="px-5 py-3.5 border-t border-[#30363D] flex justify-end gap-2">

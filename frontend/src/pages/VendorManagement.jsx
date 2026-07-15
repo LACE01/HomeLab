@@ -8,7 +8,7 @@ import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell,
 } from "recharts";
 import {
-  Plus, X, Sparkle, Trash, CheckSquare, Square, MagnifyingGlass, Buildings,
+  Plus, X, Sparkle, Trash, CheckSquare, Square, MagnifyingGlass, Buildings, CalendarBlank, Warning,
 } from "@phosphor-icons/react";
 
 const BAND_CHIP = { Critical: "red", High: "orange", Medium: "amber", Low: "blue" };
@@ -16,6 +16,8 @@ const BAND_COLOR = { Critical: "#f87171", High: "#fb923c", Medium: "#fbbf24", Lo
 const STATUS_CHIP = { active: "green", inactive: "slate", under_review: "amber" };
 const STATUS_LABEL = { active: "Active", inactive: "Inactive", under_review: "Under Review" };
 const STATUS_OPTIONS = ["active", "inactive", "under_review"];
+const DPA_LABEL = { not_required: "DPA not required", requested: "DPA requested", in_review: "DPA in review", signed: "DPA signed" };
+const QUESTIONNAIRE_LABEL = { not_started: "Questionnaire not started", in_progress: "Questionnaire in progress", completed: "Questionnaire completed" };
 
 function Panel({ title, actions, children }) {
   return (
@@ -220,11 +222,15 @@ export default function VendorManagement() {
   const [showNew, setShowNew] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
+  const [renewals, setRenewals] = useState([]);
 
   const loadMeta = async () => {
-    const [metaR, statsR] = await Promise.all([api.get("/v1/vendors/meta"), api.get("/v1/vendors/stats")]);
+    const [metaR, statsR, renewalsR] = await Promise.all([
+      api.get("/v1/vendors/meta"), api.get("/v1/vendors/stats"), api.get("/v1/vendors/renewals"),
+    ]);
     setMeta(metaR.data);
     setStats(statsR.data);
+    setRenewals(renewalsR.data.items);
   };
 
   const loadItems = async () => {
@@ -318,6 +324,32 @@ export default function VendorManagement() {
               </ResponsiveContainer>
             </Panel>
           </div>
+          {renewals.length > 0 && (
+            <div className="mb-5">
+            <Panel title="Upcoming Contract Renewals" actions={<CalendarBlank size={13} className="text-slate-500" />}>
+              <div className="space-y-1.5">
+                {renewals.map(r => (
+                  <div key={r.id} onClick={() => navigate(`/vendors/${r.id}`)}
+                    className={`flex items-center justify-between px-2.5 py-1.5 rounded border text-[11.5px] cursor-pointer hover:border-blue-500/30 ${r.overdue ? "border-red-500/30 bg-red-500/5" : "border-[#21262D]"}`}>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Buildings size={12} className="text-slate-500 shrink-0" />
+                      <span className="text-slate-200 truncate">{r.name}</span>
+                      {r.overdue && <Warning size={12} className="text-red-400" />}
+                      <Chip color="slate">{DPA_LABEL[r.dpa_status] || r.dpa_status}</Chip>
+                      <Chip color="slate">{QUESTIONNAIRE_LABEL[r.security_questionnaire_status] || r.security_questionnaire_status}</Chip>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {r.contract_owner && <span className="text-slate-500">{r.contract_owner}</span>}
+                      <span className={`font-mono ${r.overdue ? "text-red-300" : "text-slate-400"}`}>
+                        {r.overdue ? "Overdue: " : ""}{new Date(r.renewal_date).toLocaleDateString()}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Panel>
+            </div>
+          )}
         </>
       )}
 

@@ -604,4 +604,16 @@ async def _ingest_osint_rows(db, mod: dict, target: str, rows: list) -> int:
                 "module": mod["label"], "target": target, "label": label,
                 "detail": detail, "url": "/admin/recon-osint",
             }, db)
+        # If this target happens to be a tracked vendor's domain (whether this run was
+        # kicked off via a vendor's monitoring schedule or a plain manual recon-ng
+        # lookup that happens to match one), also fire a vendor-branded notification so
+        # it's immediately clear *which vendor* needs attention rather than just a bare
+        # domain string -- dedicated trigger, opt-in via its own notification rule, so
+        # this doesn't change behavior for anyone who hasn't configured one.
+        vendor = await db.vendors.find_one({"domain": target}, {"_id": 0})
+        if vendor:
+            await dispatch("vendor_compromise_found", {
+                "vendor_name": vendor["name"], "vendor_id": vendor["id"], "module": mod["label"],
+                "target": target, "label": label, "detail": detail, "url": f"/vendors/{vendor['id']}",
+            }, db)
     return created

@@ -38,10 +38,20 @@ the existing db.osint_findings collection (keyed by target=domain) and fire
 the existing "osint_exposure_found" notification -- no new plumbing needed.
 """
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 CATEGORIES = ["Hardware", "Software", "Cloud Service / SaaS", "MSP / Service Provider", "Other"]
+
+# Contract/compliance tracking -- the "vendor management" half of this module, not
+# just risk tracking: knowing a DPA is missing or a contract is about to lapse is as
+# much a gap as an unpatched CVE. Kept as simple enums rather than a full CLM.
+DPA_STATUSES = ["not_required", "requested", "in_review", "signed"]
+QUESTIONNAIRE_STATUSES = ["not_started", "in_progress", "completed"]
+
+# How many days out a renewal_date counts as "due" for the reminder sweep and the
+# /v1/vendors/renewals list -- mirrors cert_monitor.py's WARN_DAYS for TLS expiry.
+RENEWAL_WARN_DAYS = 30
 
 # Domain-targeted recon-ng modules safe to auto-schedule for compromise
 # monitoring -- all requires_keys=[] (work unauthenticated or read config from
@@ -140,11 +150,18 @@ async def _linked_assets(db, vendor: dict) -> list:
 
 
 async def _linked_findings(db, vendor: dict, asset_ids: list) -> list:
+    """Matches on finding title (works for any finding) and, when present, the more
+    precise component_name field that sbom.py stamps onto SBOM/OSV.dev-sourced
+    findings (e.g. component_name="log4j-core" vs. a title string) -- a genuine
+    precision improvement for software vendors whose package names show up in SBOMs,
+    still honest substring matching rather than a real installed-software-to-vendor
+    inventory (which this app doesn't have)."""
     terms = [vendor.get("name")] + (vendor.get("match_terms") or [])
     terms = [t for t in terms if t]
     ors = []
     for t in terms:
         ors.append({"title": {"$regex": t, "$options": "i"}})
+        ors.append({"component_name": {"$regex": t, "$options": "i"}})
     if asset_ids:
         ors.append({"asset_id": {"$in": asset_ids}})
     if not ors:
@@ -248,3 +265,69 @@ async def disable_vendor_monitoring(db, vendor: dict) -> int:
         return 0
     result = await db.recon_schedules.delete_many({"module_id": {"$in": MONITOR_MODULE_IDS}, "target": domain})
     return getattr(result, "deleted_count", 0)
+
+
+async def check_vendor_renewals(db) -> dict:
+    """Nightly sweep, same shape as albert_allowlist.check_allowlist_reviews and
+    cert_monitor's TLS expiry check: finds vendors whose renewal_date has arrived or
+    is within RENEWAL_WARN_DAYS and haven't already been reminded for *this* renewal
+    date, dispatches vendor_contract_renewal_due, and marks the reminder sent so it
+    doesn't repeat every night. Editing renewal_date via PATCH resets the reminder
+    flag (see routes/vendors.py's update_vendor) so a pushed-out renewal re-reminds
+    on its own new schedule instead of going silent forever."""
+    from notifier import dispatch
+    now = _now_iso()
+    warn_cutoff = (datetime.now(timezone.utc) + timedelta(days=RENEWAL_WARN_DAYS)).isoformat()
+    vendors = await db.vendors.find({
+        "renewal_date": {"$ne": None, "$lte": warn_cutoff},
+        "renewal_reminder_sent": {"$ne": True},
+    }, {"_id": 0}).to_list(2000)
+    reminded = 0
+    for v in vendors:
+        if not v.get("renewal_date"):
+            continue
+        await dispatch("vendor_contract_renewal_due", {
+            "vendor_name": v["name"], "renewal_date": v["renewal_date"],
+            "contract_owner": v.get("contract_owner") or "Unassigned",
+            "dpa_status": v.get("dpa_status") or "not_required",
+            "questionnaire_status": v.get("security_questionnaire_status") or "not_started",
+            "url": f"/vendors/{v['id']}",
+        }, db)
+        await db.vendors.update_one({"id": v["id"]}, {"$set": {"renewal_reminder_sent": True, "updated_at": now}})
+        await _log(db, "renewal_reminder_sent", v["id"], None, f"Renewal reminder sent (renewal_date={v['renewal_date']})")
+        reminded += 1
+    return {"checked": len(vendors), "reminded": reminded}
+
+
+async def snapshot_vendor_risk_history(db) -> dict:
+    """Nightly snapshot of every vendor's computed risk score/band into
+    db.vendor_risk_history, one row per (vendor_id, date) -- risk_score itself is
+    always computed live (compute_vendor_risk), never stored on the vendor doc, so
+    without this sweep there'd be no way to show a trend over time, only today's
+    snapshot. Upserts on (vendor_id, date) so re-running the same day (e.g. after a
+    restart) doesn't create duplicate points on the chart."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    vendors = await db.vendors.find({}, {"_id": 0}).to_list(2000)
+    written = 0
+    for v in vendors:
+        risk = await compute_vendor_risk(db, v)
+        await db.vendor_risk_history.update_one(
+            {"vendor_id": v["id"], "date": today},
+            {"$set": {
+                "id": str(uuid.uuid4()), "vendor_id": v["id"], "date": today,
+                "risk_score": risk["risk_score"], "risk_band": risk["risk_band"],
+                "asset_count": risk["asset_count"], "finding_count": risk["finding_count"],
+                "recorded_at": _now_iso(),
+            }},
+            upsert=True,
+        )
+        written += 1
+    return {"vendors": len(vendors), "snapshots_written": written, "date": today}
+
+
+async def get_vendor_risk_history(db, vendor_id: str, days: int = 180) -> list:
+    since = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
+    items = await db.vendor_risk_history.find(
+        {"vendor_id": vendor_id, "date": {"$gte": since}}, {"_id": 0}
+    ).sort("date", 1).to_list(2000)
+    return items
