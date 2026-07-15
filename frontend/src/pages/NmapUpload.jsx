@@ -48,7 +48,7 @@ export default function NmapUpload() {
   const [tab, setTab] = useState("scheduled");
 
   return (
-    <Layout title="Nmap Scans" subtitle="Run scans yourself from within VulnOps, put them on a schedule, or upload XML from an external scan">
+    <Layout title="Nmap Scans" subtitle="Run scans yourself from within Nightwatch, put them on a schedule, or upload XML from an external scan">
       <div className="flex gap-1 border-b border-[#30363D] mb-5">
         {[
           { key: "scheduled", label: "Scheduled Scans" },
@@ -96,9 +96,9 @@ function ManualUpload() {
   return (
     <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-5 max-w-3xl">
       <div className="border border-blue-500/30 bg-blue-500/5 rounded-md px-3 py-2.5 mb-4 text-[12px] text-blue-200 leading-relaxed">
-        For scans run somewhere VulnOps can't reach directly — a laptop, another network, a scanner
+        For scans run somewhere Nightwatch can't reach directly — a laptop, another network, a scanner
         appliance. Run <code className="font-mono text-[11px] bg-black/30 px-1 py-0.5 rounded">nmap -sV -O -oX scan.xml &lt;targets&gt;</code>{" "}
-        yourself and upload the XML here. For scans VulnOps runs on its own, use the Scheduled Scans tab instead.
+        yourself and upload the XML here. For scans Nightwatch runs on its own, use the Scheduled Scans tab instead.
       </div>
 
       <div className="grid grid-cols-1 gap-4">
@@ -253,7 +253,7 @@ function ScheduledScans() {
       <div className="border border-orange-500/30 bg-orange-500/5 rounded-md px-3 py-2.5 mb-4 text-[12px] text-orange-200 leading-relaxed flex items-start gap-2 max-w-3xl">
         <ShieldWarning size={16} className="shrink-0 mt-0.5"/>
         <div>
-          VulnOps will originate real network traffic to whatever targets you configure. Only scan ranges
+          Nightwatch will originate real network traffic to whatever targets you configure. Only scan ranges
           you're authorized to scan — every config requires you to confirm that explicitly. Only one scan
           runs at a time, whether triggered manually or by schedule.
         </div>
@@ -541,7 +541,7 @@ function ScanConfigModal({ initial, isEdit, onClose, onSaved }) {
                 className="w-full bg-[#161B22] border border-[#30363D] rounded px-3 py-2 text-[12.5px] text-slate-100 font-mono resize-none"/>
               <div className="text-[10.5px] text-slate-500 mt-1">
                 Targets are parsed from the command itself. Output flags (-oX etc.), file-based target lists (-iL),
-                decoys, and spoofing flags aren't allowed — VulnOps controls output and only scans exactly what you type.
+                decoys, and spoofing flags aren't allowed — Nightwatch controls output and only scans exactly what you type.
               </div>
             </div>
           ) : (
@@ -667,7 +667,7 @@ function ScanConfigModal({ initial, isEdit, onClose, onSaved }) {
                 <span className={`text-[12px] ${form.vantage === "external" ? "text-orange-200" : "text-slate-300"}`}>External</span>
               </button>
             </div>
-            <div className="text-[10.5px] text-slate-500 mt-1">Only mark this "external" if this VulnOps host itself sits outside the network being scanned — that's what makes exposure verification meaningful.</div>
+            <div className="text-[10.5px] text-slate-500 mt-1">Only mark this "external" if this Nightwatch host itself sits outside the network being scanned — that's what makes exposure verification meaningful.</div>
           </div>
 
           <div>

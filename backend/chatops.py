@@ -5,7 +5,7 @@ your existing nginx reverse proxy already fronts, so this needs zero new long-ru
 infrastructure. A Discord bot needs a persistent websocket Gateway connection, which is
 a meaningfully bigger piece of infra for a self-hosted single-container app.
 
-There's no per-Slack-user identity mapping back to VulnOps accounts (that would need
+There's no per-Slack-user identity mapping back to Nightwatch accounts (that would need
 Slack OAuth + an account-linking flow) -- anyone who can run the slash command in the
 configured workspace gets admin-level read/write on findings, scoped only by whichever
 channel your team restricts the command to. That trust boundary is spelled out in the
@@ -22,7 +22,7 @@ VERIFICATION_WINDOW_DAYS = 3
 MAX_TIMESTAMP_SKEW_SECONDS = 60 * 5
 
 HELP_TEXT = (
-    "*VulnOps commands*\n"
+    "*Nightwatch commands*\n"
     "`/vulnops status` — open finding counts + current security score\n"
     "`/vulnops top [n]` — top N open findings by risk score (default 5)\n"
     "`/vulnops find <query>` — natural-language search, e.g. `critical kev on windows`\n"
@@ -81,7 +81,7 @@ async def cmd_status(db) -> dict:
     score = (latest or {}).get("org_score")
     score_str = f"{score}/100" if score is not None else "no data yet"
     text = (
-        f"*VulnOps status*\n"
+        f"*Nightwatch status*\n"
         f"Security score: *{score_str}*\n"
         f"Open findings: *{counts['Critical']}* Critical · *{counts['High']}* High · "
         f"{counts['Medium']} Medium · {counts['Low']} Low"
@@ -113,7 +113,7 @@ async def cmd_find(db, query_text: str) -> dict:
     teams = [t for t in await db.assets.distinct("owner_team") if t and t != "Unassigned"]
     parsed = parse_nl_query(query_text, teams)
     f = parsed["filters"]
-    # ChatOps has no per-Slack-user identity mapping back to a VulnOps account, so
+    # ChatOps has no per-Slack-user identity mapping back to a Nightwatch account, so
     # queries run with full (admin-equivalent) visibility rather than team-scoped --
     # see the module docstring for that tradeoff.
     result = await list_findings(

@@ -116,6 +116,7 @@ MODULE_REGISTRY = [
     {"key": "/reports", "label": "Reports", "group": "Reports & Compliance"},
     {"key": "/compliance", "label": "Compliance", "group": "Reports & Compliance"},
     {"key": "/risk-register", "label": "Risk Register", "group": "Reports & Compliance"},
+    {"key": "/vendors", "label": "Vendor & Third-Party Risk", "group": "Reports & Compliance"},
     # --- Administration ---
     {"key": "/admin", "label": "Admin", "group": "Administration"},
     {"key": "/admin/users", "label": "Users", "group": "Administration"},

@@ -1,4 +1,4 @@
-"""VulnOps — Vulnerability Operations Platform backend.
+"""Nightwatch — Security Operations Platform backend.
 
 Thin wiring layer:
   - Creates FastAPI app + master /api APIRouter
@@ -56,12 +56,13 @@ from routes.yara import router as yara_router
 from routes.incident_response import router as incident_response_router
 from routes.albert import router as albert_router
 from routes.risk_register import router as risk_register_router
+from routes.vendors import router as vendors_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("vulnops")
 
 
-app = FastAPI(title="VulnOps API", version="1.0.0")
+app = FastAPI(title="Nightwatch API", version="1.0.0")
 api = APIRouter(prefix="/api")
 
 
@@ -102,11 +103,12 @@ api.include_router(wazuh_router)
 api.include_router(threat_intel_router)
 api.include_router(ticketing_router)
 api.include_router(incident_response_router)
+api.include_router(vendors_router)
 
 
 @api.get("/")
 async def root():
-    return {"name": "VulnOps API", "version": "1.0.0", "status": "ok"}
+    return {"name": "Nightwatch API", "version": "1.0.0", "status": "ok"}
 
 
 # Mount the master /api router onto the app.

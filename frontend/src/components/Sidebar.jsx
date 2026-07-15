@@ -3,9 +3,10 @@ import { NavLink, useNavigate, Link } from "react-router-dom";
 import { useAuth } from "@/lib/auth";
 import {
   ChartLineUp, ListChecks, HardDrives, Stack, Lightning, Ticket,
-  ShieldCheck, PlugsConnected, FileArrowDown, GearSix, SignOut, Database, Bug,
+  ShieldCheck, PlugsConnected, FileArrowDown, GearSix, SignOut, Database,
   UsersThree, Bell, ShareNetwork, BookOpen, Robot, Globe, Certificate, Package, MagnifyingGlass, ClipboardText, SlackLogo, Heartbeat, HardDrive, Notepad, Virus, FlowArrow,
   CaretDown, LockKey, CalendarBlank, FirstAidKit, Siren, SlidersHorizontal, Devices, Binoculars, Gauge, WebhooksLogo, Archive, Broadcast, Warning,
+  Buildings,
 } from "@phosphor-icons/react";
 
 const COLLAPSE_KEY = "vulnops.sidebar.collapsedGroups";
@@ -68,10 +69,10 @@ export default function Sidebar() {
   return (
     <aside data-testid="sidebar" className="w-60 shrink-0 bg-[#0D1117] border-r border-[#30363D] flex flex-col h-screen sticky top-0">
       <div className="px-4 py-4 border-b border-[#30363D] flex items-center gap-2">
-        <Bug size={22} weight="duotone" className="text-blue-400" />
+        <Binoculars size={22} weight="duotone" className="text-blue-400" />
         <div>
-          <div className="text-[15px] font-semibold tracking-tight text-slate-100">VulnOps</div>
-          <div className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Vulnerability Operations</div>
+          <div className="text-[15px] font-semibold tracking-tight text-slate-100">Nightwatch</div>
+          <div className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Security Operations</div>
         </div>
       </div>
 
@@ -124,6 +125,7 @@ export default function Sidebar() {
           <NavItem to="/reports" icon={FileArrowDown} label="Reports" testid="nav-reports" />
           <NavItem to="/compliance" icon={ClipboardText} label="Compliance" testid="nav-compliance" />
           <NavItem to="/risk-register" icon={Warning} label="Risk Register" testid="nav-risk-register" />
+          <NavItem to="/vendors" icon={Buildings} label="Vendor & Third-Party Risk" testid="nav-vendors" />
         </Group>
         <Group title="Administration" collapsed={!!collapsed["Administration"]} onToggle={()=>toggleGroup("Administration")}>
           <NavItem to="/admin" icon={GearSix} label="Admin" testid="nav-admin" />

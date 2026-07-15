@@ -79,7 +79,7 @@ export default function SplunkIntegration() {
         </button>
       }>
       <div className="border border-blue-500/30 bg-blue-500/5 rounded-md px-3 py-2.5 mb-4 text-[12px] text-blue-200 leading-relaxed max-w-3xl">
-        Pull-based: VulnOps calls out to Splunk's REST API on the schedule below and normalizes each matching result
+        Pull-based: Nightwatch calls out to Splunk's REST API on the schedule below and normalizes each matching result
         row into a Security Alert -- Splunk never needs to reach in to this app. Uses the "oneshot" search export
         endpoint, so keep the search scoped to a bounded time window (e.g. <span className="font-mono">earliest=-15m</span>).
       </div>

@@ -60,6 +60,8 @@ import ThreatIntelWatchlist from "@/pages/ThreatIntelWatchlist";
 import AlbertMonitoring from "@/pages/AlbertMonitoring";
 import RiskRegister from "@/pages/RiskRegister";
 import RiskDetail from "@/pages/RiskDetail";
+import VendorManagement from "@/pages/VendorManagement";
+import VendorDetail from "@/pages/VendorDetail";
 
 const Protected = ({ children, module }) => {
   const { user, loading, canAccess } = useAuth();
@@ -143,6 +145,8 @@ const AppRouter = () => {
       <Route path="/compliance" element={<Protected module="/compliance"><Compliance/></Protected>}/>
       <Route path="/risk-register" element={<Protected module="/risk-register"><RiskRegister/></Protected>}/>
       <Route path="/risk-register/:id" element={<Protected module="/risk-register"><RiskDetail/></Protected>}/>
+      <Route path="/vendors" element={<Protected module="/vendors"><VendorManagement/></Protected>}/>
+      <Route path="/vendors/:id" element={<Protected module="/vendors"><VendorDetail/></Protected>}/>
       <Route path="/admin/chatops" element={<Protected module="/admin/chatops"><ChatOps/></Protected>}/>
       <Route path="/admin/health" element={<Protected module="/admin/health"><OpsHealth/></Protected>}/>
       <Route path="/admin/backups" element={<Protected module="/admin/backups"><Backups/></Protected>}/>

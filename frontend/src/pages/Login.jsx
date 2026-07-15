@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { useNavigate } from "react-router-dom";
-import { Bug, ShieldStar, DeviceMobile, ArrowLeft } from "@phosphor-icons/react";
+import { Binoculars, ShieldStar, DeviceMobile, ArrowLeft } from "@phosphor-icons/react";
 import { FcGoogle } from "react-icons/fc";
 
 export default function Login() {
@@ -49,10 +49,10 @@ export default function Login() {
     <div className="min-h-screen flex items-center justify-center bg-[#090C10] px-4">
       <div className="w-full max-w-[440px]">
         <div className="flex items-center gap-2 mb-6">
-          <Bug size={28} weight="duotone" className="text-blue-400" />
+          <Binoculars size={28} weight="duotone" className="text-blue-400" />
           <div>
-            <div className="text-[20px] font-semibold tracking-tight text-slate-100">VulnOps</div>
-            <div className="text-[11px] font-mono text-slate-500 uppercase tracking-wider">Vulnerability Operations Platform</div>
+            <div className="text-[20px] font-semibold tracking-tight text-slate-100">Nightwatch</div>
+            <div className="text-[11px] font-mono text-slate-500 uppercase tracking-wider">Security Operations Platform</div>
           </div>
         </div>
 

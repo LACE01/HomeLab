@@ -52,7 +52,7 @@ export default function ChangePassword() {
               {forced ? "Set a new password" : "Change password"}
             </div>
             <div className="text-[11px] font-mono text-slate-500 uppercase tracking-wider">
-              {forced ? "Required before you can continue" : "VulnOps account"}
+              {forced ? "Required before you can continue" : "Nightwatch account"}
             </div>
           </div>
         </div>
@@ -61,7 +61,7 @@ export default function ChangePassword() {
           {forced && (
             <div className="border border-amber-500/30 bg-amber-500/5 rounded-md px-3 py-2.5 mb-4 text-[12px] text-amber-200 leading-relaxed flex items-start gap-2">
               <Warning size={15} className="shrink-0 mt-0.5"/>
-              <span>You're signed in with a temporary password. Set your own before continuing — you won't be able to use any other part of VulnOps until this is done.</span>
+              <span>You're signed in with a temporary password. Set your own before continuing — you won't be able to use any other part of Nightwatch until this is done.</span>
             </div>
           )}
           <form onSubmit={submit} className="space-y-3.5">

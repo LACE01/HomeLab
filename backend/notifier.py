@@ -35,7 +35,7 @@ CHANNELS = ["email", "discord", "slack", "teams", "webhook", "sms"]
 # --- Message templates (Markdown / plain text) ---
 TEMPLATES = {
     "new_assignment": {
-        "subject": "[VulnOps] New assignment: {severity} {title} on {asset}",
+        "subject": "[Nightwatch] New assignment: {severity} {title} on {asset}",
         "body": (
             "A {severity} severity finding has been assigned to your team.\n\n"
             "• **Title:** {title}\n• **CVE:** {cve}\n• **Asset:** {asset}\n"
@@ -44,7 +44,7 @@ TEMPLATES = {
         ),
     },
     "sla_warning": {
-        "subject": "[VulnOps] SLA warning: {title} due in {days_left}d",
+        "subject": "[Nightwatch] SLA warning: {title} due in {days_left}d",
         "body": (
             "⚠️ The following {severity} finding is approaching its SLA deadline.\n\n"
             "• **Title:** {title}\n• **Asset:** {asset}\n• **Due:** {due_at} ({days_left} days left)\n"
@@ -52,7 +52,7 @@ TEMPLATES = {
         ),
     },
     "overdue": {
-        "subject": "[VulnOps] OVERDUE: {severity} {title} on {asset}",
+        "subject": "[Nightwatch] OVERDUE: {severity} {title} on {asset}",
         "body": (
             "🚨 This finding has exceeded its SLA deadline by {days_overdue} day(s).\n\n"
             "• **Title:** {title}\n• **CVE:** {cve}\n• **Asset:** {asset}\n"
@@ -60,7 +60,7 @@ TEMPLATES = {
         ),
     },
     "daily_digest": {
-        "subject": "[VulnOps] Daily digest — {date}",
+        "subject": "[Nightwatch] Daily digest — {date}",
         "body": (
             "📊 Daily security digest for {date}\n\n"
             "• Open critical: {open_critical}\n• New today: {new_today}\n"
@@ -69,7 +69,7 @@ TEMPLATES = {
         ),
     },
     "exception_expiring": {
-        "subject": "[VulnOps] Risk acceptance expiring: {title}",
+        "subject": "[Nightwatch] Risk acceptance expiring: {title}",
         "body": (
             "⏰ A risk acceptance is expiring in {days_left} day(s).\n\n"
             "• **Finding:** {title}\n• **Asset:** {asset}\n"
@@ -78,7 +78,7 @@ TEMPLATES = {
         ),
     },
     "exception_revoked": {
-        "subject": "[VulnOps] Risk acceptance revoked: {title}",
+        "subject": "[Nightwatch] Risk acceptance revoked: {title}",
         "body": (
             "⛔ A previously-approved risk acceptance has been revoked before its normal expiry.\n\n"
             "• **Covers:** {title}\n• **Revoked by:** {revoked_by}\n• **Reason:** {reason}\n"
@@ -86,7 +86,7 @@ TEMPLATES = {
         ),
     },
     "exception_risk_escalated": {
-        "subject": "[VulnOps] Risk acceptance needs a second look: {title}",
+        "subject": "[Nightwatch] Risk acceptance needs a second look: {title}",
         "body": (
             "📈 Threat activity around this accepted risk has escalated since it was approved.\n\n"
             "• **Covers:** {title}\n• **What changed:** {escalation_reason}\n"
@@ -94,7 +94,7 @@ TEMPLATES = {
         ),
     },
     "albert_allowlist_review_due": {
-        "subject": "[VulnOps] Albert allowlist entry needs review: {label}",
+        "subject": "[Nightwatch] Albert allowlist entry needs review: {label}",
         "body": (
             "⏰ A known-good Albert allowlist entry is past its review date, and its suppression has been "
             "paused until it's re-confirmed -- alerts it used to suppress may start showing up again.\n\n"
@@ -104,7 +104,7 @@ TEMPLATES = {
         ),
     },
     "osint_exposure_found": {
-        "subject": "[VulnOps] OSINT exposure found: {label}",
+        "subject": "[Nightwatch] OSINT exposure found: {label}",
         "body": (
             "🕵️ A recon-ng OSINT module found something worth a look.\n\n"
             "• **Module:** {module}\n• **Target:** {target}\n• **Finding:** {label}\n"
@@ -112,7 +112,7 @@ TEMPLATES = {
         ),
     },
     "tls_cert_expiring": {
-        "subject": "[VulnOps] TLS certificate expiring: {hostname}",
+        "subject": "[Nightwatch] TLS certificate expiring: {hostname}",
         "body": (
             "🔒 The TLS certificate for {hostname} {expiry_phrase}.\n\n"
             "• **Severity:** {severity}\n• **Port:** {port}\n"
@@ -120,7 +120,7 @@ TEMPLATES = {
         ),
     },
     "ir_case_opened": {
-        "subject": "[VulnOps] IR case opened: {case_number} — {title}",
+        "subject": "[Nightwatch] IR case opened: {case_number} — {title}",
         "body": (
             "\U0001F6A8 A new incident response case was opened.\n\n"
             "• **Case:** {case_number}\n• **Title:** {title}\n"
@@ -129,7 +129,7 @@ TEMPLATES = {
         ),
     },
     "digest_list": {
-        "subject": "[VulnOps] {cadence} digest — {rule_name} ({count})",
+        "subject": "[Nightwatch] {cadence} digest — {rule_name} ({count})",
         "body": (
             "Rolled-up notifications for rule \"{rule_name}\" ({cadence}, {count} item(s) since the last digest):\n\n"
             "{items_text}"

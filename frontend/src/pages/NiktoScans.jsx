@@ -102,7 +102,7 @@ export default function NiktoScans() {
       <div className="border border-orange-500/30 bg-orange-500/5 rounded-md px-3 py-2.5 mb-4 text-[12px] text-orange-200 leading-relaxed flex items-start gap-2 max-w-3xl">
         <ShieldWarning size={16} className="shrink-0 mt-0.5"/>
         <div>
-          VulnOps will originate real HTTP requests against whatever URL you configure. Only scan applications
+          Nightwatch will originate real HTTP requests against whatever URL you configure. Only scan applications
           you're authorized to test — every target requires you to confirm that explicitly. Only one scan runs
           at a time, whether triggered manually or by schedule.
         </div>
@@ -342,7 +342,7 @@ function ScanConfigModal({ initial, isEdit, onClose, onSaved }) {
           </div>
           <label className="flex items-start gap-2 text-[12px] text-slate-300 pt-1">
             <input type="checkbox" checked={form.authorized} onChange={e => setForm({ ...form, authorized: e.target.checked })} className="mt-0.5"/>
-            <span>I'm authorized to run active scans against this target — VulnOps will send real HTTP requests to it.</span>
+            <span>I'm authorized to run active scans against this target — Nightwatch will send real HTTP requests to it.</span>
           </label>
         </div>
         <div className="px-5 py-3.5 border-t border-[#30363D] flex justify-end gap-2">

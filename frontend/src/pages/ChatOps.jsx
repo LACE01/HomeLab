@@ -57,7 +57,7 @@ export default function ChatOps() {
   if (loading) return <Layout title="ChatOps"><div className="text-[12.5px] text-slate-500 py-8 text-center">Loading…</div></Layout>;
 
   return (
-    <Layout title="ChatOps" subtitle="Run VulnOps triage commands from Slack without leaving chat">
+    <Layout title="ChatOps" subtitle="Run Nightwatch triage commands from Slack without leaving chat">
       <div className="grid grid-cols-2 gap-5 max-w-5xl">
         <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-5">
           <div className="flex items-center gap-2 mb-4">
@@ -125,7 +125,7 @@ export default function ChatOps() {
 
           <div className="mt-5 border border-amber-500/30 bg-amber-500/5 rounded-md px-3 py-2.5 text-[11.5px] text-amber-200 leading-relaxed">
             Anyone who can run this command in your Slack workspace gets full read/write access to findings —
-            there's no per-person mapping back to VulnOps accounts. Restrict the slash command to a trusted
+            there's no per-person mapping back to Nightwatch accounts. Restrict the slash command to a trusted
             channel in Slack's own settings, and treat the signing secret like a credential.
           </div>
         </div>
@@ -149,7 +149,7 @@ export default function ChatOps() {
           </div>
           <div className="mt-4 text-[11px] text-slate-500 leading-relaxed">
             For <code className="font-mono">&lt;id&gt;</code>, the first 6-8 characters of a finding ID are enough,
-            as long as they're unambiguous — VulnOps will ask you to be more specific if there's more than one match.
+            as long as they're unambiguous — Nightwatch will ask you to be more specific if there's more than one match.
           </div>
         </div>
       </div>
