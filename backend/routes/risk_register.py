@@ -74,6 +74,7 @@ class RiskBody(BaseModel):
     linked_asset_ids: List[str] = []
     linked_exception_ids: List[str] = []
     linked_albert_alert_ids: List[str] = []
+    linked_ir_case_ids: List[str] = []
     external_reference: Optional[str] = None  # freeform device/domain/website context that isn't a tracked asset
     tags: List[str] = []
 
@@ -95,6 +96,7 @@ class RiskUpdateBody(BaseModel):
     linked_asset_ids: Optional[List[str]] = None
     linked_exception_ids: Optional[List[str]] = None
     linked_albert_alert_ids: Optional[List[str]] = None
+    linked_ir_case_ids: Optional[List[str]] = None
     external_reference: Optional[str] = None
     tags: Optional[List[str]] = None
 
@@ -115,6 +117,7 @@ async def list_risks(
     band: Optional[str] = None, q: Optional[str] = None,
     exception_id: Optional[str] = None, finding_id: Optional[str] = None,
     asset_id: Optional[str] = None, albert_alert_id: Optional[str] = None,
+    ir_case_id: Optional[str] = None,
     user: dict = Depends(require_module("/risk-register")),
 ):
     flt = {}
@@ -134,6 +137,8 @@ async def list_risks(
         flt["linked_asset_ids"] = asset_id
     if albert_alert_id:
         flt["linked_albert_alert_ids"] = albert_alert_id
+    if ir_case_id:
+        flt["linked_ir_case_ids"] = ir_case_id
     if q:
         flt["$or"] = [{"title": {"$regex": q, "$options": "i"}}, {"description": {"$regex": q, "$options": "i"}}]
     docs = await db.risks.find(flt, {"_id": 0}).sort("inherent_score", -1).to_list(2000)
@@ -223,7 +228,8 @@ async def export_risk_docx(risk_id: str, user: dict = Depends(require_module("/r
     assets = await db.assets.find({"id": {"$in": risk.get("linked_asset_ids") or []}}, {"_id": 0}).to_list(500)
     albert_alerts = await db.albert_alerts.find({"id": {"$in": risk.get("linked_albert_alert_ids") or []}}, {"_id": 0}).to_list(500)
     exceptions = await db.exceptions.find({"id": {"$in": risk.get("linked_exception_ids") or []}}, {"_id": 0}).to_list(500)
-    buf = build_risk_export_docx(risk, findings, assets, albert_alerts, exceptions)
+    ir_cases = await db.ir_cases.find({"id": {"$in": risk.get("linked_ir_case_ids") or []}}, {"_id": 0}).to_list(500)
+    buf = build_risk_export_docx(risk, findings, assets, albert_alerts, exceptions, ir_cases)
     filename = f"risk-{risk_id[:8]}-report.docx"
     return StreamingResponse(
         buf, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

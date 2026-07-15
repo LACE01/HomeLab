@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, Link } from "react-router-dom";
 import { api, API } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import { useAuth } from "@/lib/auth";
+import NewRiskModal from "@/components/NewRiskModal";
 import {
   Plus, X, ArrowLeft, CheckSquare, Square, Notepad, Camera, Package as PackageIcon,
   UsersThree, FileArrowDown, Lock, CaretRight, Megaphone, Bell, ClockCountdown,
@@ -662,6 +663,55 @@ function FollowUpsPanel({ caseId, followUps, canEditCase, onChanged }) {
   );
 }
 
+function RiskRegisterPanel({ caseId, caseNumber, caseTitle, caseClassification }) {
+  const [linkedRisks, setLinkedRisks] = useState([]);
+  const [showRiskModal, setShowRiskModal] = useState(false);
+
+  const load = useCallback(() => {
+    api.get("/v1/risk-register", { params: { ir_case_id: caseId } }).then(r => setLinkedRisks(r.data)).catch(() => setLinkedRisks([]));
+  }, [caseId]);
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-[11px] uppercase font-mono text-slate-500 flex items-center gap-1.5"><Flag size={13}/> Risk Register</div>
+        <button onClick={() => setShowRiskModal(true)} className="text-[11px] text-blue-300 hover:text-blue-200 inline-flex items-center gap-1">
+          <LinkSimple size={11}/> Add to Risk Register
+        </button>
+      </div>
+      <div className="space-y-1.5">
+        {linkedRisks.map(r => (
+          <Link key={r.id} to={`/risk-register/${r.id}`} className="flex items-center justify-between border border-[#30363D] rounded px-2.5 py-1.5 hover:border-[#484F58]">
+            <span className="text-[12px] text-slate-200 truncate flex-1">{r.title}</span>
+            <Chip color="slate">{r.status}</Chip>
+          </Link>
+        ))}
+        {linkedRisks.length === 0 && <div className="text-[12px] text-slate-500">Not tracked in the Risk Register yet.</div>}
+      </div>
+      {showRiskModal && (
+        <NewRiskModal onClose={() => setShowRiskModal(false)}
+          prefill={{
+            title: `${caseNumber}: ${caseTitle}`,
+            description: `Risk tracked from IR case ${caseNumber}.`,
+            category: "Operational",
+            likelihood: caseClassification === "Severe" || caseClassification === "Critical" ? 4 : 3,
+            impact: caseClassification === "Severe" || caseClassification === "Critical" ? 4 : 3,
+            linked_ir_case_ids: [caseId],
+            tags: ["ir-case"],
+            contextLabel: `From IR case ${caseNumber} — ${caseTitle}`,
+          }}
+          onCreated={() => {
+            setShowRiskModal(false);
+            toast.success("Linked to Risk Register");
+            load();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
 export function IRCaseDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -885,6 +935,8 @@ export function IRCaseDetail() {
           <ArtifactsPanel caseId={id} canEditCase={canEditCase}/>
 
           <RelatedEntitiesPanel caseId={id} canEditCase={canEditCase}/>
+
+          <RiskRegisterPanel caseId={id} caseNumber={c.case_number} caseTitle={c.title} caseClassification={c.classification}/>
         </div>
 
         <div className="space-y-4">

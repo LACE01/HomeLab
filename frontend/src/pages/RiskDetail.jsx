@@ -7,7 +7,7 @@ import { Chip } from "@/components/Badges";
 import { fmtDate } from "@/lib/utils-fmt";
 import {
   ArrowLeft, ChatCircle, ClockCounterClockwise, CheckCircle, PencilSimple,
-  Trash, FloppyDisk, X, Warning, LinkSimple, ShieldCheck, Plus, FileArrowDown,
+  Trash, FloppyDisk, X, Warning, LinkSimple, ShieldCheck, Plus, FileArrowDown, FirstAidKit,
 } from "@phosphor-icons/react";
 
 const BAND_COLOR = { Critical: "#f87171", High: "#fb923c", Medium: "#fbbf24", Low: "#60a5fa" };
@@ -37,6 +37,10 @@ export default function RiskDetail() {
   const [findingSearch, setFindingSearch] = useState("");
   const [findingSearchResults, setFindingSearchResults] = useState([]);
   const [findingSearchBusy, setFindingSearchBusy] = useState(false);
+  const [linkedIrCases, setLinkedIrCases] = useState([]);
+  const [showLinkIrCase, setShowLinkIrCase] = useState(false);
+  const [allIrCases, setAllIrCases] = useState([]);
+  const [irCaseSearch, setIrCaseSearch] = useState("");
   const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
 
@@ -68,6 +72,14 @@ export default function RiskDetail() {
         setLinkedFindings(finds.filter(Boolean));
       } else {
         setLinkedFindings([]);
+      }
+      if (riskR.data.linked_ir_case_ids?.length > 0) {
+        const cases = await Promise.all(
+          riskR.data.linked_ir_case_ids.map(cid => api.get(`/v1/ir/cases/${cid}`).then(r => r.data.case).catch(() => null))
+        );
+        setLinkedIrCases(cases.filter(Boolean));
+      } else {
+        setLinkedIrCases([]);
       }
     } catch (e) {
       toast.error("Couldn't load this risk");
@@ -140,6 +152,39 @@ export default function RiskDetail() {
     try {
       const next = (risk.linked_finding_ids || []).filter(fid => fid !== findingId);
       await api.patch(`/v1/risk-register/${id}`, { linked_finding_ids: next });
+      load();
+    } catch (e) {
+      toast.error("Failed to unlink");
+    }
+  };
+
+  const openLinkIrCase = async () => {
+    setShowLinkIrCase(true);
+    if (allIrCases.length === 0) {
+      try {
+        const r = await api.get("/v1/ir/cases");
+        setAllIrCases(r.data.items || []);
+      } catch (e) { /* non-fatal */ }
+    }
+  };
+
+  const linkIrCase = async (caseId) => {
+    try {
+      const next = [...new Set([...(risk.linked_ir_case_ids || []), caseId])];
+      await api.patch(`/v1/risk-register/${id}`, { linked_ir_case_ids: next });
+      toast.success("Linked");
+      setShowLinkIrCase(false);
+      setIrCaseSearch("");
+      load();
+    } catch (e) {
+      toast.error("Failed to link");
+    }
+  };
+
+  const unlinkIrCase = async (caseId) => {
+    try {
+      const next = (risk.linked_ir_case_ids || []).filter(cid => cid !== caseId);
+      await api.patch(`/v1/risk-register/${id}`, { linked_ir_case_ids: next });
       load();
     } catch (e) {
       toast.error("Failed to unlink");
@@ -447,6 +492,25 @@ export default function RiskDetail() {
               </Link>
             )}
           </div>
+
+          <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-[13px] font-medium text-slate-100 flex items-center gap-1.5"><FirstAidKit size={15} /> Linked IR Cases</div>
+              <button onClick={openLinkIrCase} className="text-[11px] text-blue-300 hover:text-blue-200 inline-flex items-center gap-1"><LinkSimple size={11} /> Link existing</button>
+            </div>
+            <div className="space-y-1.5 text-[12px]">
+              {linkedIrCases.map(c => (
+                <div key={c.id} className="flex items-center justify-between border border-[#21262D] rounded px-2 py-1.5">
+                  <Link to={`/ir/cases/${c.id}`} className="text-blue-300 hover:underline truncate">{c.case_number} — {c.title}</Link>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Chip color="slate">{c.status}</Chip>
+                    <button onClick={() => unlinkIrCase(c.id)} className="text-slate-500 hover:text-red-400"><X size={12} /></button>
+                  </div>
+                </div>
+              ))}
+              {linkedIrCases.length === 0 && <div className="text-slate-500">No IR cases linked yet.</div>}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -473,6 +537,35 @@ export default function RiskDetail() {
                     </button>
                   ))}
                 {allExceptions.length === 0 && <div className="text-[12px] text-slate-500 text-center py-4">No exceptions found.</div>}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showLinkIrCase && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4" onClick={() => setShowLinkIrCase(false)}>
+          <div className="bg-[#0D1117] border border-[#30363D] rounded-md w-full max-w-md max-h-[70vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="px-4 py-3 border-b border-[#30363D] flex items-center justify-between sticky top-0 bg-[#0D1117]">
+              <h3 className="text-[13px] font-medium text-slate-100">Link an existing IR case</h3>
+              <button onClick={() => setShowLinkIrCase(false)} className="text-slate-500 hover:text-slate-300"><X size={16} /></button>
+            </div>
+            <div className="p-3">
+              <input value={irCaseSearch} onChange={e => setIrCaseSearch(e.target.value)} placeholder="Search by case number or title…"
+                className="w-full h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12.5px] text-slate-200 mb-2" />
+              <div className="space-y-1">
+                {allIrCases
+                  .filter(c => !irCaseSearch || `${c.case_number} ${c.title}`.toLowerCase().includes(irCaseSearch.toLowerCase()))
+                  .filter(c => !(risk.linked_ir_case_ids || []).includes(c.id))
+                  .slice(0, 30)
+                  .map(c => (
+                    <button key={c.id} onClick={() => linkIrCase(c.id)}
+                      className="w-full text-left px-2.5 py-1.5 border border-[#21262D] hover:border-blue-500/40 rounded text-[12px] text-slate-300">
+                      <div className="truncate">{c.case_number} — {c.title}</div>
+                      <div className="text-[10.5px] text-slate-500 font-mono">{c.classification} · {c.status}</div>
+                    </button>
+                  ))}
+                {allIrCases.length === 0 && <div className="text-[12px] text-slate-500 text-center py-4">No IR cases found.</div>}
               </div>
             </div>
           </div>

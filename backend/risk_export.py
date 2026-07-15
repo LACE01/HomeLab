@@ -24,7 +24,8 @@ def _fmt_dt(value):
         return str(value)
 
 
-def build_risk_export_docx(risk: dict, findings: list, assets: list, albert_alerts: list, exceptions: list) -> io.BytesIO:
+def build_risk_export_docx(risk: dict, findings: list, assets: list, albert_alerts: list, exceptions: list, ir_cases: list = None) -> io.BytesIO:
+    ir_cases = ir_cases or []
     from docx import Document
     from docx.shared import Pt, RGBColor, Inches
     from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -130,6 +131,21 @@ def build_risk_export_docx(risk: dict, findings: list, assets: list, albert_aler
             c[3].text = e.get("business_justification") or "-"
     else:
         doc.add_paragraph("No exceptions linked.")
+
+    doc.add_heading(f"Linked Incident Response Cases ({len(ir_cases)})", level=1)
+    if ir_cases:
+        t = doc.add_table(rows=1, cols=4)
+        t.style = "Light Grid Accent 1"
+        h = t.rows[0].cells
+        h[0].text, h[1].text, h[2].text, h[3].text = "Case #", "Title", "Classification", "Status"
+        for c_ in ir_cases:
+            c = t.add_row().cells
+            c[0].text = c_.get("case_number") or c_.get("id", "")
+            c[1].text = c_.get("title") or "-"
+            c[2].text = c_.get("classification") or "-"
+            c[3].text = c_.get("status") or "-"
+    else:
+        doc.add_paragraph("No IR cases linked.")
 
     buf = io.BytesIO()
     doc.save(buf)

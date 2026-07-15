@@ -17,7 +17,7 @@ export default function NewRiskModal({ onClose, onCreated, prefill = {} }) {
   const [form, setForm] = useState({
     title: "", description: "", category: "Technical", likelihood: 3, impact: 3,
     treatment_strategy: "Mitigate", treatment_plan: "", owner: "", status: "Open", review_cadence: "Quarterly",
-    external_reference: "", linked_finding_ids: [], linked_asset_ids: [], linked_exception_ids: [], linked_albert_alert_ids: [],
+    external_reference: "", linked_finding_ids: [], linked_asset_ids: [], linked_exception_ids: [], linked_albert_alert_ids: [], linked_ir_case_ids: [],
     tags: [],
     ...prefill,
   });
