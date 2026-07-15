@@ -1,13 +1,13 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+import { api, API } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import { fmtDate } from "@/lib/utils-fmt";
 import {
   ArrowLeft, ChatCircle, ClockCounterClockwise, CheckCircle, PencilSimple,
-  Trash, FloppyDisk, X, Warning, LinkSimple, ShieldCheck, Plus,
+  Trash, FloppyDisk, X, Warning, LinkSimple, ShieldCheck, Plus, FileArrowDown,
 } from "@phosphor-icons/react";
 
 const BAND_COLOR = { Critical: "#f87171", High: "#fb923c", Medium: "#fbbf24", Low: "#60a5fa" };
@@ -32,6 +32,11 @@ export default function RiskDetail() {
   const [showLinkException, setShowLinkException] = useState(false);
   const [allExceptions, setAllExceptions] = useState([]);
   const [exceptionSearch, setExceptionSearch] = useState("");
+  const [linkedFindings, setLinkedFindings] = useState([]);
+  const [showLinkFinding, setShowLinkFinding] = useState(false);
+  const [findingSearch, setFindingSearch] = useState("");
+  const [findingSearchResults, setFindingSearchResults] = useState([]);
+  const [findingSearchBusy, setFindingSearchBusy] = useState(false);
   const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
 
@@ -55,6 +60,14 @@ export default function RiskDetail() {
         setLinkedExceptions(excs.filter(Boolean));
       } else {
         setLinkedExceptions([]);
+      }
+      if (riskR.data.linked_finding_ids?.length > 0) {
+        const finds = await Promise.all(
+          riskR.data.linked_finding_ids.map(fid => api.get(`/v1/findings/${fid}`).then(r => r.data).catch(() => null))
+        );
+        setLinkedFindings(finds.filter(Boolean));
+      } else {
+        setLinkedFindings([]);
       }
     } catch (e) {
       toast.error("Couldn't load this risk");
@@ -92,6 +105,59 @@ export default function RiskDetail() {
     } catch (e) {
       toast.error("Failed to unlink");
     }
+  };
+
+  const openLinkFinding = () => {
+    setShowLinkFinding(true);
+    setFindingSearch("");
+    setFindingSearchResults([]);
+  };
+
+  const searchFindingsForLink = async (query) => {
+    setFindingSearch(query);
+    if (!query.trim()) { setFindingSearchResults([]); return; }
+    setFindingSearchBusy(true);
+    try {
+      const r = await api.get("/v1/findings", { params: { q: query.trim(), limit: 10 } });
+      setFindingSearchResults(r.data.items || []);
+    } catch (e) { /* non-fatal */ } finally { setFindingSearchBusy(false); }
+  };
+
+  const linkFinding = async (findingId) => {
+    try {
+      const next = [...new Set([...(risk.linked_finding_ids || []), findingId])];
+      await api.patch(`/v1/risk-register/${id}`, { linked_finding_ids: next });
+      toast.success("Finding linked");
+      setShowLinkFinding(false);
+      setFindingSearch("");
+      load();
+    } catch (e) {
+      toast.error("Failed to link");
+    }
+  };
+
+  const unlinkFinding = async (findingId) => {
+    try {
+      const next = (risk.linked_finding_ids || []).filter(fid => fid !== findingId);
+      await api.patch(`/v1/risk-register/${id}`, { linked_finding_ids: next });
+      load();
+    } catch (e) {
+      toast.error("Failed to unlink");
+    }
+  };
+
+  const exportDocx = () => {
+    const token = localStorage.getItem("vulnops_token");
+    fetch(`${API}/v1/risk-register/${id}/export.docx`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then(r => r.blob())
+      .then(blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = `risk-${id.slice(0, 8)}-report.docx`;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+      })
+      .catch(() => toast.error("Failed to export"));
   };
 
   useEffect(() => { load(); }, [load]);
@@ -173,6 +239,9 @@ export default function RiskDetail() {
               </button>
             </>
           )}
+          <button onClick={exportDocx} className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-blue-500/40 hover:text-blue-300 rounded inline-flex items-center gap-1.5 text-slate-300">
+            <FileArrowDown size={14} /> Export report
+          </button>
           <button onClick={remove} className="h-8 px-3 text-[12px] border border-red-500/30 hover:bg-red-500/10 text-red-300 rounded inline-flex items-center gap-1.5">
             <Trash size={14} /> Delete
           </button>
@@ -329,15 +398,30 @@ export default function RiskDetail() {
             )}
           </div>
 
-          {(risk.linked_finding_ids?.length > 0 || risk.linked_asset_ids?.length > 0) && (
-            <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
-              <div className="text-[13px] font-medium text-slate-100 mb-2">Linked Items</div>
-              <div className="space-y-1.5 text-[12px]">
-                {(risk.linked_finding_ids || []).map(fid => <Link key={fid} to={`/findings/${fid}`} className="block text-blue-300 hover:underline">Finding {fid.slice(0, 8)}</Link>)}
+          <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-[13px] font-medium text-slate-100">Linked Findings</div>
+              <button onClick={openLinkFinding} className="text-[11px] text-blue-300 hover:text-blue-200 inline-flex items-center gap-1"><LinkSimple size={11} /> Link finding</button>
+            </div>
+            <div className="space-y-1.5 text-[12px] mb-2">
+              {linkedFindings.map(f => (
+                <div key={f.id} className="flex items-center justify-between border border-[#21262D] rounded px-2 py-1.5">
+                  <Link to={`/findings/${f.id}`} className="text-blue-300 hover:underline truncate">{f.title || f.cve || f.id.slice(0, 8)}</Link>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Chip color="slate">{f.severity}</Chip>
+                    <button onClick={() => unlinkFinding(f.id)} className="text-slate-500 hover:text-red-400"><X size={12} /></button>
+                  </div>
+                </div>
+              ))}
+              {linkedFindings.length === 0 && <div className="text-slate-500">No findings linked yet -- link one to unlock requesting an exception.</div>}
+            </div>
+            {(risk.linked_asset_ids || []).length > 0 && (
+              <div className="pt-2 border-t border-[#21262D] space-y-1 text-[12px]">
+                <div className="text-slate-500 text-[10.5px] uppercase tracking-wider mb-1">Linked Assets</div>
                 {(risk.linked_asset_ids || []).map(aid => <Link key={aid} to={`/assets/${aid}`} className="block text-blue-300 hover:underline">Asset {aid.slice(0, 8)}</Link>)}
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
           <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
             <div className="flex items-center justify-between mb-2">
@@ -389,6 +473,36 @@ export default function RiskDetail() {
                     </button>
                   ))}
                 {allExceptions.length === 0 && <div className="text-[12px] text-slate-500 text-center py-4">No exceptions found.</div>}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showLinkFinding && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4" onClick={() => setShowLinkFinding(false)}>
+          <div className="bg-[#0D1117] border border-[#30363D] rounded-md w-full max-w-md max-h-[70vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="px-4 py-3 border-b border-[#30363D] flex items-center justify-between sticky top-0 bg-[#0D1117]">
+              <h3 className="text-[13px] font-medium text-slate-100">Link a finding</h3>
+              <button onClick={() => setShowLinkFinding(false)} className="text-slate-500 hover:text-slate-300"><X size={16} /></button>
+            </div>
+            <div className="p-3">
+              <input value={findingSearch} onChange={e => searchFindingsForLink(e.target.value)} placeholder="Search by title, CVE, hostname…"
+                autoFocus className="w-full h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12.5px] text-slate-200 mb-2" />
+              <div className="space-y-1">
+                {findingSearchBusy && <div className="text-[12px] text-slate-500 text-center py-2">Searching…</div>}
+                {!findingSearchBusy && findingSearch && findingSearchResults.length === 0 && (
+                  <div className="text-[12px] text-slate-500 text-center py-4">No matching findings.</div>
+                )}
+                {findingSearchResults
+                  .filter(f => !(risk.linked_finding_ids || []).includes(f.id))
+                  .map(f => (
+                    <button key={f.id} onClick={() => linkFinding(f.id)}
+                      className="w-full text-left px-2.5 py-1.5 border border-[#21262D] hover:border-blue-500/40 rounded text-[12px] text-slate-300">
+                      <div className="truncate">{f.title}</div>
+                      <div className="text-[10.5px] text-slate-500 font-mono">{f.asset_hostname} · {f.cve || "no CVE"} · {f.severity}</div>
+                    </button>
+                  ))}
               </div>
             </div>
           </div>

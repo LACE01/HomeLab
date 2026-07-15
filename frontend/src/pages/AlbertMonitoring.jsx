@@ -152,8 +152,13 @@ export default function AlbertMonitoring() {
   const [showRiskModal, setShowRiskModal] = useState(false);
   const [allowlist, setAllowlist] = useState([]);
   const [showAllowlist, setShowAllowlist] = useState(false);
-  const [newAllowlistIp, setNewAllowlistIp] = useState("");
+  const [newAllowlistSourceIp, setNewAllowlistSourceIp] = useState("");
+  const [newAllowlistDestIp, setNewAllowlistDestIp] = useState("");
   const [includeSuppressed, setIncludeSuppressed] = useState(false);
+  const [assetLinkField, setAssetLinkField] = useState(null); // "source" | "destination" | null
+  const [assetSearchQ, setAssetSearchQ] = useState("");
+  const [assetSearchResults, setAssetSearchResults] = useState([]);
+  const [assetSearchBusy, setAssetSearchBusy] = useState(false);
   const navigate = useNavigate();
 
   const loadDashboard = async (rangeDays) => {
@@ -254,6 +259,46 @@ export default function AlbertMonitoring() {
     setSelectedIds(prev => prev.size === alerts.items.length ? new Set() : new Set(alerts.items.map(a => a.id)));
   };
 
+  const openAssetPicker = (field) => {
+    setAssetLinkField(field);
+    setAssetSearchQ("");
+    setAssetSearchResults([]);
+  };
+
+  const searchAssetsForLink = async (query) => {
+    setAssetSearchQ(query);
+    if (!query.trim()) { setAssetSearchResults([]); return; }
+    setAssetSearchBusy(true);
+    try {
+      const r = await api.get("/v1/assets", { params: { q: query.trim(), limit: 10 } });
+      setAssetSearchResults(r.data.items || r.data || []);
+    } catch (e) { /* non-fatal */ } finally { setAssetSearchBusy(false); }
+  };
+
+  const linkAssetOverride = async (assetId) => {
+    if (!selected || !assetLinkField) return;
+    try {
+      const r = await api.post(`/v1/admin/albert/alerts/${selected.id}/link-asset`, { field: assetLinkField, asset_id: assetId });
+      setSelected(r.data);
+      setAssetLinkField(null);
+      loadAlerts();
+      toast.success("Asset linked");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to link asset");
+    }
+  };
+
+  const unlinkAssetOverride = async (field) => {
+    if (!selected) return;
+    try {
+      const r = await api.post(`/v1/admin/albert/alerts/${selected.id}/link-asset`, { field, asset_id: null });
+      setSelected(r.data);
+      loadAlerts();
+    } catch (e) {
+      toast.error("Failed to unlink");
+    }
+  };
+
   const bulkAcknowledge = async () => {
     if (selectedIds.size === 0) return;
     setBulkBusy(true);
@@ -278,10 +323,16 @@ export default function AlbertMonitoring() {
   };
 
   const addAllowlistEntry = async () => {
-    if (!newAllowlistIp.trim()) return;
+    const source_ip = newAllowlistSourceIp.trim();
+    const destination_ip = newAllowlistDestIp.trim();
+    if (!source_ip && !destination_ip) {
+      toast.error("Enter a source IP and/or destination IP");
+      return;
+    }
     try {
-      await api.post("/v1/admin/albert/allowlist", { source_ip: newAllowlistIp.trim() });
-      setNewAllowlistIp("");
+      await api.post("/v1/admin/albert/allowlist", { source_ip: source_ip || null, destination_ip: destination_ip || null });
+      setNewAllowlistSourceIp("");
+      setNewAllowlistDestIp("");
       loadAllowlist();
       toast.success("Added to allowlist -- click \"Re-apply to existing alerts\" to suppress past matches too");
     } catch (e) {
@@ -573,11 +624,15 @@ export default function AlbertMonitoring() {
           {showAllowlist && (
             <div className="mb-3 border border-[#21262D] rounded p-3 bg-[#161B22]">
               <div className="text-[11.5px] text-slate-300 mb-2 leading-relaxed">
-                Known-good source IPs (patch management, automation, admin jump hosts) -- their PowerShell-over-SMB and similar alerts
-                are suppressed from stats and hidden from the table by default.
+                Known-good traffic (patch management, automation, admin jump hosts) -- suppressed from stats and hidden from the table
+                by default. Set a source IP to allow that host no matter where it talks to; set a destination IP to allow traffic to a
+                known-good target no matter which host initiates it (useful if an automation account's source address changes); set
+                both for a tighter, specific pair.
               </div>
               <div className="flex items-center gap-2 mb-2">
-                <input value={newAllowlistIp} onChange={(e) => setNewAllowlistIp(e.target.value)} placeholder="Source IP, e.g. 192.168.13.138"
+                <input value={newAllowlistSourceIp} onChange={(e) => setNewAllowlistSourceIp(e.target.value)} placeholder="Source IP (optional)"
+                  className="h-7 flex-1 bg-[#0D1117] border border-[#30363D] rounded px-2 text-[11.5px] text-slate-200" />
+                <input value={newAllowlistDestIp} onChange={(e) => setNewAllowlistDestIp(e.target.value)} placeholder="Destination IP (optional)"
                   className="h-7 flex-1 bg-[#0D1117] border border-[#30363D] rounded px-2 text-[11.5px] text-slate-200" />
                 <button onClick={addAllowlistEntry} className="h-7 px-3 text-[11px] bg-blue-500/20 border border-blue-500/40 text-blue-200 rounded">Add</button>
                 <button onClick={reapplyAllowlist} className="h-7 px-3 text-[11px] border border-[#30363D] hover:border-blue-500/40 hover:text-blue-300 text-slate-300 rounded">
@@ -587,7 +642,12 @@ export default function AlbertMonitoring() {
               <div className="space-y-1">
                 {allowlist.map(e => (
                   <div key={e.id} className="flex items-center justify-between text-[11.5px] text-slate-300 font-mono">
-                    <span>{e.source_ip} {e.notes && <span className="text-slate-500 font-sans">— {e.notes}</span>}</span>
+                    <span>
+                      {e.source_ip && <>src {e.source_ip}</>}
+                      {e.source_ip && e.destination_ip && " + "}
+                      {e.destination_ip && <>dst {e.destination_ip}</>}
+                      {" "}{e.notes && <span className="text-slate-500 font-sans">— {e.notes}</span>}
+                    </span>
                     <button onClick={() => removeAllowlistEntry(e.id)} className="text-red-400 hover:text-red-300"><X size={12} /></button>
                   </div>
                 ))}
@@ -720,24 +780,71 @@ export default function AlbertMonitoring() {
                 <div>
                   <div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1">Source</div>
                   <div className="font-mono text-slate-300">{selected.source_ip}:{selected.source_port}</div>
-                  {selected.source_asset && (
-                    <Link to={`/assets/${selected.source_asset.id}`} className="text-[10.5px] text-blue-300 hover:text-blue-200 inline-flex items-center gap-1 mt-0.5">
-                      <HardDrive size={10} /> {selected.source_asset.hostname}
-                    </Link>
+                  {selected.source_asset ? (
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <Link to={`/assets/${selected.source_asset.id}`} className="text-[10.5px] text-blue-300 hover:text-blue-200 inline-flex items-center gap-1">
+                        <HardDrive size={10} /> {selected.source_asset.hostname}
+                      </Link>
+                      <button onClick={() => openAssetPicker("source")} className="text-[10px] text-slate-500 hover:text-slate-300">Change</button>
+                      {selected.source_asset.manually_linked && (
+                        <button onClick={() => unlinkAssetOverride("source")} className="text-[10px] text-red-400 hover:text-red-300">Unlink</button>
+                      )}
+                    </div>
+                  ) : (
+                    <button onClick={() => openAssetPicker("source")} className="text-[10.5px] text-slate-500 hover:text-blue-300 mt-0.5">+ Link asset</button>
                   )}
                 </div>
                 <div>
                   <div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1">Destination</div>
                   <div className="font-mono text-slate-300">{selected.destination_ip}:{selected.destination_port}</div>
-                  {selected.destination_asset && (
-                    <Link to={`/assets/${selected.destination_asset.id}`} className="text-[10.5px] text-blue-300 hover:text-blue-200 inline-flex items-center gap-1 mt-0.5">
-                      <HardDrive size={10} /> {selected.destination_asset.hostname}
-                    </Link>
+                  {selected.destination_asset ? (
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <Link to={`/assets/${selected.destination_asset.id}`} className="text-[10.5px] text-blue-300 hover:text-blue-200 inline-flex items-center gap-1">
+                        <HardDrive size={10} /> {selected.destination_asset.hostname}
+                      </Link>
+                      <button onClick={() => openAssetPicker("destination")} className="text-[10px] text-slate-500 hover:text-slate-300">Change</button>
+                      {selected.destination_asset.manually_linked && (
+                        <button onClick={() => unlinkAssetOverride("destination")} className="text-[10px] text-red-400 hover:text-red-300">Unlink</button>
+                      )}
+                    </div>
+                  ) : (
+                    <button onClick={() => openAssetPicker("destination")} className="text-[10.5px] text-slate-500 hover:text-blue-300 mt-0.5">+ Link asset</button>
                   )}
                 </div>
                 <div><div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1">Protocol</div><div className="text-slate-300">{selected.protocol_name || selected.protocol}</div></div>
                 <div><div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1">Disposition</div><div className="text-slate-300 capitalize">{selected.disposition}</div></div>
               </div>
+
+              {assetLinkField && (
+                <div className="border border-blue-500/30 rounded p-3 bg-blue-500/5">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="text-[11px] text-blue-200">
+                      Link {assetLinkField} asset manually — use this when the IP doesn&#39;t auto-match (stale/missing Assets IP data)
+                    </div>
+                    <button onClick={() => setAssetLinkField(null)} className="text-slate-500 hover:text-slate-300"><X size={12} /></button>
+                  </div>
+                  <input
+                    value={assetSearchQ}
+                    onChange={(e) => searchAssetsForLink(e.target.value)}
+                    placeholder="Search assets by hostname, IP, tag..."
+                    className="h-7 w-full bg-[#0D1117] border border-[#30363D] rounded px-2 text-[11.5px] text-slate-200 mb-1.5"
+                    autoFocus
+                  />
+                  <div className="space-y-1 max-h-40 overflow-y-auto">
+                    {assetSearchBusy && <div className="text-[11px] text-slate-500">Searching…</div>}
+                    {!assetSearchBusy && assetSearchQ && assetSearchResults.length === 0 && (
+                      <div className="text-[11px] text-slate-500">No matching assets.</div>
+                    )}
+                    {assetSearchResults.map(a => (
+                      <button key={a.id} onClick={() => linkAssetOverride(a.id)}
+                        className="w-full text-left px-2 py-1 text-[11.5px] text-slate-300 hover:bg-[#161B22] rounded flex items-center justify-between">
+                        <span className="inline-flex items-center gap-1.5"><HardDrive size={11} /> {a.hostname}</span>
+                        <span className="text-slate-500 font-mono text-[10.5px]">{a.ip}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div>
                 <div className="text-slate-500 text-[10px] uppercase tracking-wider mb-1.5">Threat Intel</div>

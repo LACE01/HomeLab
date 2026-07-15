@@ -12,11 +12,13 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from db import db
 from rbac import require_module
 from routes.common import now_iso, _clean
+from risk_export import build_risk_export_docx
 
 router = APIRouter()
 
@@ -210,6 +212,23 @@ async def get_risk(risk_id: str, user: dict = Depends(require_module("/risk-regi
     if not doc:
         raise HTTPException(404, "Risk not found")
     return doc
+
+
+@router.get("/v1/risk-register/{risk_id}/export.docx")
+async def export_risk_docx(risk_id: str, user: dict = Depends(require_module("/risk-register"))):
+    risk = await db.risks.find_one({"id": risk_id}, {"_id": 0})
+    if not risk:
+        raise HTTPException(404, "Risk not found")
+    findings = await db.findings.find({"id": {"$in": risk.get("linked_finding_ids") or []}}, {"_id": 0}).to_list(500)
+    assets = await db.assets.find({"id": {"$in": risk.get("linked_asset_ids") or []}}, {"_id": 0}).to_list(500)
+    albert_alerts = await db.albert_alerts.find({"id": {"$in": risk.get("linked_albert_alert_ids") or []}}, {"_id": 0}).to_list(500)
+    exceptions = await db.exceptions.find({"id": {"$in": risk.get("linked_exception_ids") or []}}, {"_id": 0}).to_list(500)
+    buf = build_risk_export_docx(risk, findings, assets, albert_alerts, exceptions)
+    filename = f"risk-{risk_id[:8]}-report.docx"
+    return StreamingResponse(
+        buf, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.patch("/v1/risk-register/{risk_id}")

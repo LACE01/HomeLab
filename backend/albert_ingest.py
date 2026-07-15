@@ -200,9 +200,9 @@ async def import_albert_export(db, content: bytes, filename: str, uploaded_by: O
     disposition = _infer_disposition(filename, sheet_name)
 
     from threat_intel_watchlist import check_and_emit
-    from albert_allowlist import _allowlisted_ips
+    from albert_allowlist import _allowlist_entries, suppression_reason
 
-    allowlisted_ips = await _allowlisted_ips(db)
+    allowlist_entries = await _allowlist_entries(db)
 
     docs = []
     skipped = 0
@@ -222,7 +222,8 @@ async def import_albert_export(db, content: bytes, filename: str, uploaded_by: O
             protocol = int(protocol)
         except (TypeError, ValueError):
             protocol = None
-        suppressed = raw["source_ip"] in allowlisted_ips if raw["source_ip"] else False
+        suppress_reason = suppression_reason(allowlist_entries, raw["source_ip"], raw["destination_ip"])
+        suppressed = suppress_reason is not None
         doc = {
             "id": str(uuid.uuid4()), "time_gmt": time_iso, "device": raw["device"],
             "alert_message": raw["alert_message"], "category": knowledge["category"],
@@ -235,7 +236,7 @@ async def import_albert_export(db, content: bytes, filename: str, uploaded_by: O
             "stream_data_raw": (raw["stream_data"] or "")[:2000], "stream_data_length": raw["stream_data_length"],
             "disposition": disposition, "imported_at": datetime.now(timezone.utc).isoformat(),
             "acknowledged": False, "suppressed": suppressed,
-            "suppressed_reason": f"Source IP {raw['source_ip']} is on the known-good allowlist" if suppressed else None,
+            "suppressed_reason": suppress_reason,
         }
         docs.append(doc)
 

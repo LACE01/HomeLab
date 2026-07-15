@@ -166,15 +166,50 @@ async def get_albert_alert(alert_id: str, user: dict = Depends(require_module("/
         raise HTTPException(404, "Alert not found")
     # Match source/destination IPs against inventory so the alert can link straight
     # to an asset page instead of just showing a bare IP -- asset docs store a
-    # single "ip" field (see routes/inventory.py's IP search filter).
-    for field, out_key in (("source_ip", "source_asset"), ("destination_ip", "destination_asset")):
-        ip = doc.get(field)
+    # single "ip" field (see routes/inventory.py's IP search filter). A manual
+    # override (set via POST .../link-asset) always wins over the automatic IP
+    # match, since Assets can have stale/missing IPs that leave nothing to match.
+    for field, override_key, out_key in (
+        ("source_ip", "source_asset_id_override", "source_asset"),
+        ("destination_ip", "destination_asset_id_override", "destination_asset"),
+    ):
         doc[out_key] = None
+        override_id = doc.get(override_key)
+        if override_id:
+            asset = await db.assets.find_one({"id": override_id}, {"_id": 0, "id": 1, "hostname": 1, "criticality": 1, "environment": 1})
+            if asset:
+                doc[out_key] = {**asset, "manually_linked": True}
+                continue
+        ip = doc.get(field)
         if ip:
             asset = await db.assets.find_one({"ip": ip}, {"_id": 0, "id": 1, "hostname": 1, "criticality": 1, "environment": 1})
             if asset:
                 doc[out_key] = asset
     return doc
+
+
+class LinkAssetBody(BaseModel):
+    field: str  # "source" | "destination"
+    asset_id: Optional[str] = None  # None clears the override, falling back to IP auto-match
+
+
+@router.post("/v1/admin/albert/alerts/{alert_id}/link-asset")
+async def link_albert_alert_asset(alert_id: str, body: LinkAssetBody,
+                                   user: dict = Depends(require_module("/admin/albert", level="edit"))):
+    if body.field not in ("source", "destination"):
+        raise HTTPException(400, "field must be 'source' or 'destination'")
+    doc = await db.albert_alerts.find_one({"id": alert_id}, {"_id": 0, "id": 1})
+    if not doc:
+        raise HTTPException(404, "Alert not found")
+    override_key = f"{body.field}_asset_id_override"
+    if body.asset_id:
+        asset = await db.assets.find_one({"id": body.asset_id}, {"_id": 0, "id": 1})
+        if not asset:
+            raise HTTPException(404, "Asset not found")
+        await db.albert_alerts.update_one({"id": alert_id}, {"$set": {override_key: body.asset_id}})
+    else:
+        await db.albert_alerts.update_one({"id": alert_id}, {"$set": {override_key: None}})
+    return await get_albert_alert(alert_id, user)
 
 
 class BulkAlertIds(BaseModel):
@@ -231,9 +266,10 @@ async def get_allowlist(user: dict = Depends(require_module("/admin/albert"))):
 @router.post("/v1/admin/albert/allowlist")
 async def post_allowlist(body: dict, user: dict = Depends(require_module("/admin/albert", level="edit"))):
     source_ip = (body or {}).get("source_ip")
+    destination_ip = (body or {}).get("destination_ip")
     notes = (body or {}).get("notes")
     try:
-        entry = await add_allowlist_entry(db, source_ip, notes=notes, added_by=user["email"])
+        entry = await add_allowlist_entry(db, source_ip, destination_ip, notes=notes, added_by=user["email"])
     except ValueError as e:
         raise HTTPException(400, str(e))
     return entry
