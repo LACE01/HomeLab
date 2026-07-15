@@ -1,23 +1,25 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+import { api, API } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { SevBadge, Chip } from "@/components/Badges";
 import NewRiskModal from "@/components/NewRiskModal";
 import {
   ResponsiveContainer, BarChart, Bar, AreaChart, Area, XAxis, YAxis,
   CartesianGrid, Tooltip, Cell, ReferenceLine, Sankey, Layer, Rectangle,
+  LineChart, Line, Legend,
 } from "recharts";
 import {
   Broadcast, UploadSimple, Warning, ChartLine, Desktop, ShieldWarning,
   MagnifyingGlass, X, ArrowSquareOut, ArrowsClockwise, CaretRight,
-  CheckSquare, Square, ShieldStar, Flag, FirstAidKit, HardDrive, ListChecks,
+  CheckSquare, Square, ShieldStar, Flag, FirstAidKit, HardDrive, ListChecks, FileArrowDown,
 } from "@phosphor-icons/react";
 
 const RANGE_OPTIONS = [7, 30, 90];
 const SEV_COLOR = { Critical: "#f87171", High: "#fb923c", Medium: "#fbbf24", Low: "#60a5fa" };
 const SANKEY_NODE_COLORS = ["#60a5fa", "#a78bfa", "#34d399", "#fbbf24", "#f472b6", "#38bdf8"];
+const TREND_LINE_COLORS = ["#60a5fa", "#f87171", "#34d399", "#fbbf24", "#a78bfa", "#38bdf8", "#f472b6", "#94a3b8"];
 const ENRICH_STATUS_COLOR = { found: "text-red-300 border-red-500/30 bg-red-500/5", clean: "text-emerald-300 border-emerald-500/30 bg-emerald-500/5", not_configured: "text-slate-500 border-[#21262D]", error: "text-amber-300 border-amber-500/30 bg-amber-500/5" };
 const ENRICH_STATUS_LABEL = { found: "Hit", clean: "Clean", not_configured: "Not set up", error: "Error" };
 
@@ -135,6 +137,7 @@ export default function AlbertMonitoring() {
   const [stats, setStats] = useState(null);
   const [signatures, setSignatures] = useState([]);
   const [sankey, setSankey] = useState(null);
+  const [deviceTrend, setDeviceTrend] = useState(null);
   const [days, setDays] = useState(30);
   const [loading, setLoading] = useState(true);
 
@@ -154,6 +157,7 @@ export default function AlbertMonitoring() {
   const [showAllowlist, setShowAllowlist] = useState(false);
   const [newAllowlistSourceIp, setNewAllowlistSourceIp] = useState("");
   const [newAllowlistDestIp, setNewAllowlistDestIp] = useState("");
+  const [newAllowlistReviewDays, setNewAllowlistReviewDays] = useState("180");
   const [includeSuppressed, setIncludeSuppressed] = useState(false);
   const [assetLinkField, setAssetLinkField] = useState(null); // "source" | "destination" | null
   const [assetSearchQ, setAssetSearchQ] = useState("");
@@ -181,6 +185,13 @@ export default function AlbertMonitoring() {
     }
   };
 
+  const loadDeviceTrend = async () => {
+    try {
+      const r = await api.get("/v1/admin/albert/device-trend", { params: { days: 90 } });
+      setDeviceTrend(r.data);
+    } catch (e) { /* non-fatal */ }
+  };
+
   const loadAlerts = async () => {
     try {
       const params = { page, page_size: 25, include_suppressed: includeSuppressed };
@@ -203,6 +214,7 @@ export default function AlbertMonitoring() {
   };
 
   useEffect(() => { loadDashboard(days); }, [days]);
+  useEffect(() => { loadDeviceTrend(); }, []);
   useEffect(() => { loadAlerts(); }, [page, q, severity, category, device, alertMessage, includeSuppressed]);
   useEffect(() => { loadAllowlist(); }, []);
 
@@ -322,6 +334,31 @@ export default function AlbertMonitoring() {
     } finally { setBulkBusy(false); }
   };
 
+  const bulkAllowlist = async (field) => {
+    if (selectedIds.size === 0) return;
+    setBulkBusy(true);
+    try {
+      const r = await api.post("/v1/admin/albert/alerts/bulk-allowlist", { alert_ids: [...selectedIds], field });
+      toast.success(r.data.added.length > 0 ? `Allowlisted ${r.data.added.length} ${field === "destination_ip" ? "destination" : "source"} IP(s)` : "No IPs found in the selection");
+      loadAllowlist();
+      loadAlerts();
+      loadDashboard(days);
+    } catch (e) {
+      toast.error("Bulk allowlist failed");
+    } finally { setBulkBusy(false); }
+  };
+
+  const confirmAllowlistReview = async (entryId) => {
+    try {
+      await api.post(`/v1/admin/albert/allowlist/${entryId}/confirm-review`);
+      toast.success("Marked reviewed");
+      loadAllowlist();
+      loadAlerts();
+    } catch (e) {
+      toast.error("Failed to confirm review");
+    }
+  };
+
   const addAllowlistEntry = async () => {
     const source_ip = newAllowlistSourceIp.trim();
     const destination_ip = newAllowlistDestIp.trim();
@@ -330,7 +367,10 @@ export default function AlbertMonitoring() {
       return;
     }
     try {
-      await api.post("/v1/admin/albert/allowlist", { source_ip: source_ip || null, destination_ip: destination_ip || null });
+      await api.post("/v1/admin/albert/allowlist", {
+        source_ip: source_ip || null, destination_ip: destination_ip || null,
+        review_days: newAllowlistReviewDays ? Number(newAllowlistReviewDays) : null,
+      });
       setNewAllowlistSourceIp("");
       setNewAllowlistDestIp("");
       loadAllowlist();
@@ -370,6 +410,21 @@ export default function AlbertMonitoring() {
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed to open IR case");
     }
+  };
+
+  const exportAlertDocx = () => {
+    if (!selected) return;
+    const token = localStorage.getItem("vulnops_token");
+    fetch(`${API}/v1/admin/albert/alerts/${selected.id}/export.docx`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then(r => r.blob())
+      .then(blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = `albert-alert-${selected.id.slice(0, 8)}-report.docx`;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+      })
+      .catch(() => toast.error("Failed to export"));
   };
 
   const riskPrefillFromAlert = () => {
@@ -528,6 +583,29 @@ export default function AlbertMonitoring() {
             </div>
           )}
 
+          {deviceTrend && deviceTrend.series?.length > 0 && (
+            <div className="mb-4">
+              <Panel title="Per-Sensor Alert Volume — Last 90 Days">
+                <div className="text-[11px] text-slate-500 mb-2">
+                  Longer horizon than the anomaly baseline above — a slow climb across weeks won't trigger a single-day spike flag, but shows up here.
+                </div>
+                <ResponsiveContainer width="100%" height={260}>
+                  <LineChart data={deviceTrend.series} margin={{ top: 8, right: 16, left: -16, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#21262D" />
+                    <XAxis dataKey="date" tick={{ fill: "#8B949E", fontSize: 10 }} minTickGap={30} />
+                    <YAxis tick={{ fill: "#8B949E", fontSize: 10 }} allowDecimals={false} />
+                    <Tooltip contentStyle={{ background: "#161B22", border: "1px solid #30363D", fontSize: 12 }} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    {deviceTrend.devices.map((dev, i) => (
+                      <Line key={dev} type="monotone" dataKey={dev} stroke={TREND_LINE_COLORS[i % TREND_LINE_COLORS.length]}
+                        strokeWidth={1.75} dot={false} />
+                    ))}
+                  </LineChart>
+                </ResponsiveContainer>
+              </Panel>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-4 mb-4">
             <Panel title="Top Source IPs">
               <div className="space-y-1.5">
@@ -634,23 +712,45 @@ export default function AlbertMonitoring() {
                   className="h-7 flex-1 bg-[#0D1117] border border-[#30363D] rounded px-2 text-[11.5px] text-slate-200" />
                 <input value={newAllowlistDestIp} onChange={(e) => setNewAllowlistDestIp(e.target.value)} placeholder="Destination IP (optional)"
                   className="h-7 flex-1 bg-[#0D1117] border border-[#30363D] rounded px-2 text-[11.5px] text-slate-200" />
+                <select value={newAllowlistReviewDays} onChange={(e) => setNewAllowlistReviewDays(e.target.value)}
+                  className="h-7 bg-[#0D1117] border border-[#30363D] rounded px-1.5 text-[11.5px] text-slate-200">
+                  <option value="90">Review in 90d</option>
+                  <option value="180">Review in 180d</option>
+                  <option value="365">Review in 1yr</option>
+                  <option value="">No review (permanent)</option>
+                </select>
                 <button onClick={addAllowlistEntry} className="h-7 px-3 text-[11px] bg-blue-500/20 border border-blue-500/40 text-blue-200 rounded">Add</button>
                 <button onClick={reapplyAllowlist} className="h-7 px-3 text-[11px] border border-[#30363D] hover:border-blue-500/40 hover:text-blue-300 text-slate-300 rounded">
                   Re-apply to existing alerts
                 </button>
               </div>
               <div className="space-y-1">
-                {allowlist.map(e => (
-                  <div key={e.id} className="flex items-center justify-between text-[11.5px] text-slate-300 font-mono">
-                    <span>
-                      {e.source_ip && <>src {e.source_ip}</>}
-                      {e.source_ip && e.destination_ip && " + "}
-                      {e.destination_ip && <>dst {e.destination_ip}</>}
-                      {" "}{e.notes && <span className="text-slate-500 font-sans">— {e.notes}</span>}
-                    </span>
-                    <button onClick={() => removeAllowlistEntry(e.id)} className="text-red-400 hover:text-red-300"><X size={12} /></button>
-                  </div>
-                ))}
+                {allowlist.map(e => {
+                  const needsReview = e.review_by && e.review_by < new Date().toISOString();
+                  return (
+                    <div key={e.id} className="flex items-center justify-between text-[11.5px] text-slate-300 font-mono">
+                      <span>
+                        {e.source_ip && <>src {e.source_ip}</>}
+                        {e.source_ip && e.destination_ip && " + "}
+                        {e.destination_ip && <>dst {e.destination_ip}</>}
+                        {" "}{e.notes && <span className="text-slate-500 font-sans">— {e.notes}</span>}
+                        {needsReview && (
+                          <span className="ml-1.5 font-sans text-[10px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-1.5 py-0.5">
+                            Needs review — suppression paused
+                          </span>
+                        )}
+                      </span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {needsReview && (
+                          <button onClick={() => confirmAllowlistReview(e.id)} className="font-sans text-[10.5px] text-emerald-300 hover:text-emerald-200">
+                            Confirm still valid
+                          </button>
+                        )}
+                        <button onClick={() => removeAllowlistEntry(e.id)} className="text-red-400 hover:text-red-300"><X size={12} /></button>
+                      </div>
+                    </div>
+                  );
+                })}
                 {allowlist.length === 0 && <div className="text-[11px] text-slate-500">No allowlist entries yet.</div>}
               </div>
             </div>
@@ -668,6 +768,8 @@ export default function AlbertMonitoring() {
               <button disabled={bulkBusy} onClick={bulkAcknowledge} className="h-6 px-2 border border-[#30363D] hover:border-blue-500/40 text-slate-300 rounded">Acknowledge</button>
               <button disabled={bulkBusy} onClick={() => bulkWatchlist("destination_ip")} className="h-6 px-2 border border-[#30363D] hover:border-blue-500/40 text-slate-300 rounded">Watchlist destination IPs</button>
               <button disabled={bulkBusy} onClick={() => bulkWatchlist("source_ip")} className="h-6 px-2 border border-[#30363D] hover:border-blue-500/40 text-slate-300 rounded">Watchlist source IPs</button>
+              <button disabled={bulkBusy} onClick={() => bulkAllowlist("destination_ip")} className="h-6 px-2 border border-[#30363D] hover:border-emerald-500/40 text-slate-300 rounded">Allowlist destination IPs</button>
+              <button disabled={bulkBusy} onClick={() => bulkAllowlist("source_ip")} className="h-6 px-2 border border-[#30363D] hover:border-emerald-500/40 text-slate-300 rounded">Allowlist source IPs</button>
             </div>
           )}
 
@@ -767,6 +869,10 @@ export default function AlbertMonitoring() {
                 <button onClick={openIrCase}
                   className="h-7 px-2.5 text-[11.5px] border border-[#30363D] hover:border-red-500/40 hover:text-red-300 text-slate-300 rounded inline-flex items-center gap-1.5">
                   <FirstAidKit size={13} /> Open IR case
+                </button>
+                <button onClick={exportAlertDocx}
+                  className="h-7 px-2.5 text-[11.5px] border border-[#30363D] hover:border-blue-500/40 hover:text-blue-300 text-slate-300 rounded inline-flex items-center gap-1.5">
+                  <FileArrowDown size={13} /> Export report
                 </button>
               </div>
 

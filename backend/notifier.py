@@ -26,6 +26,7 @@ TRIGGERS = [
     "comment_mention", "exception_expiring", "finding_reopened", "kev_match",
     "tls_cert_expiring", "exception_revoked", "exception_risk_escalated",
     "osint_exposure_found", "ir_case_opened", "ir_obligation_notify",
+    "albert_allowlist_review_due",
 ]
 
 CHANNELS = ["email", "discord", "slack", "teams", "webhook", "sms"]
@@ -90,6 +91,16 @@ TEMPLATES = {
             "📈 Threat activity around this accepted risk has escalated since it was approved.\n\n"
             "• **Covers:** {title}\n• **What changed:** {escalation_reason}\n"
             "• **Expires:** {expires_at}\n\nConsider revoking or re-confirming this acceptance. Open: {url}"
+        ),
+    },
+    "albert_allowlist_review_due": {
+        "subject": "[VulnOps] Albert allowlist entry needs review: {label}",
+        "body": (
+            "⏰ A known-good Albert allowlist entry is past its review date, and its suppression has been "
+            "paused until it's re-confirmed -- alerts it used to suppress may start showing up again.\n\n"
+            "• **Source IP:** {source_ip}\n• **Destination IP:** {destination_ip}\n"
+            "• **Added by:** {added_by}\n• **Review was due:** {review_by}\n\n"
+            "Confirm it's still valid, or remove it, on the Albert dashboard. Open: {url}"
         ),
     },
     "osint_exposure_found": {

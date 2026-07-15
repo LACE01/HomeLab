@@ -234,6 +234,9 @@ export default function AuditLog() {
           <option value="">All entity types</option>
           <option value="finding">Finding</option>
           <option value="asset">Asset</option>
+          <option value="risk">Risk</option>
+          <option value="albert_allowlist">Albert Allowlist</option>
+          <option value="albert_alert">Albert Alert</option>
         </select>
       </div>
 

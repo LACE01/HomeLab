@@ -357,6 +357,41 @@ async def compute_albert_sankey(db, days: int = 30) -> dict:
     return {"nodes": nodes, "links": links}
 
 
+async def compute_albert_device_trend(db, days: int = 90) -> dict:
+    """Longer-horizon per-device daily alert volume, independent of any single
+    import batch -- compute_albert_stats' anomaly baseline compares a day against
+    that (sensor, category) pair's own history, which flags spikes but doesn't
+    answer "is this device's overall volume trending up over weeks/months". This
+    aggregates unsuppressed alert counts by (day, device) across up to `days` of
+    history so the frontend can plot one line per device and eyeball a slow climb
+    that a single noisy day wouldn't trigger the anomaly check for."""
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=days)).isoformat()
+    alerts = await db.albert_alerts.find(
+        {"time_gmt": {"$gte": cutoff}, "suppressed": {"$ne": True}},
+        {"_id": 0, "device": 1, "time_gmt": 1},
+    ).to_list(500000)
+
+    daily_device_counts: dict = {}
+    devices = set()
+    for a in alerts:
+        t = a.get("time_gmt")
+        if not t:
+            continue
+        day = t[:10]
+        dev = a.get("device") or "Unknown sensor"
+        devices.add(dev)
+        daily_device_counts[(day, dev)] = daily_device_counts.get((day, dev), 0) + 1
+
+    days_sorted = sorted({d for d, _ in daily_device_counts})
+    devices_sorted = sorted(devices)
+    series = [
+        {"date": day, **{dev: daily_device_counts.get((day, dev), 0) for dev in devices_sorted}}
+        for day in days_sorted
+    ]
+    return {"series": series, "devices": devices_sorted}
+
+
 async def compute_albert_stats(db, days: int = 30, include_suppressed: bool = False) -> dict:
     """Dashboard aggregates over the last `days` of ingested Albert alerts, plus a
     lightweight baseline check: for each (sensor, category) pair, compares each

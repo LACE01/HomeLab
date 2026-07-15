@@ -219,17 +219,28 @@ async def get_risk(risk_id: str, user: dict = Depends(require_module("/risk-regi
     return doc
 
 
-@router.get("/v1/risk-register/{risk_id}/export.docx")
-async def export_risk_docx(risk_id: str, user: dict = Depends(require_module("/risk-register"))):
-    risk = await db.risks.find_one({"id": risk_id}, {"_id": 0})
-    if not risk:
-        raise HTTPException(404, "Risk not found")
+async def gather_linked_bundle(db, risk: dict) -> dict:
+    """Fetches every item a single Risk Register entry links to -- shared by the
+    risk-anchored export below and by the alert-anchored / IR-case-anchored
+    exports in routes.albert and routes.incident_response, which each pull in
+    one of these bundles per Risk Register entry that references them."""
     findings = await db.findings.find({"id": {"$in": risk.get("linked_finding_ids") or []}}, {"_id": 0}).to_list(500)
     assets = await db.assets.find({"id": {"$in": risk.get("linked_asset_ids") or []}}, {"_id": 0}).to_list(500)
     albert_alerts = await db.albert_alerts.find({"id": {"$in": risk.get("linked_albert_alert_ids") or []}}, {"_id": 0}).to_list(500)
     exceptions = await db.exceptions.find({"id": {"$in": risk.get("linked_exception_ids") or []}}, {"_id": 0}).to_list(500)
     ir_cases = await db.ir_cases.find({"id": {"$in": risk.get("linked_ir_case_ids") or []}}, {"_id": 0}).to_list(500)
-    buf = build_risk_export_docx(risk, findings, assets, albert_alerts, exceptions, ir_cases)
+    return {"risk": risk, "findings": findings, "assets": assets, "albert_alerts": albert_alerts,
+            "exceptions": exceptions, "ir_cases": ir_cases}
+
+
+@router.get("/v1/risk-register/{risk_id}/export.docx")
+async def export_risk_docx(risk_id: str, user: dict = Depends(require_module("/risk-register"))):
+    risk = await db.risks.find_one({"id": risk_id}, {"_id": 0})
+    if not risk:
+        raise HTTPException(404, "Risk not found")
+    bundle = await gather_linked_bundle(db, risk)
+    buf = build_risk_export_docx(bundle["risk"], bundle["findings"], bundle["assets"], bundle["albert_alerts"],
+                                  bundle["exceptions"], bundle["ir_cases"])
     filename = f"risk-{risk_id[:8]}-report.docx"
     return StreamingResponse(
         buf, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

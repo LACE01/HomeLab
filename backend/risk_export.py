@@ -1,9 +1,16 @@
-"""Combined audit-ready export for a Risk Register entry -- pulls together the
-risk itself plus everything cross-linked to it (findings, assets, Albert
-network-monitoring alerts, and exceptions/risk-acceptances) into one Word
-document. This is the natural "give this to the auditor" artifact once a risk
-has accumulated links from the various places that can attach to it (Albert
-alert triage, exception requests, manual linking on Risk Detail).
+"""Combined audit-ready exports that pull a Risk Register entry plus everything
+cross-linked to it (findings, assets, Albert network-monitoring alerts,
+exceptions/risk-acceptances, and IR cases) into one Word document. This is the
+natural "give this to the auditor" artifact once a risk has accumulated links
+from the various places that can attach to it (Albert alert triage, exception
+requests, IR case work, manual linking on Risk Detail).
+
+Three entry points share one body-writer:
+  - build_risk_export_docx: anchored on a single risk (the original export).
+  - build_albert_alert_export_docx: anchored on an Albert alert -- writes the
+    alert's own detail up top, then one section per Risk Register entry that
+    references it (an alert usually links to 0 or 1 risk, but this supports N).
+  - build_ir_case_export_docx: anchored on an IR case -- same shape, for cases.
 
 Reuses the same python-docx patterns as incident_response.build_case_docx
 (heading levels, Light Grid Accent 1 tables, a BytesIO stream returned for a
@@ -24,31 +31,38 @@ def _fmt_dt(value):
         return str(value)
 
 
-def build_risk_export_docx(risk: dict, findings: list, assets: list, albert_alerts: list, exceptions: list, ir_cases: list = None) -> io.BytesIO:
-    ir_cases = ir_cases or []
+def _new_doc():
     from docx import Document
-    from docx.shared import Pt, RGBColor, Inches
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
-
+    from docx.shared import Pt
     doc = Document()
     style = doc.styles["Normal"]
     style.font.name = "Calibri"
     style.font.size = Pt(10.5)
+    return doc
 
-    doc.add_heading(f"Risk Register Report — {risk.get('title', '')}", level=0)
+
+def _write_generated_line(doc):
+    from docx.shared import Pt
+    generated = doc.add_paragraph()
+    generated.add_run(f"Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}").font.size = Pt(9)
+
+
+def _write_risk_body(doc, risk: dict, findings: list, assets: list, albert_alerts: list, exceptions: list, ir_cases: list, heading_level: int = 0):
+    """Appends one risk's full scoring/treatment/linked-item tables into an
+    already-open Document. heading_level=0 for a standalone risk export (title
+    style), heading_level=1 when nested under an alert/case anchor section."""
+    doc.add_heading(risk.get("title", ""), level=heading_level)
 
     meta = doc.add_paragraph()
     meta.add_run(
         f"Risk ID: {risk.get('id', '')}    Category: {risk.get('category', '-')}    "
         f"Status: {risk.get('status', '-')}    Owner: {risk.get('owner') or 'Unassigned'}"
     ).italic = True
-    generated = doc.add_paragraph()
-    generated.add_run(f"Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}").font.size = Pt(9)
 
-    doc.add_heading("Description", level=1)
+    doc.add_heading("Description", level=heading_level + 1)
     doc.add_paragraph(risk.get("description") or "-")
 
-    doc.add_heading("Risk Scoring", level=1)
+    doc.add_heading("Risk Scoring", level=heading_level + 1)
     score_table = doc.add_table(rows=1, cols=4)
     score_table.style = "Light Grid Accent 1"
     hdr = score_table.rows[0].cells
@@ -65,13 +79,13 @@ def build_risk_export_docx(risk: dict, findings: list, assets: list, albert_aler
         row2[2].text = str(risk.get("residual_impact", "-"))
         row2[3].text = f"{risk.get('residual_score', '-')} ({risk.get('residual_band', '-')})"
 
-    doc.add_heading("Treatment", level=1)
+    doc.add_heading("Treatment", level=heading_level + 1)
     doc.add_paragraph(f"Strategy: {risk.get('treatment_strategy', '-')}")
     doc.add_paragraph(risk.get("treatment_plan") or "-")
     if risk.get("external_reference"):
         doc.add_paragraph(f"External reference (device / domain / website): {risk['external_reference']}")
 
-    doc.add_heading(f"Linked Findings ({len(findings)})", level=1)
+    doc.add_heading(f"Linked Findings ({len(findings)})", level=heading_level + 1)
     if findings:
         t = doc.add_table(rows=1, cols=4)
         t.style = "Light Grid Accent 1"
@@ -86,7 +100,7 @@ def build_risk_export_docx(risk: dict, findings: list, assets: list, albert_aler
     else:
         doc.add_paragraph("No findings linked.")
 
-    doc.add_heading(f"Linked Assets ({len(assets)})", level=1)
+    doc.add_heading(f"Linked Assets ({len(assets)})", level=heading_level + 1)
     if assets:
         t = doc.add_table(rows=1, cols=4)
         t.style = "Light Grid Accent 1"
@@ -101,7 +115,7 @@ def build_risk_export_docx(risk: dict, findings: list, assets: list, albert_aler
     else:
         doc.add_paragraph("No assets linked.")
 
-    doc.add_heading(f"Linked Albert Network Monitoring Alerts ({len(albert_alerts)})", level=1)
+    doc.add_heading(f"Linked Albert Network Monitoring Alerts ({len(albert_alerts)})", level=heading_level + 1)
     if albert_alerts:
         t = doc.add_table(rows=1, cols=5)
         t.style = "Light Grid Accent 1"
@@ -117,7 +131,7 @@ def build_risk_export_docx(risk: dict, findings: list, assets: list, albert_aler
     else:
         doc.add_paragraph("No Albert alerts linked.")
 
-    doc.add_heading(f"Linked Exceptions / Risk Acceptances ({len(exceptions)})", level=1)
+    doc.add_heading(f"Linked Exceptions / Risk Acceptances ({len(exceptions)})", level=heading_level + 1)
     if exceptions:
         t = doc.add_table(rows=1, cols=4)
         t.style = "Light Grid Accent 1"
@@ -132,7 +146,7 @@ def build_risk_export_docx(risk: dict, findings: list, assets: list, albert_aler
     else:
         doc.add_paragraph("No exceptions linked.")
 
-    doc.add_heading(f"Linked Incident Response Cases ({len(ir_cases)})", level=1)
+    doc.add_heading(f"Linked Incident Response Cases ({len(ir_cases)})", level=heading_level + 1)
     if ir_cases:
         t = doc.add_table(rows=1, cols=4)
         t.style = "Light Grid Accent 1"
@@ -146,6 +160,77 @@ def build_risk_export_docx(risk: dict, findings: list, assets: list, albert_aler
             c[3].text = c_.get("status") or "-"
     else:
         doc.add_paragraph("No IR cases linked.")
+
+
+def build_risk_export_docx(risk: dict, findings: list, assets: list, albert_alerts: list, exceptions: list, ir_cases: list = None) -> io.BytesIO:
+    doc = _new_doc()
+    doc.add_heading(f"Risk Register Report — {risk.get('title', '')}", level=0)
+    _write_generated_line(doc)
+    _write_risk_body(doc, risk, findings, assets, albert_alerts, exceptions, ir_cases or [], heading_level=1)
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def build_albert_alert_export_docx(alert: dict, linked_risks: list) -> io.BytesIO:
+    """linked_risks: list of {"risk", "findings", "assets", "albert_alerts",
+    "exceptions", "ir_cases"} bundles, one per Risk Register entry that
+    references this alert (see routes.risk_register.gather_linked_bundle)."""
+    doc = _new_doc()
+    doc.add_heading(f"Albert Alert Report — {alert.get('alert_message', '')}", level=0)
+    _write_generated_line(doc)
+
+    doc.add_heading("Alert Detail", level=1)
+    meta = doc.add_paragraph()
+    meta.add_run(
+        f"Sensor: {alert.get('device', '-')}    Severity: {alert.get('severity', '-')}    "
+        f"Category: {alert.get('category', '-')}    Time (GMT): {alert.get('time_gmt', '-')}"
+    ).italic = True
+    doc.add_paragraph(alert.get("explanation") or "-")
+    detail_table = doc.add_table(rows=1, cols=2)
+    detail_table.style = "Light Grid Accent 1"
+    h = detail_table.rows[0].cells
+    h[0].text, h[1].text = "Source", "Destination"
+    row = detail_table.add_row().cells
+    row[0].text = f"{alert.get('source_ip', '-')}:{alert.get('source_port', '-')}"
+    row[1].text = f"{alert.get('destination_ip', '-')}:{alert.get('destination_port', '-')}"
+
+    doc.add_heading(f"Linked Risk Register Entries ({len(linked_risks)})", level=1)
+    if not linked_risks:
+        doc.add_paragraph("This alert is not yet tracked in the Risk Register.")
+    for bundle in linked_risks:
+        _write_risk_body(doc, bundle["risk"], bundle["findings"], bundle["assets"], bundle["albert_alerts"],
+                          bundle["exceptions"], bundle["ir_cases"], heading_level=2)
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def build_ir_case_export_docx(case: dict, linked_risks: list) -> io.BytesIO:
+    """Same bundle shape as build_albert_alert_export_docx, one per Risk
+    Register entry that references this IR case."""
+    doc = _new_doc()
+    doc.add_heading(f"IR Case Report — {case.get('case_number', '')}: {case.get('title', '')}", level=0)
+    _write_generated_line(doc)
+
+    doc.add_heading("Case Detail", level=1)
+    meta = doc.add_paragraph()
+    meta.add_run(
+        f"Classification: {case.get('classification', '-')}    Status: {case.get('status', '-')}    "
+        f"Opened: {_fmt_dt(case.get('opened_at'))}    Closed: {_fmt_dt(case.get('closed_at'))}"
+    ).italic = True
+    if case.get("root_cause"):
+        doc.add_paragraph(f"Root cause: {case['root_cause']}")
+
+    doc.add_heading(f"Linked Risk Register Entries ({len(linked_risks)})", level=1)
+    if not linked_risks:
+        doc.add_paragraph("This case is not yet tracked in the Risk Register.")
+    for bundle in linked_risks:
+        _write_risk_body(doc, bundle["risk"], bundle["findings"], bundle["assets"], bundle["albert_alerts"],
+                          bundle["exceptions"], bundle["ir_cases"], heading_level=2)
 
     buf = io.BytesIO()
     doc.save(buf)

@@ -515,5 +515,13 @@ async def nightly_loop(db, interval_hours: int = 24):
         except Exception as e:
             logger.exception(f"Patch completion sweep failed: {e}")
             ok, detail["patch_completions_error"] = False, str(e)
+        try:
+            from albert_allowlist import check_allowlist_reviews
+            allowlist_result = await check_allowlist_reviews(db)
+            logger.info(f"Albert allowlist review check: {allowlist_result}")
+            detail["albert_allowlist_reviews"] = allowlist_result
+        except Exception as e:
+            logger.exception(f"Albert allowlist review check failed: {e}")
+            ok, detail["albert_allowlist_reviews_error"] = False, str(e)
         await record_heartbeat(db, "nightly_loop", "ok" if ok else "error", detail)
         await asyncio.sleep(interval_hours * 3600)

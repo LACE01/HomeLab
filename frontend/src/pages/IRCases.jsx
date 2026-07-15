@@ -829,6 +829,20 @@ export function IRCaseDetail() {
       .catch(() => toast.error("Failed to export"));
   };
 
+  const exportRiskDocx = () => {
+    const token = localStorage.getItem("vulnops_token");
+    fetch(`${API}/v1/ir/cases/${id}/risk-export.docx`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then(r => r.blob())
+      .then(blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = `${data.case.case_number}-risk-report.docx`;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+      })
+      .catch(() => toast.error("Failed to export"));
+  };
+
   if (data === false) return <Layout title="IR Case"><div className="text-slate-500 text-center py-10">Not found.</div></Layout>;
   if (!data) return <Layout title="IR Case"><div className="text-slate-500 text-center py-10">Loading…</div></Layout>;
 
@@ -840,6 +854,9 @@ export function IRCaseDetail() {
         <div className="flex items-center gap-2">
           <button onClick={exportDocx} className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] rounded inline-flex items-center gap-1.5 text-slate-300">
             <DownloadSimple size={14}/> Export Word doc
+          </button>
+          <button onClick={exportRiskDocx} className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-blue-500/40 hover:text-blue-300 rounded inline-flex items-center gap-1.5 text-slate-300">
+            <FileArrowDown size={14}/> Export Risk Register report
           </button>
           <button onClick={()=>navigate("/ir/cases")} className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] rounded inline-flex items-center gap-1.5 text-slate-300"><ArrowLeft size={14}/> Back</button>
         </div>

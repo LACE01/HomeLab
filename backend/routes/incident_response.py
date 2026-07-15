@@ -14,6 +14,7 @@ from rbac import require_module
 from auth_utils import get_current_user, require_role
 from routes.common import now_iso, _clean
 import incident_response as ir
+from risk_export import build_ir_case_export_docx
 
 router = APIRouter()
 
@@ -901,6 +902,23 @@ async def export_case_docx(case_id: str, user: dict = Depends(get_current_user),
     buf = ir.build_case_docx(case, phase_progress, events, evidence, obligations, report,
                               artifacts=artifacts, related_entities=related_entities)
     filename = f"{case.get('case_number','ir-case')}.docx"
+    return StreamingResponse(
+        buf, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/v1/ir/cases/{case_id}/risk-export.docx")
+async def export_case_risk_docx(case_id: str, user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/ir/cases"))):
+    """Separate from export.docx above (the case's own timeline/evidence/report) --
+    this pulls in whatever's been tracked in the Risk Register for this case, same
+    shape as the Albert-alert-anchored export in routes.albert."""
+    from routes.risk_register import gather_linked_bundle
+    case = await _get_case_or_404(case_id)
+    risks = await db.risks.find({"linked_ir_case_ids": case_id}, {"_id": 0}).to_list(200)
+    bundles = [await gather_linked_bundle(db, r) for r in risks]
+    buf = build_ir_case_export_docx(case, bundles)
+    filename = f"{case.get('case_number','ir-case')}-risk-report.docx"
     return StreamingResponse(
         buf, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
