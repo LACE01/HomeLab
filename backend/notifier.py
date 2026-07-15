@@ -27,6 +27,7 @@ TRIGGERS = [
     "tls_cert_expiring", "exception_revoked", "exception_risk_escalated",
     "osint_exposure_found", "ir_case_opened", "ir_obligation_notify",
     "albert_allowlist_review_due", "vendor_compromise_found", "vendor_contract_renewal_due",
+    "stale_accounts_found", "edr_high_risk_device_found",
 ]
 
 CHANNELS = ["email", "discord", "slack", "teams", "webhook", "sms"]
@@ -126,6 +127,23 @@ TEMPLATES = {
             "• **Vendor:** {vendor_name}\n• **Renewal date:** {renewal_date}\n"
             "• **Contract owner:** {contract_owner}\n• **DPA status:** {dpa_status}\n"
             "• **Security questionnaire:** {questionnaire_status}\n\nOpen: {url}"
+        ),
+    },
+    "stale_accounts_found": {
+        "subject": "[Nightwatch] {count} stale account(s) found in Entra ID",
+        "body": (
+            "👤 The nightly directory sync found enabled accounts with no sign-in activity "
+            "in the last {stale_days} days (or that have never signed in at all).\n\n"
+            "• **Stale, enabled accounts:** {count}\n\n"
+            "Review and consider disabling unused accounts. Open: {url}"
+        ),
+    },
+    "edr_high_risk_device_found": {
+        "subject": "[Nightwatch] Defender for Endpoint: {count} high-risk device(s)",
+        "body": (
+            "🛡️ The Defender for Endpoint sync found device(s) flagged with elevated risk.\n\n"
+            "• **High-risk devices:** {count}\n\n"
+            "Open: {url}"
         ),
     },
     "tls_cert_expiring": {

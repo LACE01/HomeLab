@@ -4,7 +4,7 @@ import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtDate, fmtRel, isOverdue } from "@/lib/utils-fmt";
-import { MagnifyingGlass, ArrowLeft, Stack, CaretLeft, CaretRight, LockKey, LockKeyOpen, Info, WindowsLogo, LinuxLogo, AppleLogo, Desktop, User, ArrowsClockwise, HandPalm, Broadcast, ArrowSquareOut } from "@phosphor-icons/react";
+import { MagnifyingGlass, ArrowLeft, Stack, CaretLeft, CaretRight, LockKey, LockKeyOpen, Info, WindowsLogo, LinuxLogo, AppleLogo, Desktop, User, ArrowsClockwise, HandPalm, Broadcast, ArrowSquareOut, ShieldCheck, Package, ClipboardText } from "@phosphor-icons/react";
 import TrendChart from "@/components/TrendChart";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
@@ -298,6 +298,7 @@ export function AssetDetail() {
   const [claiming, setClaiming] = useState(false);
   const [findings, setFindings] = useState([]);
   const [albertAlerts, setAlbertAlerts] = useState({ items: [], total: 0, severity_counts: {}, daily_trend: [] });
+  const [software, setSoftware] = useState({ items: [], total: 0 });
   const [history, setHistory] = useState({activity: [], observations: []});
   const [products, setProducts] = useState([]);
   const [savingProduct, setSavingProduct] = useState(false);
@@ -313,6 +314,7 @@ export function AssetDetail() {
     api.get(`/v1/assets/${id}`).then(r => setA(r.data));
     api.get(`/v1/assets/${id}/findings`).then(r => setFindings(r.data.items));
     api.get(`/v1/assets/${id}/albert-alerts`).then(r => setAlbertAlerts(r.data)).catch(() => {});
+    api.get(`/v1/assets/${id}/software`).then(r => setSoftware(r.data)).catch(() => {});
     api.get(`/v1/assets/${id}/history`).then(r => setHistory(r.data));
     api.get("/v1/products").then(r => setProducts(r.data.items));
     api.get(`/v1/assets/${id}/patch-groups`).then(r => setPatchGroups(r.data.groups.filter(g => g.count > 1)));
@@ -656,7 +658,70 @@ export function AssetDetail() {
         </div>
       )}
 
-      <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">
+      {(a.defender_device_id || a.intune_device_id || software.total > 0) && (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden mb-4">
+          <div className="px-4 py-2 border-b border-[#30363D]">
+            <h3 className="text-[11px] uppercase tracking-wider font-mono text-slate-400 flex items-center gap-1.5">
+              <ShieldCheck size={13} /> EDR / Endpoint Management
+            </h3>
+          </div>
+          <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+            {a.defender_device_id && (
+              <div>
+                <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider mb-1.5">Microsoft Defender for Endpoint</div>
+                <div className="space-y-1 text-[12px]">
+                  <div className="flex justify-between"><span className="text-slate-500">Risk score</span>
+                    <Chip color={a.defender_risk_score === "High" ? "red" : a.defender_risk_score === "Medium" ? "amber" : "slate"}>{a.defender_risk_score || "—"}</Chip></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Exposure level</span>
+                    <Chip color={a.defender_exposure_level === "High" ? "red" : a.defender_exposure_level === "Medium" ? "amber" : "slate"}>{a.defender_exposure_level || "—"}</Chip></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Health status</span><span className="text-slate-300">{a.defender_health_status || "—"}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Agent version</span><span className="font-mono text-slate-300">{a.defender_agent_version || "—"}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Last seen</span><span className="text-slate-300">{fmtRel(a.defender_last_seen_at)}</span></div>
+                </div>
+              </div>
+            )}
+            {a.intune_device_id && (
+              <div>
+                <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider mb-1.5">Microsoft Intune</div>
+                <div className="space-y-1 text-[12px]">
+                  <div className="flex justify-between"><span className="text-slate-500">Compliance state</span>
+                    <Chip color={a.intune_compliance_state === "compliant" ? "green" : a.intune_compliance_state === "noncompliant" ? "red" : "slate"}>{a.intune_compliance_state || "—"}</Chip></div>
+                  <div className="flex justify-between"><span className="text-slate-500">OS version</span><span className="font-mono text-slate-300">{a.intune_os_version || "—"}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Encrypted</span><span className="text-slate-300">{a.intune_encrypted ? "yes" : "no"}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Primary user</span><span className="text-slate-300">{a.intune_primary_user || "—"}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Last check-in</span><span className="text-slate-300">{fmtRel(a.intune_last_check_in_at)}</span></div>
+                </div>
+              </div>
+            )}
+          </div>
+          {software.total > 0 && (
+            <div className="border-t border-[#30363D]">
+              <div className="px-4 py-2 text-[10px] uppercase font-mono text-slate-500 tracking-wider flex items-center gap-1.5">
+                <Package size={12} /> Installed Software ({software.total})
+              </div>
+              <table className="dense w-full">
+                <thead><tr><th className="text-left">Vendor</th><th className="text-left">Software</th><th>Version</th></tr></thead>
+                <tbody>
+                  {software.items.slice(0, 30).map((sw, i) => (
+                    <tr key={i} className="border-t border-[#30363D]">
+                      <td className="text-slate-300">{sw.vendor}</td>
+                      <td className="text-slate-300">{sw.name}</td>
+                      <td className="font-mono text-[11px] text-slate-400">{sw.version || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {software.total > 30 && (
+                <div className="px-4 py-2 text-[10.5px] text-slate-500 border-t border-[#30363D]">
+                  Showing 30 of {software.total} installed software entries.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+            <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">
         <div className="px-4 py-2 border-b border-[#30363D]"><h3 className="text-[11px] uppercase tracking-wider font-mono text-slate-400">Detection History</h3></div>
         <table className="dense w-full">
           <thead><tr><th className="text-left">Source</th><th>Method</th><th>Severity</th><th>Observed</th></tr></thead>

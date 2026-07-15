@@ -17,6 +17,19 @@ from routes.common import now_iso, _clean, finding_ctx
 router = APIRouter()
 logger = logging.getLogger("vulnops.integrations")
 
+# Azure AD app-registration-backed connectors (client-credentials OAuth via msgraph.py)
+# and the OAuth "resource"/scope each authenticates against. Entra ID and Intune both
+# go through Microsoft Graph; Defender for Endpoint uses its own separate API surface
+# with its own token audience -- a Graph token will NOT work against it and vice versa,
+# so these are NOT interchangeable even though the same tenant_id/client_id/client_secret
+# COULD be reused across all three if a single app registration was granted every
+# permission (not recommended -- see IntegrationConfig's docstring above).
+MSGRAPH_CONNECTOR_SCOPES = {
+    "Microsoft Entra ID": "https://graph.microsoft.com/.default",
+    "Microsoft Intune": "https://graph.microsoft.com/.default",
+    "Microsoft Defender for Endpoint": "https://api.security.microsoft.com/.default",
+}
+
 
 # --------------------------- INTEGRATIONS ---------------------------
 @router.get("/v1/integrations")
@@ -30,6 +43,8 @@ async def list_integrations(user: dict = Depends(get_current_user), _rbac: dict 
             cfg["api_secret"] = "•••"
         if cfg.get("cf_access_client_secret"):
             cfg["cf_access_client_secret"] = "•••"
+        if cfg.get("client_secret"):
+            cfg["client_secret"] = "•••"
     return {"items": items}
 
 
@@ -43,6 +58,18 @@ class IntegrationConfig(BaseModel):
     # Cloudflare Access service-token (only used by integrations behind CF Access, e.g. OpenCTI)
     cf_access_client_id: Optional[str] = None
     cf_access_client_secret: Optional[str] = None
+    # Microsoft Graph / Defender-for-Endpoint client-credentials app registration --
+    # used by Microsoft Entra ID, Microsoft Defender for Endpoint, and Microsoft
+    # Intune (see msgraph.py). Each of those three is its own integration card with
+    # its own tenant_id/client_id/client_secret because real-world Azure AD app
+    # registrations are typically scoped per-product (least privilege: an Entra ID
+    # read-only app shouldn't also hold Defender machine-read permissions), even
+    # though nothing stops an org from pointing all three at the same app registration.
+    tenant_id: Optional[str] = None
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
+    # Org's own domain for domain-wide breach monitoring (HaveIBeenPwned Domain Search)
+    domain: Optional[str] = None
 
 
 # Cloudflare's own service-token detail page (and most API docs, including OpenCTI's
@@ -64,7 +91,7 @@ _BEARER_PREFIX_RE = re.compile(r"^\s*bearer\s+", re.IGNORECASE)
 def _clean_credential(field: str, v: str) -> str:
     v = v.strip()
     v = _HEADER_PREFIX_RE.sub("", v)
-    if field in ("api_key", "api_secret"):
+    if field in ("api_key", "api_secret", "client_secret"):
         v = _BEARER_PREFIX_RE.sub("", v)
     return v.strip()
 
@@ -89,7 +116,8 @@ async def update_integration(integration_id: str, body: IntegrationConfig, user:
         cfg[k] = v
     # If credentials are now present, lift the "not_configured" status to "healthy" (user must Test to confirm)
     new_status = integration.get("status", "not_configured")
-    if cfg.get("endpoint") and (cfg.get("api_key") or cfg.get("username")) and new_status == "not_configured":
+    has_creds = cfg.get("api_key") or cfg.get("username") or (cfg.get("client_id") and cfg.get("client_secret") and cfg.get("tenant_id"))
+    if cfg.get("endpoint") and has_creds and new_status == "not_configured":
         new_status = "healthy"
     await db.integrations.update_one({"id": integration_id}, {"$set": {"config": cfg, "status": new_status, "last_changed_at": now_iso()}})
     return {"ok": True}
@@ -106,15 +134,34 @@ async def test_integration(integration_id: str, user: dict = Depends(require_rol
     if not integration:
         raise HTTPException(404, "Integration not found")
     cfg = integration.get("config") or {}
-    if not cfg.get("endpoint") or not cfg.get("api_key"):
-        await db.integrations.update_one({"id": integration_id}, {"$set": {"status": "degraded", "sync_errors": (integration.get("sync_errors") or 0) + 1}})
-        raise HTTPException(400, "Missing endpoint or api_key — configure the connector first")
+    name = integration["name"]
 
-    if integration["name"] == "OpenCTI":
-        from routes.findings import opencti_ping
-        result = await opencti_ping(cfg)
+    if name in MSGRAPH_CONNECTOR_SCOPES:
+        # These three authenticate via an Azure AD app registration (client-credentials
+        # OAuth), not an api_key -- the generic endpoint/api_key precheck below doesn't
+        # apply to them at all. A real token fetch is also a *stronger* test than the
+        # generic reachability probe every other connector gets: it proves tenant_id/
+        # client_id/client_secret are actually valid together, not just that some host
+        # answered HTTP.
+        if not (cfg.get("tenant_id") and cfg.get("client_id") and cfg.get("client_secret")):
+            await db.integrations.update_one({"id": integration_id}, {"$set": {"status": "degraded", "sync_errors": (integration.get("sync_errors") or 0) + 1}})
+            raise HTTPException(400, "Missing tenant ID, client ID, or client secret — configure the connector first")
+        from msgraph import get_client_credentials_token
+        try:
+            await get_client_credentials_token(db, name, MSGRAPH_CONNECTOR_SCOPES[name], force_refresh=True)
+            result = {"ok": True, "message": f"{name}: Azure AD app registration authenticated successfully (token acquired)."}
+        except Exception as e:
+            result = {"ok": False, "message": str(e)}
     else:
-        result = await _generic_reachability_check(cfg)
+        if not cfg.get("endpoint") or not cfg.get("api_key"):
+            await db.integrations.update_one({"id": integration_id}, {"$set": {"status": "degraded", "sync_errors": (integration.get("sync_errors") or 0) + 1}})
+            raise HTTPException(400, "Missing endpoint or api_key — configure the connector first")
+
+        if name == "OpenCTI":
+            from routes.findings import opencti_ping
+            result = await opencti_ping(cfg)
+        else:
+            result = await _generic_reachability_check(cfg)
 
     if result["ok"]:
         await db.integrations.update_one({"id": integration_id}, {"$set": {
@@ -171,6 +218,18 @@ async def _dispatch_sync(name: str, db):
     if name == "Censys":
         from censys_sync import sync_censys_assets
         return await sync_censys_assets(db)
+    if name == "Microsoft Entra ID":
+        from entra_sync import sync_entra_directory
+        return await sync_entra_directory(db)
+    if name == "Microsoft Defender for Endpoint":
+        from defender_sync import sync_defender
+        return await sync_defender(db)
+    if name == "Microsoft Intune":
+        from intune_sync import sync_intune
+        return await sync_intune(db)
+    if name == "HaveIBeenPwned":
+        from hibp_domain import sync_hibp_domain_breaches
+        return await sync_hibp_domain_breaches(db)
     raise HTTPException(400, f"'{name}' doesn't have a sync job -- only Test (reachability) is available for it yet.")
 
 

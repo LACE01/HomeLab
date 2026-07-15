@@ -89,6 +89,26 @@ async def asset_findings(asset_id: str, user: dict = Depends(get_current_user)):
     return {"items": items}
 
 
+@router.get("/v1/assets/{asset_id}/software")
+async def asset_software_inventory(asset_id: str, user: dict = Depends(get_current_user)):
+    """Per-asset installed-software list, populated by the Microsoft Defender for
+    Endpoint EDR connector's per-device sync (see defender_sync.py). Distinct from
+    SBOM component data (sbom.py) -- this is agent-reported OS-level installed
+    software, not application dependency manifests."""
+    items = await db.software_inventory.find(
+        {"source": "defender_device", "asset_id": asset_id}, {"_id": 0},
+    ).sort("vendor", 1).to_list(2000)
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/v1/patch-compliance/summary")
+async def patch_compliance_summary(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/assets"))):
+    """Aggregate Intune-managed-device compliance view -- see intune_sync.py's
+    get_patch_compliance_summary for what counts as 'managed' vs 'unmanaged'."""
+    from intune_sync import get_patch_compliance_summary
+    return await get_patch_compliance_summary(db)
+
+
 @router.get("/v1/assets/{asset_id}/albert-alerts")
 async def asset_albert_alerts(asset_id: str, days: int = 90, user: dict = Depends(get_current_user)):
     """Albert (CIS/MS-ISAC) network sensor alerts linked to this asset -- same shape

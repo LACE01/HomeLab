@@ -76,6 +76,46 @@ ENRICHMENT_CONNECTORS = [
     # is a Bearer "osm_..." API token from the user's OpenSourceMalware profile.
     {"name": "OpenSourceMalware", "type": "threat_intel", "logo": "opensourcemalware",
      "default_config": {"endpoint": "https://api.opensourcemalware.com"}},
+    # File/URL/domain/IP reputation -- same on-demand-lookup pattern as GreyNoise/OTX/
+    # abuse.ch above (see reconng.py's run_virustotal_lookup), surfaced in the Recon &
+    # OSINT hub. api_key is a VirusTotal API key (free tier works, rate-limited to
+    # 4 req/min).
+    {"name": "VirusTotal", "type": "threat_intel", "logo": "virustotal",
+     "default_config": {"endpoint": "https://www.virustotal.com/api/v3"}},
+    # Domain-wide breach monitoring for the org's OWN domain (which employee accounts
+    # show up in known breaches) -- distinct from the existing per-email hibp_breach/
+    # hibp_paste recon-ng modules (still available, now also upgraded to call HIBP
+    # directly using this same api_key -- see reconng.py's run_hibp_lookup). REQUIRES
+    # a one-time manual step this app can't do for you: domain must be verified via a
+    # DNS TXT record in HIBP's own dashboard (haveibeenpwned.com -> Domain search)
+    # before the sync below will return anything but a 403. "domain" here is your
+    # org's verified domain, e.g. "example.com".
+    {"name": "HaveIBeenPwned", "type": "threat_intel", "logo": "hibp",
+     "default_config": {"endpoint": "https://haveibeenpwned.com/api/v3"}},
+]
+
+# Microsoft Graph / Defender-for-Endpoint connectors, each backed by its own Azure AD
+# app registration (tenant_id/client_id/client_secret -- see IntegrationConfig and
+# routes/integrations.py's MSGRAPH_CONNECTOR_SCOPES). Deliberately three separate
+# integration cards rather than one shared "Microsoft" card: real Azure AD app
+# registrations are typically scoped per-product for least privilege (an Entra ID
+# read-only app has no business also holding Defender machine-read permissions), and
+# an org that DOES want to reuse one app registration for all three can just paste the
+# same tenant_id/client_id/client_secret into each card.
+MICROSOFT_CONNECTORS = [
+    # Users, groups, stale-account detection -- see entra_sync.py.
+    {"name": "Microsoft Entra ID", "type": "identity", "logo": "microsoft",
+     "default_config": {"endpoint": "https://graph.microsoft.com/v1.0"}},
+    # EDR: device inventory + org-wide installed-software inventory -- closes the
+    # "no per-asset software inventory" gap vendor_management.py's docstring calls
+    # out explicitly. See defender_sync.py.
+    {"name": "Microsoft Defender for Endpoint", "type": "endpoint", "logo": "microsoft",
+     "default_config": {"endpoint": "https://api.security.microsoft.com"}},
+    # Managed-device compliance/patch state (distinct from the existing manual
+    # "patches applied" tracking, which only fires once every finding in a patch
+    # group is independently confirmed resolved). See intune_sync.py.
+    {"name": "Microsoft Intune", "type": "mdm", "logo": "microsoft",
+     "default_config": {"endpoint": "https://graph.microsoft.com/v1.0"}},
 ]
 
 
@@ -485,7 +525,7 @@ async def _ensure_integrations(db, now_iso_str: str):
     """Insert any missing connector cards; do NOT clobber existing config rows."""
     existing = {i["name"] async for i in db.integrations.find({}, {"_id": 0, "name": 1})}
     to_insert = []
-    for sc in SCANNERS + WORKFLOW_CONNECTORS + ENRICHMENT_CONNECTORS:
+    for sc in SCANNERS + WORKFLOW_CONNECTORS + ENRICHMENT_CONNECTORS + MICROSOFT_CONNECTORS:
         if sc["name"] in existing:
             continue
         to_insert.append({

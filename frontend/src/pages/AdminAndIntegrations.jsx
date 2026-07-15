@@ -130,13 +130,27 @@ export function Integrations() {
 
   // Connectors with real (non-Qualys) sync jobs wired up -- see backend
   // routes/integrations.py's _dispatch_sync for the full list.
-  const GENERIC_SYNC_CONNECTORS = ["Shodan", "Censys"];
+  const GENERIC_SYNC_CONNECTORS = [
+    "Shodan", "Censys", "Microsoft Entra ID", "Microsoft Defender for Endpoint",
+    "Microsoft Intune", "HaveIBeenPwned",
+  ];
+  const MSGRAPH_CONNECTORS = ["Microsoft Entra ID", "Microsoft Defender for Endpoint", "Microsoft Intune"];
+  // Each sync job returns a different result shape (asset enrichment counts, device
+  // counts, user counts, breach counts...) -- summarize whichever fields are present
+  // instead of assuming one fixed shape works for every connector.
+  const summarizeSyncResult = (name, res) => {
+    if (name === "Microsoft Entra ID") return `${res.users_synced ?? 0} user(s), ${res.groups_synced ?? 0} group(s) synced · ${res.stale_accounts ?? 0} stale account(s) found.`;
+    if (name === "Microsoft Defender for Endpoint") return `${res.devices_matched_to_assets ?? 0}/${res.devices_seen ?? 0} device(s) matched to assets · ${res.per_device_software_links_synced ?? 0} software link(s) synced · ${res.high_risk_devices ?? 0} high-risk.`;
+    if (name === "Microsoft Intune") return `${res.devices_matched_to_assets ?? 0}/${res.devices_seen ?? 0} device(s) matched · ${res.noncompliant_devices ?? 0} noncompliant.`;
+    if (name === "HaveIBeenPwned") return `${res.breached_accounts_found ?? 0} breached account(s) found for ${res.domain ?? "domain"} · ${res.osint_findings_created ?? 0} new finding(s).`;
+    return `checked ${res.assets_checked ?? 0} asset(s), enriched ${res.assets_enriched ?? 0}.`;
+  };
   const syncGeneric = async (i) => {
     setTesting(i.id);
     try {
       const r = await api.post(`/v1/integrations/${i.id}/sync`);
       const res = r.data?.result || {};
-      toast.success(`${i.name}: checked ${res.assets_checked ?? 0} asset(s), enriched ${res.assets_enriched ?? 0}.`);
+      toast.success(`${i.name}: ${summarizeSyncResult(i.name, res)}`);
       await load();
     } catch (e) {
       toast.error(e.response?.data?.detail || `${i.name} sync failed`);
@@ -154,6 +168,10 @@ export function Integrations() {
       enabled: i.config?.enabled !== false,
       cf_access_client_id: i.config?.cf_access_client_id || "",
       cf_access_client_secret: "",
+      tenant_id: i.config?.tenant_id || "",
+      client_id: i.config?.client_id || "",
+      client_secret: "",  // never prefill — masked
+      domain: i.config?.domain || "",
     });
   };
 
@@ -297,8 +315,20 @@ export function Integrations() {
 
             <div className="mt-3 space-y-1">
               <div className="flex gap-2 items-center"><span className="text-[10px] font-mono text-slate-500 w-16 uppercase">Endpoint</span><span className="text-[11px] font-mono text-slate-300 truncate flex-1">{i.config?.endpoint || <span className="text-slate-600">not set</span>}</span></div>
-              <div className="flex gap-2 items-center"><span className="text-[10px] font-mono text-slate-500 w-16 uppercase">API Key</span><span className="text-[11px] font-mono text-slate-300 truncate flex-1">{i.config?.api_key || <span className="text-slate-600">not set</span>}</span></div>
-              <div className="flex gap-2 items-center"><span className="text-[10px] font-mono text-slate-500 w-16 uppercase">Auth</span><span className="text-[11px] font-mono text-slate-300">{i.config?.auth_type || "api_key"}</span></div>
+              {MSGRAPH_CONNECTORS.includes(i.name) ? (
+                <>
+                  <div className="flex gap-2 items-center"><span className="text-[10px] font-mono text-slate-500 w-16 uppercase">Tenant</span><span className="text-[11px] font-mono text-slate-300 truncate flex-1">{i.config?.tenant_id || <span className="text-slate-600">not set</span>}</span></div>
+                  <div className="flex gap-2 items-center"><span className="text-[10px] font-mono text-slate-500 w-16 uppercase">Client</span><span className="text-[11px] font-mono text-slate-300 truncate flex-1">{i.config?.client_id || <span className="text-slate-600">not set</span>}</span></div>
+                </>
+              ) : (
+                <div className="flex gap-2 items-center"><span className="text-[10px] font-mono text-slate-500 w-16 uppercase">API Key</span><span className="text-[11px] font-mono text-slate-300 truncate flex-1">{i.config?.api_key || <span className="text-slate-600">not set</span>}</span></div>
+              )}
+              {i.name === "HaveIBeenPwned" && (
+                <div className="flex gap-2 items-center"><span className="text-[10px] font-mono text-slate-500 w-16 uppercase">Domain</span><span className="text-[11px] font-mono text-slate-300 truncate flex-1">{i.config?.domain || <span className="text-slate-600">not set</span>}</span></div>
+              )}
+              {!MSGRAPH_CONNECTORS.includes(i.name) && (
+                <div className="flex gap-2 items-center"><span className="text-[10px] font-mono text-slate-500 w-16 uppercase">Auth</span><span className="text-[11px] font-mono text-slate-300">{i.config?.auth_type || "api_key"}</span></div>
+              )}
               {i.name === "OpenCTI" && (
                 <div className="flex gap-2 items-center">
                   <span className="text-[10px] font-mono text-slate-500 w-16 uppercase">CF-Access</span>
@@ -369,35 +399,77 @@ export function Integrations() {
                   </div>
                 )}
               </div>
-              <div>
-                <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Auth Type</label>
-                <select value={form.auth_type} onChange={(e)=>setForm({...form, auth_type:e.target.value})}
-                  className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200">
-                  <option value="api_key">API Key</option>
-                  <option value="basic">Basic Auth (user + password)</option>
-                  <option value="bearer">Bearer Token</option>
-                  <option value="oauth">OAuth</option>
-                </select>
-              </div>
-              {form.auth_type === "basic" && (
+              {editing.name === "HaveIBeenPwned" && (
                 <div>
-                  <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Username</label>
-                  <input data-testid="cfg-username" value={form.username} onChange={(e)=>setForm({...form, username:e.target.value})}
-                    className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200"/>
+                  <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Domain</label>
+                  <input data-testid="cfg-domain" value={form.domain} onChange={(e)=>setForm({...form, domain:e.target.value})}
+                    placeholder="example.com"
+                    className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
+                  <div className="text-[10.5px] text-slate-500 mt-1">
+                    Your org's own domain, verified for Domain Search in HIBP's dashboard (haveibeenpwned.com → Domain search — a
+                    one-time manual DNS TXT verification step this app can't do for you). Nightly sync will 403 until that's done.
+                  </div>
                 </div>
               )}
-              <div>
-                <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">{form.auth_type === "basic" ? "Password" : "API Key / Token"}</label>
-                <input data-testid="cfg-api-key" type="password" value={form.api_key} onChange={(e)=>setForm({...form, api_key:e.target.value})}
-                  placeholder={editing.config?.api_key ? "•••••• (leave blank to keep existing)" : "Paste credential"}
-                  className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
-              </div>
-              {(form.auth_type === "oauth") && (
-                <div>
-                  <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Client Secret</label>
-                  <input data-testid="cfg-api-secret" type="password" value={form.api_secret} onChange={(e)=>setForm({...form, api_secret:e.target.value})}
-                    className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
-                </div>
+              {MSGRAPH_CONNECTORS.includes(editing.name) ? (
+                <>
+                  <div>
+                    <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Tenant ID</label>
+                    <input data-testid="cfg-tenant-id" value={form.tenant_id} onChange={(e)=>setForm({...form, tenant_id:e.target.value})}
+                      placeholder="e.g. 72f988bf-86f1-41af-91ab-2d7cd011db47"
+                      className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Client ID (Application ID)</label>
+                    <input data-testid="cfg-client-id" value={form.client_id} onChange={(e)=>setForm({...form, client_id:e.target.value})}
+                      className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Client Secret</label>
+                    <input data-testid="cfg-client-secret" type="password" value={form.client_secret} onChange={(e)=>setForm({...form, client_secret:e.target.value})}
+                      placeholder={editing.config?.client_secret ? "•••••• (leave blank to keep existing)" : "Paste the app registration's client secret value"}
+                      className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
+                  </div>
+                  <div className="text-[10.5px] text-slate-500 leading-relaxed">
+                    Authenticates via an Azure AD app registration (client-credentials OAuth), not an API key. See{" "}
+                    {editing.name === "Microsoft Defender for Endpoint"
+                      ? "Machine.Read.All + Software.Read.All under the WindowsDefenderATP API resource"
+                      : "the required Graph application permission(s) noted in this connector's backend module"} — grant and admin-consent them on the app registration before syncing.
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Auth Type</label>
+                    <select value={form.auth_type} onChange={(e)=>setForm({...form, auth_type:e.target.value})}
+                      className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200">
+                      <option value="api_key">API Key</option>
+                      <option value="basic">Basic Auth (user + password)</option>
+                      <option value="bearer">Bearer Token</option>
+                      <option value="oauth">OAuth</option>
+                    </select>
+                  </div>
+                  {form.auth_type === "basic" && (
+                    <div>
+                      <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Username</label>
+                      <input data-testid="cfg-username" value={form.username} onChange={(e)=>setForm({...form, username:e.target.value})}
+                        className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200"/>
+                    </div>
+                  )}
+                  <div>
+                    <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">{form.auth_type === "basic" ? "Password" : "API Key / Token"}</label>
+                    <input data-testid="cfg-api-key" type="password" value={form.api_key} onChange={(e)=>setForm({...form, api_key:e.target.value})}
+                      placeholder={editing.config?.api_key ? "•••••• (leave blank to keep existing)" : "Paste credential"}
+                      className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
+                  </div>
+                  {(form.auth_type === "oauth") && (
+                    <div>
+                      <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Client Secret</label>
+                      <input data-testid="cfg-api-secret" type="password" value={form.api_secret} onChange={(e)=>setForm({...form, api_secret:e.target.value})}
+                        className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
+                    </div>
+                  )}
+                </>
               )}
               {editing.name === "OpenCTI" && (
                 <div className="border-t border-[#30363D] pt-3 mt-1 space-y-3" data-testid="cfg-cf-section">

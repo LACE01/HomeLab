@@ -62,6 +62,7 @@ import RiskRegister from "@/pages/RiskRegister";
 import RiskDetail from "@/pages/RiskDetail";
 import VendorManagement from "@/pages/VendorManagement";
 import VendorDetail from "@/pages/VendorDetail";
+import Directory from "@/pages/Directory";
 
 const Protected = ({ children, module }) => {
   const { user, loading, canAccess } = useAuth();
@@ -147,6 +148,7 @@ const AppRouter = () => {
       <Route path="/risk-register/:id" element={<Protected module="/risk-register"><RiskDetail/></Protected>}/>
       <Route path="/vendors" element={<Protected module="/vendors"><VendorManagement/></Protected>}/>
       <Route path="/vendors/:id" element={<Protected module="/vendors"><VendorDetail/></Protected>}/>
+      <Route path="/directory" element={<Protected module="/directory"><Directory/></Protected>}/>
       <Route path="/admin/chatops" element={<Protected module="/admin/chatops"><ChatOps/></Protected>}/>
       <Route path="/admin/health" element={<Protected module="/admin/health"><OpsHealth/></Protected>}/>
       <Route path="/admin/backups" element={<Protected module="/admin/backups"><Backups/></Protected>}/>

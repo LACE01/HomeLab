@@ -98,6 +98,7 @@ MODULE_REGISTRY = [
     {"key": "/assets", "label": "Assets", "group": "Asset Inventory"},
     {"key": "/products", "label": "Products", "group": "Asset Inventory"},
     {"key": "/engagements", "label": "Engagements", "group": "Asset Inventory"},
+    {"key": "/directory", "label": "Directory (Users & Groups)", "group": "Asset Inventory"},
     # --- Scanning & Integrations ---
     {"key": "/integrations", "label": "Connectors", "group": "Scanning & Integrations"},
     {"key": "/imports", "label": "Import Jobs", "group": "Scanning & Integrations"},

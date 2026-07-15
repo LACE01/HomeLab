@@ -539,5 +539,17 @@ async def nightly_loop(db, interval_hours: int = 24):
         except Exception as e:
             logger.exception(f"Vendor risk history snapshot failed: {e}")
             ok, detail["vendor_risk_snapshot_error"] = False, str(e)
+        try:
+            from hibp_domain import sync_hibp_domain_breaches
+            hibp_result = await sync_hibp_domain_breaches(db)
+            logger.info(f"HaveIBeenPwned domain sync: {hibp_result}")
+            detail["hibp_domain"] = hibp_result
+        except Exception as e:
+            # Not configured yet / domain not verified is the expected steady state
+            # on a fresh install -- logged at info, not exception, to avoid a scary
+            # traceback in the logs for something that just means "nobody's set this
+            # up yet", same tolerance the other optional nightly jobs already get.
+            logger.info(f"HaveIBeenPwned domain sync skipped/failed: {e}")
+            detail["hibp_domain_error"] = str(e)
         await record_heartbeat(db, "nightly_loop", "ok" if ok else "error", detail)
         await asyncio.sleep(interval_hours * 3600)

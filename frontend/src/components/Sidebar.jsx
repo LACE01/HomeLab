@@ -105,6 +105,7 @@ export default function Sidebar() {
           <NavItem to="/assets" icon={HardDrives} label="Assets" testid="nav-assets" />
           <NavItem to="/products" icon={Stack} label="Products" testid="nav-products" />
           <NavItem to="/engagements" icon={Lightning} label="Engagements" testid="nav-engagements" />
+          <NavItem to="/directory" icon={UsersThree} label="Directory" testid="nav-directory" />
         </Group>
         <Group title="Scanning & Integrations" collapsed={!!collapsed["Scanning & Integrations"]} onToggle={()=>toggleGroup("Scanning & Integrations")}>
           <NavItem to="/integrations" icon={PlugsConnected} label="Connectors" testid="nav-integrations" />

@@ -125,16 +125,22 @@ MODULE_CATALOG = [
         "result_table": "hosts", "label": "Reverse DNS (PTR) Lookup",
         "description": "Resolves an IP address back to any hostname(s) pointing at it via a reverse DNS (PTR) query.",
     },
-    # --- Threat intel: breach/paste exposure (needs HIBP key) ---
+    # --- Threat intel: breach/paste exposure -- direct HaveIBeenPwned API calls
+    # (previously routed through the flaky recon-cli subprocess like every other
+    # entry in this catalog; upgraded to the same direct-API "source" pattern as
+    # OpenCTI/GreyNoise/OTX/abuse.ch below, since HIBP's real v3 REST API is simple
+    # enough not to need recon-ng's module wrapper at all. Reuses the api_key from
+    # Integrations → HaveIBeenPwned -- the same connector hibp_domain.py's org-wide
+    # domain sync uses -- instead of the old recon-ng-specific hibp_api_key.) ---
     {
-        "id": "hibp_breach", "module": "recon/contacts-credentials/hibp_breach",
-        "category": "threat-intel", "target_type": "email", "requires_keys": ["hibp_api_key"],
+        "id": "hibp_breach", "module": None, "source": "hibp_breach",
+        "category": "threat-intel", "target_type": "email", "requires_keys": [],
         "result_table": "credentials", "label": "HaveIBeenPwned — Breaches",
         "description": "Checks a contact email against known breach databases via the HIBP API.",
     },
     {
-        "id": "hibp_paste", "module": "recon/contacts-credentials/hibp_paste",
-        "category": "threat-intel", "target_type": "email", "requires_keys": ["hibp_api_key"],
+        "id": "hibp_paste", "module": None, "source": "hibp_paste",
+        "category": "threat-intel", "target_type": "email", "requires_keys": [],
         "result_table": "credentials", "label": "HaveIBeenPwned — Pastes",
         "description": "Checks a contact email against public paste-site exposure via the HIBP API.",
     },
@@ -187,6 +193,27 @@ MODULE_CATALOG = [
         "result_table": "credentials", "label": "abuse.ch ThreatFox — IP IOC Search",
         "description": "Searches ThreatFox for this IP address as a known malware C2/delivery indicator.",
     },
+    # --- Threat intel: VirusTotal multi-engine reputation -- same direct-API "source"
+    # pattern as OpenCTI/GreyNoise/OTX/abuse.ch above, not a recon-ng module. Requires
+    # its own api_key under Integrations → VirusTotal.
+    {
+        "id": "vt_domain", "module": None, "source": "virustotal",
+        "category": "threat-intel", "target_type": "domain", "requires_keys": [],
+        "result_table": "credentials", "label": "VirusTotal — Domain Reputation",
+        "description": "Checks this domain against VirusTotal's aggregated multi-engine detections.",
+    },
+    {
+        "id": "vt_ip", "module": None, "source": "virustotal",
+        "category": "threat-intel", "target_type": "ip", "requires_keys": [],
+        "result_table": "credentials", "label": "VirusTotal — IP Reputation",
+        "description": "Checks this IP address against VirusTotal's aggregated multi-engine detections.",
+    },
+    {
+        "id": "vt_hash", "module": None, "source": "virustotal",
+        "category": "threat-intel", "target_type": "hash", "requires_keys": [],
+        "result_table": "credentials", "label": "VirusTotal — File Hash Reputation",
+        "description": "Checks a file hash (MD5/SHA1/SHA256) against VirusTotal's aggregated multi-engine detections.",
+    },
 ]
 
 MODULE_BY_ID = {m["id"]: m for m in MODULE_CATALOG}
@@ -195,7 +222,7 @@ MODULE_BY_ID = {m["id"]: m for m in MODULE_CATALOG}
 # here fails silently at module-run time instead of at config time.
 RECON_KEY_NAME = {"hibp_api_key": "hibp_api"}
 ALL_REQUIRED_KEYS = sorted({k for m in MODULE_CATALOG for k in m["requires_keys"]})
-TARGET_TYPES = ["domain", "ip", "email"]
+TARGET_TYPES = ["domain", "ip", "email", "hash"]
 
 TARGET_RE = re.compile(r"^[a-zA-Z0-9.@_\-]{1,255}$")
 
@@ -442,6 +469,107 @@ async def run_abusech_lookup(target: str) -> list:
     return rows
 
 
+async def run_virustotal_lookup(target: str, target_type: str) -> list:
+    """VirusTotal file/domain/IP reputation -- checks a domain, IP, or file hash
+    against VT's aggregated multi-engine detections. Requires an API key under
+    Integrations → VirusTotal (the free tier works, rate-limited to ~4 req/min --
+    fine for on-demand lookups from the Recon & OSINT hub, not meant for bulk
+    scanning)."""
+    import httpx
+    from db import db as _db
+    integration = await _db.integrations.find_one({"name": "VirusTotal"}, {"_id": 0})
+    cfg = (integration or {}).get("config") or {}
+    endpoint, api_key = cfg.get("endpoint") or "https://www.virustotal.com/api/v3", cfg.get("api_key")
+    if not api_key:
+        raise ValueError("VirusTotal isn't configured yet -- add an API key under Integrations → VirusTotal first.")
+
+    path = {"domain": "domains", "ip": "ip_addresses", "hash": "files"}.get(target_type)
+    if not path:
+        raise ValueError(f"VirusTotal lookup doesn't support target type '{target_type}'.")
+
+    url = f"{endpoint.rstrip('/')}/{path}/{target}"
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.get(url, headers={"x-apikey": api_key})
+    except httpx.HTTPError as e:
+        raise RuntimeError(f"Could not reach VirusTotal: {e}")
+    if r.status_code == 404:
+        return []  # VT has no data on this indicator -- not an error, just nothing to report
+    if r.status_code == 401:
+        raise RuntimeError("VirusTotal rejected this API key (401) -- check it under Integrations → VirusTotal.")
+    if r.status_code == 429:
+        raise RuntimeError("VirusTotal rate limit hit (429) -- the free tier allows about 4 requests/minute.")
+    if r.status_code != 200:
+        raise RuntimeError(f"VirusTotal HTTP {r.status_code}: {r.text[:200]}")
+    data = (r.json() or {}).get("data") or {}
+    attrs = data.get("attributes") or {}
+    stats = attrs.get("last_analysis_stats") or {}
+    malicious = stats.get("malicious", 0)
+    suspicious = stats.get("suspicious", 0)
+    if malicious == 0 and suspicious == 0:
+        return []  # clean across every engine that scanned it -- don't manufacture a row for silence
+    label = attrs.get("meaningful_name") or attrs.get("type_description") or target
+    detail = (f"{malicious} engine(s) flagged malicious, {suspicious} suspicious, "
+              f"{stats.get('harmless', 0)} harmless, {stats.get('undetected', 0)} undetected")
+    if "reputation" in attrs:
+        detail += f"; VT reputation score={attrs['reputation']}"
+    return [{
+        "table": "credentials", "resource": target,
+        "name": f"VirusTotal: {malicious} malicious detection(s)",
+        "password": None, "detail": f"{label}: {detail}",
+    }]
+
+
+async def run_hibp_lookup(target: str, kind: str) -> list:
+    """HaveIBeenPwned per-account breach/paste exposure check -- direct API call,
+    same pattern as run_greynoise_lookup/run_otx_lookup/run_abusech_lookup above.
+    Previously (hibp_breach/hibp_paste) this shelled out to a real recon-ng module
+    via the flaky recon-cli subprocess route; HIBP's actual v3 REST API
+    (GET /breachedaccount/{account} and GET /pasteaccount/{account}) is simple enough
+    not to need that at all. Reuses the same Integrations → HaveIBeenPwned api_key
+    the org-wide domain sync in hibp_domain.py uses -- one subscription key covers
+    both use cases per HIBP's own docs."""
+    import httpx
+    from db import db as _db
+    integration = await _db.integrations.find_one({"name": "HaveIBeenPwned"}, {"_id": 0})
+    cfg = (integration or {}).get("config") or {}
+    endpoint, api_key = cfg.get("endpoint") or "https://haveibeenpwned.com/api/v3", cfg.get("api_key")
+    if not api_key:
+        raise ValueError("HaveIBeenPwned isn't configured yet -- add an API key under Integrations → HaveIBeenPwned first.")
+
+    path = "breachedaccount" if kind == "breach" else "pasteaccount"
+    url = f"{endpoint.rstrip('/')}/{path}/{target}"
+    headers = {"hibp-api-key": api_key, "user-agent": "Nightwatch-VulnMgmt"}
+    params = {"truncateResponse": "false"} if kind == "breach" else None
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.get(url, headers=headers, params=params)
+    except httpx.HTTPError as e:
+        raise RuntimeError(f"Could not reach HaveIBeenPwned: {e}")
+    if r.status_code == 404:
+        return []  # not found in any breach/paste -- clean, not an error
+    if r.status_code == 401:
+        raise RuntimeError("HaveIBeenPwned rejected this API key (401) -- check it under Integrations → HaveIBeenPwned.")
+    if r.status_code == 429:
+        raise RuntimeError("HaveIBeenPwned rate limit hit (429) -- wait a moment and retry.")
+    if r.status_code != 200:
+        raise RuntimeError(f"HaveIBeenPwned HTTP {r.status_code}: {r.text[:200]}")
+    data = r.json() or []
+    if kind == "breach":
+        names = [b.get("Name") or b.get("Title") for b in data if isinstance(b, dict)]
+        return [{
+            "table": "credentials", "resource": target,
+            "name": f"HaveIBeenPwned: {len(names)} breach(es)",
+            "password": None, "detail": f"Appears in: {', '.join(n for n in names if n) or 'unnamed breach(es)'}",
+        }]
+    sources = [p.get("Source") for p in data if isinstance(p, dict)]
+    return [{
+        "table": "credentials", "resource": target,
+        "name": f"HaveIBeenPwned: {len(sources)} paste(s)",
+        "password": None, "detail": f"Found in pastes on: {', '.join(s for s in sources if s) or 'unnamed source(s)'}",
+    }]
+
+
 async def run_module(db, module_id: str, target: str, timeout_sec: int = 300) -> dict:
     """Runs one recon-ng module (or, for source="opencti" entries, a direct OpenCTI
     lookup) against `target`, routes the results, and returns a summary dict. Raises
@@ -462,6 +590,15 @@ async def run_module(db, module_id: str, target: str, timeout_sec: int = 300) ->
         return await _route_results(db, mod, target, {"credentials": rows})
     if mod.get("source") == "abusech":
         rows = await run_abusech_lookup(target)
+        return await _route_results(db, mod, target, {"credentials": rows})
+    if mod.get("source") == "virustotal":
+        rows = await run_virustotal_lookup(target, mod["target_type"])
+        return await _route_results(db, mod, target, {"credentials": rows})
+    if mod.get("source") == "hibp_breach":
+        rows = await run_hibp_lookup(target, "breach")
+        return await _route_results(db, mod, target, {"credentials": rows})
+    if mod.get("source") == "hibp_paste":
+        rows = await run_hibp_lookup(target, "paste")
         return await _route_results(db, mod, target, {"credentials": rows})
 
     integration = await db.integrations.find_one({"name": "recon-ng"}, {"_id": 0})

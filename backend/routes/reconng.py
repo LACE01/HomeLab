@@ -25,6 +25,9 @@ SOURCE_INTEGRATION = {
     "greynoise": "GreyNoise",
     "otx": "AlienVault OTX",
     "abusech": "abuse.ch (ThreatFox)",
+    "virustotal": "VirusTotal",
+    "hibp_breach": "HaveIBeenPwned",
+    "hibp_paste": "HaveIBeenPwned",
 }
 
 
