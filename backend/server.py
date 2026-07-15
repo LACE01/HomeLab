@@ -54,6 +54,8 @@ from routes.retention import router as retention_router
 from routes.audit import router as audit_router
 from routes.yara import router as yara_router
 from routes.incident_response import router as incident_response_router
+from routes.albert import router as albert_router
+from routes.risk_register import router as risk_register_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("vulnops")
@@ -90,6 +92,8 @@ api.include_router(backups_router)
 api.include_router(retention_router)
 api.include_router(audit_router)
 api.include_router(yara_router)
+api.include_router(albert_router)
+api.include_router(risk_register_router)
 api.include_router(rbac_router)
 api.include_router(scan_schedule_router)
 api.include_router(security_events_router)

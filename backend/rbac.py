@@ -89,6 +89,7 @@ MODULE_REGISTRY = [
     # workflow, splitting them into two nav groups never made sense) ---
     {"key": "/alerts", "label": "Security Alerts", "group": "Detection & Response"},
     {"key": "/admin/threat-intel", "label": "Threat Intel Watchlist", "group": "Detection & Response"},
+    {"key": "/admin/albert", "label": "Albert Network Monitoring", "group": "Detection & Response"},
     {"key": "/ir/wizard", "label": "Triage Wizard", "group": "Detection & Response"},
     {"key": "/ir/cases", "label": "IR Cases", "group": "Detection & Response"},
     {"key": "/ir/case-approval", "label": "IR Case Approval", "group": "Detection & Response"},
@@ -114,6 +115,7 @@ MODULE_REGISTRY = [
     # --- Reports & Compliance ---
     {"key": "/reports", "label": "Reports", "group": "Reports & Compliance"},
     {"key": "/compliance", "label": "Compliance", "group": "Reports & Compliance"},
+    {"key": "/risk-register", "label": "Risk Register", "group": "Reports & Compliance"},
     # --- Administration ---
     {"key": "/admin", "label": "Admin", "group": "Administration"},
     {"key": "/admin/users", "label": "Users", "group": "Administration"},

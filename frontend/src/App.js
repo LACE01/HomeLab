@@ -57,6 +57,9 @@ import WazuhIntegration from "@/pages/WazuhIntegration";
 import SocOverview from "@/pages/SocOverview";
 import TicketingSoar from "@/pages/TicketingSoar";
 import ThreatIntelWatchlist from "@/pages/ThreatIntelWatchlist";
+import AlbertMonitoring from "@/pages/AlbertMonitoring";
+import RiskRegister from "@/pages/RiskRegister";
+import RiskDetail from "@/pages/RiskDetail";
 
 const Protected = ({ children, module }) => {
   const { user, loading, canAccess } = useAuth();
@@ -113,6 +116,7 @@ const AppRouter = () => {
       <Route path="/soc" element={<Protected><SocOverview/></Protected>}/>
       <Route path="/admin/ticketing" element={<Protected><TicketingSoar/></Protected>}/>
       <Route path="/admin/threat-intel" element={<Protected><ThreatIntelWatchlist/></Protected>}/>
+      <Route path="/admin/albert" element={<Protected module="/admin/albert"><AlbertMonitoring/></Protected>}/>
       <Route path="/" element={<Protected module="/"><Dashboard/></Protected>}/>
       <Route path="/findings" element={<Protected module="/findings"><Findings/></Protected>}/>
       <Route path="/findings/:id" element={<Protected module="/findings"><FindingDetail/></Protected>}/>
@@ -137,6 +141,8 @@ const AppRouter = () => {
       <Route path="/admin/yara" element={<Protected module="/admin/yara"><Yara/></Protected>}/>
       <Route path="/easm" element={<Protected module="/easm"><Easm/></Protected>}/>
       <Route path="/compliance" element={<Protected module="/compliance"><Compliance/></Protected>}/>
+      <Route path="/risk-register" element={<Protected module="/risk-register"><RiskRegister/></Protected>}/>
+      <Route path="/risk-register/:id" element={<Protected module="/risk-register"><RiskDetail/></Protected>}/>
       <Route path="/admin/chatops" element={<Protected module="/admin/chatops"><ChatOps/></Protected>}/>
       <Route path="/admin/health" element={<Protected module="/admin/health"><OpsHealth/></Protected>}/>
       <Route path="/admin/backups" element={<Protected module="/admin/backups"><Backups/></Protected>}/>

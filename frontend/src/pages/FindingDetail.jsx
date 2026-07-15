@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import Layout from "@/components/Layout";
@@ -62,6 +62,7 @@ function AddMitigationForm({ types, onCancel, onAdded, findingId }) {
 
 export default function FindingDetail() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const [f, setF] = useState(null);
   const [tickets, setTickets] = useState([]);
   const [obs, setObs] = useState([]);
@@ -237,7 +238,7 @@ export default function FindingDetail() {
 
   return (
     <Layout title={f.title?.slice(0,90)} subtitle={`${f.cve || f.source_native_id} · ${f.source_tool}`}
-      actions={<Link to="/findings" className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] rounded inline-flex items-center gap-1.5 text-slate-300"><ArrowLeft size={14}/> Back</Link>}>
+      actions={<button onClick={() => navigate(-1)} className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] rounded inline-flex items-center gap-1.5 text-slate-300"><ArrowLeft size={14}/> Back</button>}>
 
       <div className="flex flex-wrap gap-2 mb-4">
         <SevBadge severity={f.severity} />

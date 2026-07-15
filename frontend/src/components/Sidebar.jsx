@@ -5,7 +5,7 @@ import {
   ChartLineUp, ListChecks, HardDrives, Stack, Lightning, Ticket,
   ShieldCheck, PlugsConnected, FileArrowDown, GearSix, SignOut, Database, Bug,
   UsersThree, Bell, ShareNetwork, BookOpen, Robot, Globe, Certificate, Package, MagnifyingGlass, ClipboardText, SlackLogo, Heartbeat, HardDrive, Notepad, Virus, FlowArrow,
-  CaretDown, LockKey, CalendarBlank, FirstAidKit, Siren, SlidersHorizontal, Devices, Binoculars, Gauge, WebhooksLogo, Archive,
+  CaretDown, LockKey, CalendarBlank, FirstAidKit, Siren, SlidersHorizontal, Devices, Binoculars, Gauge, WebhooksLogo, Archive, Radar, Warning,
 } from "@phosphor-icons/react";
 
 const COLLAPSE_KEY = "vulnops.sidebar.collapsedGroups";
@@ -95,6 +95,7 @@ export default function Sidebar() {
         <Group title="Detection & Response" collapsed={!!collapsed["Detection & Response"]} onToggle={()=>toggleGroup("Detection & Response")}>
           <NavItem to="/alerts" icon={Siren} label="Security Alerts" testid="nav-alerts" />
           <NavItem to="/admin/threat-intel" icon={Binoculars} label="Threat Intel Watchlist" testid="nav-threat-intel" />
+          <NavItem to="/admin/albert" icon={Radar} label="Albert Network Monitoring" testid="nav-albert" />
           <NavItem to="/ir/wizard" icon={FirstAidKit} label="Triage Wizard" testid="nav-ir-wizard" />
           <NavItem to="/ir/cases" icon={Siren} label="IR Cases" testid="nav-ir-cases" />
           <NavItem to="/admin/ir-setup" icon={SlidersHorizontal} label="IR Setup" testid="nav-ir-setup" />
@@ -122,6 +123,7 @@ export default function Sidebar() {
         <Group title="Reports & Compliance" collapsed={!!collapsed["Reports & Compliance"]} onToggle={()=>toggleGroup("Reports & Compliance")}>
           <NavItem to="/reports" icon={FileArrowDown} label="Reports" testid="nav-reports" />
           <NavItem to="/compliance" icon={ClipboardText} label="Compliance" testid="nav-compliance" />
+          <NavItem to="/risk-register" icon={Warning} label="Risk Register" testid="nav-risk-register" />
         </Group>
         <Group title="Administration" collapsed={!!collapsed["Administration"]} onToggle={()=>toggleGroup("Administration")}>
           <NavItem to="/admin" icon={GearSix} label="Admin" testid="nav-admin" />
