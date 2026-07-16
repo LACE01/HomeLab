@@ -76,6 +76,44 @@ OS_VENDOR_MAP = [
     ("suse", "SUSE"), ("vmware", "VMware"), ("esxi", "VMware"),
 ]
 
+# Common named software vendors/publishers that routinely show up in
+# vulnerability-scanner finding titles (Qualys/Nessus-style "Adobe Acrobat
+# Reader DC Multiple Vulnerabilities", "Oracle Java SE Multiple
+# Vulnerabilities") and SBOM component_name/ecosystem strings. There's no
+# structured "vendor" field on a finding to read directly -- this is
+# necessarily a curated heuristic, same as OS_VENDOR_MAP above, matched as a
+# case-insensitive substring against `title` + `component_name`. If a match
+# is wrong or too broad for your environment, approve it and edit the
+# resulting vendor's match_terms (or deny it so it never resurfaces).
+SOFTWARE_VENDOR_KEYWORDS = [
+    ("adobe", "Adobe"), ("acrobat", "Adobe"), ("photoshop", "Adobe"), ("flash player", "Adobe"),
+    ("coldfusion", "Adobe"),
+    ("oracle", "Oracle"), ("java se", "Oracle"), ("java runtime", "Oracle"), ("jre ", "Oracle"),
+    ("jdk ", "Oracle"), ("mysql", "Oracle"), ("weblogic", "Oracle"), ("virtualbox", "Oracle"),
+    ("google chrome", "Google"), ("chromium", "Google"), ("android", "Google"),
+    ("mozilla", "Mozilla"), ("firefox", "Mozilla"), ("thunderbird", "Mozilla"),
+    ("apple", "Apple"), ("safari", "Apple"), ("itunes", "Apple"), ("quicktime", "Apple"),
+    ("ios ", "Apple"), ("macos", "Apple"),
+    ("cisco", "Cisco"), ("citrix", "Citrix"), ("fortinet", "Fortinet"), ("fortigate", "Fortinet"),
+    ("palo alto", "Palo Alto Networks"), ("juniper", "Juniper Networks"),
+    ("f5 ", "F5"), ("big-ip", "F5"), ("sap ", "SAP"), ("ibm ", "IBM"),
+    ("symantec", "Symantec"), ("mcafee", "McAfee"), ("trend micro", "Trend Micro"),
+    ("zoom", "Zoom"), ("slack", "Slack"), ("atlassian", "Atlassian"), ("jira", "Atlassian"),
+    ("confluence", "Atlassian"), ("bitbucket", "Atlassian"),
+    ("docker", "Docker"), ("gitlab", "GitLab"), ("splunk", "Splunk"),
+    ("elasticsearch", "Elastic"), ("kibana", "Elastic"), ("logstash", "Elastic"),
+    ("mongodb", "MongoDB Inc"), ("postgresql", "PostgreSQL Global Development Group"),
+    ("apache ", "Apache Software Foundation"), ("openssl", "OpenSSL Project"),
+    ("php ", "PHP Group"), ("7-zip", "7-Zip"), ("winrar", "RARLAB"), ("putty", "PuTTY"),
+    ("notepad++", "Notepad++"), ("teamviewer", "TeamViewer"), ("anydesk", "AnyDesk"),
+    ("dropbox", "Dropbox"),
+    ("microsoft", "Microsoft"), ("windows", "Microsoft"), (" office", "Microsoft"),
+    ("exchange server", "Microsoft"), ("sharepoint", "Microsoft"), ("sql server", "Microsoft"),
+    ("internet explorer", "Microsoft"), (" edge", "Microsoft"), (".net framework", "Microsoft"),
+    ("outlook", "Microsoft"), ("powershell", "Microsoft"),
+    ("vmware", "VMware"), ("esxi", "VMware"),
+]
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -107,11 +145,22 @@ def _first_token(text: str) -> Optional[str]:
 
 
 async def suggest_vendors(db) -> list:
-    """Scans assets for candidate vendor names not already tracked -- hardware
-    manufacturer (first token of hardware_info) and OS vendor (from
-    OS_VENDOR_MAP). Returns [{name, category, source, asset_count}], sorted by
-    asset_count desc, excluding anything that already matches an existing
-    vendor's name or match_terms."""
+    """Scans assets, findings, and (when configured) real EDR software inventory
+    for candidate vendor names not already tracked:
+      - asset hardware manufacturer (first token of hardware_info)
+      - asset OS vendor (OS_VENDOR_MAP)
+      - finding title / SBOM component_name (SOFTWARE_VENDOR_KEYWORDS) -- this is
+        what surfaces a vendor from actual vulnerability data, e.g. a Qualys/Nessus
+        finding titled "Adobe Acrobat Reader DC Multiple Vulnerabilities" suggests
+        "Adobe" even though no asset's hardware_info/os ever mentions it
+      - db.software_inventory (Microsoft Defender for Endpoint's per-device sync,
+        when that connector is configured)
+    Every source is merged into ONE candidate per vendor name via a shared set of
+    asset_ids, so a vendor detected through multiple sources (e.g. "Microsoft" from
+    both asset_os AND a finding title) gets a single, correctly-deduplicated
+    asset_count rather than one inflated or duplicated entry per source. Returns
+    [{name, category, source, asset_count}], sorted by asset_count desc, excluding
+    anything that already matches an existing vendor's name or match_terms."""
     existing = await db.vendors.find({}, {"_id": 0, "name": 1, "match_terms": 1}).to_list(2000)
     existing_terms = set()
     for v in existing:
@@ -119,54 +168,78 @@ async def suggest_vendors(db) -> list:
         for t in v.get("match_terms") or []:
             existing_terms.add(t.strip().lower())
 
-    assets = await db.assets.find({}, {"_id": 0, "hardware_info": 1, "os": 1}).to_list(50000)
-    hw_counts: dict = {}
-    os_counts: dict = {}
+    # name -> {"category": "Hardware"|"Software", "asset_ids": set(), "sources": set()}
+    candidates: dict = {}
+
+    def _add(name: str, category: str, asset_id, source: str):
+        name = (name or "").strip()
+        if not name or name.lower() in existing_terms:
+            return
+        entry = candidates.setdefault(name, {"category": category, "asset_ids": set(), "sources": set()})
+        if asset_id:
+            entry["asset_ids"].add(asset_id)
+        entry["sources"].add(source)
+        if category == "Hardware":
+            entry["category"] = "Hardware"  # hardware presence always wins the displayed category
+
+    assets = await db.assets.find({}, {"_id": 0, "id": 1, "hardware_info": 1, "os": 1}).to_list(50000)
     for a in assets:
         hw = _first_token(a.get("hardware_info"))
-        if hw and hw.lower() not in existing_terms:
-            hw_counts[hw] = hw_counts.get(hw, 0) + 1
+        if hw:
+            _add(hw, "Hardware", a.get("id"), "asset_hardware_info")
         os_text = (a.get("os") or "").lower()
         for needle, vendor_name in OS_VENDOR_MAP:
-            if needle in os_text and vendor_name.lower() not in existing_terms:
-                os_counts[vendor_name] = os_counts.get(vendor_name, 0) + 1
+            if needle in os_text:
+                _add(vendor_name, "Software", a.get("id"), "asset_os")
 
-    # Real per-asset installed-software vendors (Defender for Endpoint), grouped by
-    # vendor name -> the set of distinct assets running software from that vendor.
-    # asset_id is only set on defender_device rows (per-machine); defender_org rows
-    # (asset_id=None, the org-wide software list) are deliberately excluded here --
-    # an asset_count needs real per-asset backing to mean anything, and a candidate
-    # surfaced with asset_count=0 would just be confusing.
-    sw_asset_sets: dict = {}
-    cursor = db.software_inventory.find(
+    # Findings/vulnerabilities routinely name the affected product in their title
+    # (scanner convention, not this app's own data) or, for SBOM-sourced findings,
+    # in component_name -- this is the source that makes "software vulnerabilities
+    # imply a vendor" actually work, not just hardware/OS presence.
+    findings_cursor = db.findings.find({}, {"_id": 0, "title": 1, "component_name": 1, "asset_id": 1})
+    async for f in findings_cursor:
+        haystack = f"{f.get('title') or ''} {f.get('component_name') or ''}".lower()
+        for needle, vendor_name in SOFTWARE_VENDOR_KEYWORDS:
+            if needle in haystack:
+                _add(vendor_name, "Software", f.get("asset_id"), "finding_title")
+
+    # Real per-asset installed-software vendors (Defender for Endpoint). asset_id is
+    # only set on defender_device rows (per-machine); defender_org rows (asset_id=
+    # None, the org-wide software list) are deliberately excluded here -- an
+    # asset_count needs real per-asset backing to mean anything.
+    sw_cursor = db.software_inventory.find(
         {"source": "defender_device", "asset_id": {"$ne": None}},
         {"_id": 0, "vendor": 1, "asset_id": 1},
     )
-    async for row in cursor:
-        vendor = (row.get("vendor") or "").strip()
-        if not vendor or vendor.lower() in existing_terms:
-            continue
-        sw_asset_sets.setdefault(vendor, set()).add(row["asset_id"])
+    async for row in sw_cursor:
+        _add(row.get("vendor"), "Software", row.get("asset_id"), "edr_software_inventory")
 
     suggestions = [
-        {"name": name, "category": "Hardware", "source": "asset_hardware_info", "asset_count": count}
-        for name, count in hw_counts.items()
-    ] + [
-        {"name": name, "category": "Software", "source": "asset_os", "asset_count": count}
-        for name, count in os_counts.items()
-    ] + [
-        {"name": name, "category": "Software", "source": "edr_software_inventory", "asset_count": len(ids)}
-        for name, ids in sw_asset_sets.items()
+        {"name": name, "category": v["category"], "source": "/".join(sorted(v["sources"])), "asset_count": len(v["asset_ids"])}
+        for name, v in candidates.items()
+        if v["asset_ids"]  # a candidate with zero real linked assets (e.g. an
+                            # asset-less SBOM upload's component_name match) isn't
+                            # something worth putting in front of a human to approve
     ]
     suggestions.sort(key=lambda s: -s["asset_count"])
     return suggestions
 
 
-async def _linked_assets(db, vendor: dict) -> list:
+async def _linked_assets(db, vendor: dict) -> tuple:
+    """Returns (assets, structural_asset_ids). structural_asset_ids is the subset of
+    linked asset ids where the WHOLE asset genuinely belongs to / runs this vendor's
+    product (hardware_info/os/hostname match, or real per-device EDR software
+    inventory) -- for those, it's fair to attribute every finding on the asset to
+    this vendor's risk surface. Assets linked ONLY via a single matching finding
+    title (see below) are deliberately excluded from structural_asset_ids: an asset
+    that happens to have one Adobe finding among many unrelated ones doesn't mean
+    every other finding on it is Adobe's problem too. _linked_findings uses this
+    distinction to avoid over-attributing unrelated findings to a vendor that was
+    only ever linked to an asset through one specific finding."""
     terms = [vendor.get("name")] + (vendor.get("match_terms") or [])
     terms = [t for t in terms if t]
     if not terms:
-        return []
+        return [], []
     ors = []
     for t in terms:
         ors.append({"hardware_info": {"$regex": t, "$options": "i"}})
@@ -178,16 +251,34 @@ async def _linked_assets(db, vendor: dict) -> list:
     # picks up assets running this vendor's software even when nothing about the
     # asset's hardware_info/os/hostname happens to match, which is exactly the
     # precision gap the substring approach above can't close on its own.
-    matched_ids = {a["id"] for a in assets}
+    structural_ids = {a["id"] for a in assets}
     sw_ors = [{"vendor": {"$regex": t, "$options": "i"}} for t in terms]
     sw_rows = await db.software_inventory.find(
         {"source": "defender_device", "asset_id": {"$ne": None}, "$or": sw_ors},
         {"_id": 0, "asset_id": 1},
     ).to_list(5000)
-    extra_ids = {r["asset_id"] for r in sw_rows} - matched_ids
+    extra_ids = {r["asset_id"] for r in sw_rows} - structural_ids
     if extra_ids:
         assets += await db.assets.find({"id": {"$in": list(extra_ids)}}, {"_id": 0}).to_list(1000)
-    return assets
+        structural_ids |= extra_ids
+
+    # Finding-based linkage -- an asset with a finding whose title/component_name
+    # names this vendor (e.g. "Adobe Acrobat Reader DC Multiple Vulnerabilities") is
+    # a real, vulnerability-driven vendor relationship even when the asset's own
+    # hardware_info/os/hostname says nothing about it -- this is what makes a
+    # pure-software vendor detected via suggest_vendors() (see SOFTWARE_VENDOR_
+    # KEYWORDS) show a non-zero asset_count once approved, instead of contradicting
+    # the very detection that suggested it in the first place. NOT added to
+    # structural_ids -- see docstring above.
+    finding_ors = []
+    for t in terms:
+        finding_ors.append({"title": {"$regex": t, "$options": "i"}})
+        finding_ors.append({"component_name": {"$regex": t, "$options": "i"}})
+    finding_asset_ids = await db.findings.distinct("asset_id", {"$or": finding_ors, "asset_id": {"$ne": None}})
+    extra_finding_ids = set(finding_asset_ids) - structural_ids
+    if extra_finding_ids:
+        assets += await db.assets.find({"id": {"$in": list(extra_finding_ids)}}, {"_id": 0}).to_list(1000)
+    return assets, sorted(structural_ids)
 
 
 async def _linked_findings(db, vendor: dict, asset_ids: list) -> list:
@@ -233,9 +324,8 @@ async def compute_vendor_risk(db, vendor: dict) -> dict:
     exact scoring engine routes.risk_register already uses (imported lazily to
     avoid a hard import-order dependency between the two route modules)."""
     from routes.risk_register import _score, _band
-    assets = await _linked_assets(db, vendor)
-    asset_ids = [a["id"] for a in assets]
-    findings = await _linked_findings(db, vendor, asset_ids)
+    assets, structural_asset_ids = await _linked_assets(db, vendor)
+    findings = await _linked_findings(db, vendor, structural_asset_ids)
     likelihood = _inherent_likelihood(findings)
     impact = vendor.get("org_criticality") or 3
     score = _score(likelihood, impact)
@@ -375,7 +465,8 @@ async def get_vendor_risk_history(db, vendor_id: str, days: int = 180) -> list:
 
 
 async def scan_vendor_candidates(db) -> dict:
-    """Runs suggest_vendors() (asset hardware_info/os detection) and upserts each
+    """Runs suggest_vendors() (asset hardware_info/os, finding/vulnerability titles,
+    SBOM component_name, and real EDR software inventory when configured) and upserts each
     hit into db.vendor_candidates as a pending approval -- the actual approve/deny
     queue this drives, rather than the old "select checkboxes and instantly create
     vendors" flow. A prior denial is remembered and excluded from future scans
