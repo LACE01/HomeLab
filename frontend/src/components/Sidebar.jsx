@@ -1,4 +1,4 @@
-import { useState, Children, isValidElement } from "react";
+import { useState, useRef, useEffect, Children, isValidElement } from "react";
 import { NavLink, useNavigate, Link } from "react-router-dom";
 import { useAuth } from "@/lib/auth";
 import {
@@ -57,15 +57,34 @@ const Group = ({ title, children, collapsed, onToggle }) => {
   );
 };
 
+// Every page renders its own <Layout> -> <Sidebar>, so React Router unmounts and
+// remounts a brand-new Sidebar instance on every navigation (there's no single
+// persistent shell wrapping all routes) -- a plain React ref/state scroll position
+// can't survive that remount on its own, which is why clicking a nav item used to
+// snap the list back to the top even when you were scrolled deep into e.g.
+// Administration. SCROLL_KEY persists the last scroll offset in sessionStorage
+// (survives remounts within the tab, cleared when the tab closes -- this is
+// transient UI state, not a durable preference like the collapsed-groups setting
+// below, which intentionally uses localStorage instead) and restores it the instant
+// the new Sidebar mounts.
+const SCROLL_KEY = "vulnops_sidebar_scroll";
+
 export default function Sidebar() {
   const { user, logout } = useAuth();
   const nav = useNavigate();
   const [collapsed, setCollapsed] = useState(loadCollapsed());
+  const navRef = useRef(null);
   const toggleGroup = (key) => setCollapsed(prev => {
     const next = { ...prev, [key]: !prev[key] };
     localStorage.setItem(COLLAPSE_KEY, JSON.stringify(next));
     return next;
   });
+
+  useEffect(() => {
+    const saved = sessionStorage.getItem(SCROLL_KEY);
+    if (saved && navRef.current) navRef.current.scrollTop = parseInt(saved, 10) || 0;
+  }, []);
+
   return (
     <aside data-testid="sidebar" className="w-60 shrink-0 bg-[#0D1117] border-r border-[#30363D] flex flex-col h-screen sticky top-0">
       <div className="px-4 py-4 border-b border-[#30363D] flex items-center gap-2">
@@ -76,7 +95,7 @@ export default function Sidebar() {
         </div>
       </div>
 
-      <nav className="flex-1 overflow-y-auto py-3 px-2">
+      <nav ref={navRef} onScroll={(e) => sessionStorage.setItem(SCROLL_KEY, String(e.currentTarget.scrollTop))} className="flex-1 overflow-y-auto py-3 px-2">
         <Group title="Overview" collapsed={!!collapsed["Overview"]} onToggle={()=>toggleGroup("Overview")}>
           <NavItem to="/" icon={ChartLineUp} label="Dashboard" testid="nav-dashboard" />
           <NavItem to="/soc" icon={Gauge} label="SOC Overview" testid="nav-soc" />
@@ -130,6 +149,7 @@ export default function Sidebar() {
         </Group>
         <Group title="Administration" collapsed={!!collapsed["Administration"]} onToggle={()=>toggleGroup("Administration")}>
           <NavItem to="/admin" icon={GearSix} label="Admin" testid="nav-admin" />
+          <NavItem to="/admin/settings" icon={GearSix} label="Settings" testid="nav-settings" />
           <NavItem to="/admin/users" icon={UsersThree} label="Users" testid="nav-users" />
           <NavItem to="/admin/teams" icon={UsersThree} label="Teams" testid="nav-teams" />
           <NavItem to="/admin/notifications" icon={Bell} label="Notifications" testid="nav-notifications" />

@@ -8,7 +8,7 @@ import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell,
 } from "recharts";
 import {
-  Plus, X, Sparkle, Trash, CheckSquare, Square, MagnifyingGlass, Buildings, CalendarBlank, Warning,
+  Plus, X, Sparkle, Trash, CheckSquare, Square, MagnifyingGlass, Buildings, CalendarBlank, Warning, ArrowsClockwise,
 } from "@phosphor-icons/react";
 
 const BAND_CHIP = { Critical: "red", High: "orange", Medium: "amber", Low: "blue" };
@@ -309,6 +309,7 @@ export default function VendorManagement() {
   const [q, setQ] = useState("");
   const [showNew, setShowNew] = useState(false);
   const [showApprovalQueue, setShowApprovalQueue] = useState(false);
+  const [recomputing, setRecomputing] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [renewals, setRenewals] = useState([]);
 
@@ -335,6 +336,17 @@ export default function VendorManagement() {
   useEffect(() => { loadItems(); }, [category, status, band, q]);
 
   const refreshAll = () => { loadMeta(); loadItems(); };
+
+  const recomputeRisk = async () => {
+    setRecomputing(true);
+    try {
+      const r = await api.post("/v1/vendors/recompute-risk");
+      toast.success(`Refreshed risk for ${r.data.vendors_refreshed} vendor(s).`);
+      refreshAll();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Recompute failed");
+    } finally { setRecomputing(false); }
+  };
 
   const toggleSelect = (id) => {
     setSelectedIds(prev => {
@@ -370,6 +382,11 @@ export default function VendorManagement() {
           <button onClick={() => setShowApprovalQueue(true)}
             className="h-8 px-3 text-[12px] border border-amber-500/30 hover:bg-amber-500/10 text-amber-300 rounded inline-flex items-center gap-1.5">
             <Sparkle size={14} /> Approval queue
+          </button>
+          <button onClick={recomputeRisk} disabled={recomputing}
+            title="Refresh every vendor's cached risk score/asset count/finding count right now, instead of waiting for the nightly sweep"
+            className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] text-slate-300 rounded inline-flex items-center gap-1.5 disabled:opacity-50">
+            <ArrowsClockwise size={14} className={recomputing ? "animate-spin" : ""} /> {recomputing ? "Recomputing…" : "Recompute risk"}
           </button>
           <button onClick={() => setShowNew(true)}
             className="h-8 px-3 text-[12px] bg-blue-500/15 border border-blue-500/40 hover:bg-blue-500/25 text-blue-300 rounded inline-flex items-center gap-1.5">

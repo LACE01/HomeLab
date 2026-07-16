@@ -445,6 +445,18 @@ async def threat_intel_loop(db, interval_hours: int = 12):
         except Exception as e:
             logger.exception(f"Exploit-DB sync failed: {e}")
             ok, detail["exploitdb_error"] = False, str(e)
+        try:
+            from feature_flags import is_enabled
+            if await is_enabled(db, "security_news_nightly_sync"):
+                from security_news import sync_security_news
+                news_result = await sync_security_news(db)
+                logger.info(f"Security news sync: {news_result}")
+                detail["security_news"] = news_result
+            else:
+                detail["security_news"] = "skipped (disabled in Settings)"
+        except Exception as e:
+            logger.exception(f"Security news sync failed: {e}")
+            ok, detail["security_news_error"] = False, str(e)
         await record_heartbeat(db, "threat_intel_loop", "ok" if ok else "error", detail)
         await asyncio.sleep(interval_hours * 3600)
 
@@ -516,10 +528,14 @@ async def nightly_loop(db, interval_hours: int = 24):
             logger.exception(f"Patch completion sweep failed: {e}")
             ok, detail["patch_completions_error"] = False, str(e)
         try:
-            from albert_allowlist import check_allowlist_reviews
-            allowlist_result = await check_allowlist_reviews(db)
-            logger.info(f"Albert allowlist review check: {allowlist_result}")
-            detail["albert_allowlist_reviews"] = allowlist_result
+            from feature_flags import is_enabled
+            if await is_enabled(db, "albert_allowlist_nightly_review"):
+                from albert_allowlist import check_allowlist_reviews
+                allowlist_result = await check_allowlist_reviews(db)
+                logger.info(f"Albert allowlist review check: {allowlist_result}")
+                detail["albert_allowlist_reviews"] = allowlist_result
+            else:
+                detail["albert_allowlist_reviews"] = "skipped (disabled in Settings)"
         except Exception as e:
             logger.exception(f"Albert allowlist review check failed: {e}")
             ok, detail["albert_allowlist_reviews_error"] = False, str(e)
@@ -540,10 +556,14 @@ async def nightly_loop(db, interval_hours: int = 24):
             logger.exception(f"Vendor risk history snapshot failed: {e}")
             ok, detail["vendor_risk_snapshot_error"] = False, str(e)
         try:
-            from hibp_domain import sync_hibp_domain_breaches
-            hibp_result = await sync_hibp_domain_breaches(db)
-            logger.info(f"HaveIBeenPwned domain sync: {hibp_result}")
-            detail["hibp_domain"] = hibp_result
+            from feature_flags import is_enabled
+            if await is_enabled(db, "hibp_domain_nightly_sync"):
+                from hibp_domain import sync_hibp_domain_breaches
+                hibp_result = await sync_hibp_domain_breaches(db)
+                logger.info(f"HaveIBeenPwned domain sync: {hibp_result}")
+                detail["hibp_domain"] = hibp_result
+            else:
+                detail["hibp_domain"] = "skipped (disabled in Settings)"
         except Exception as e:
             # Not configured yet / domain not verified is the expected steady state
             # on a fresh install -- logged at info, not exception, to avoid a scary

@@ -66,7 +66,10 @@ def _parse_ts(ts: str):
 async def check_login_signals(db, user_id: str, email: str, ip: str, timestamp: str) -> None:
     """Run once, right after a login fully completes. Never raises."""
     from security_events import emit_event
+    from feature_flags import is_enabled
     try:
+        if not await is_enabled(db, "ueba_login_anomaly_detection"):
+            return
         recent = await db.login_audit.find(
             {"user_id": user_id, "success": True}, {"_id": 0, "ip": 1, "timestamp": 1},
         ).sort("timestamp", -1).limit(20).to_list(20)

@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip, RiskBar, SevBadge } from "@/components/Badges";
+import { fmtRel } from "@/lib/utils-fmt";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell,
   LineChart, Line,
@@ -11,6 +12,7 @@ import {
 import {
   ArrowLeft, PencilSimple, Trash, HardDrive, Warning,
   ArrowsClockwise, CheckCircle, XCircle, MinusCircle, Globe, FloppyDisk, X, CalendarBlank,
+  Newspaper, ArrowSquareOut,
 } from "@phosphor-icons/react";
 
 const BAND_CHIP = { Critical: "red", High: "orange", Medium: "amber", Low: "blue" };
@@ -239,6 +241,29 @@ export default function VendorDetail() {
               )}
             </>
           )}
+          <div className={vendor.domain ? "mt-3 pt-3 border-t border-[#30363D]" : ""}>
+            <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider mb-1.5 flex items-center gap-1.5">
+              <Newspaper size={12} /> Recent Security News
+            </div>
+            {(vendor.news || []).length === 0 ? (
+              <div className="text-[11px] text-slate-500">
+                No recent mentions found in BleepingComputer, Krebs on Security, The Hacker News, Dark Reading, or SecurityWeek's last 6 months of coverage.
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {vendor.news.slice(0, 5).map((n, i) => (
+                  <a key={i} href={n.link} target="_blank" rel="noopener noreferrer"
+                    className="block px-2 py-1.5 rounded border border-[#30363D] hover:border-blue-500/40 hover:bg-blue-500/5 group">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="text-[11.5px] text-slate-300 group-hover:text-blue-300 leading-snug">{n.title}</div>
+                      <ArrowSquareOut size={11} className="text-slate-600 group-hover:text-blue-300 shrink-0 mt-0.5" />
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-0.5">{n.source} &middot; {fmtRel(n.published_at)}</div>
+                  </a>
+                ))}
+              </div>
+            )}
+          </div>
         </Panel>
       </div>
 

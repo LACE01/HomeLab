@@ -58,6 +58,7 @@ from routes.albert import router as albert_router
 from routes.risk_register import router as risk_register_router
 from routes.vendors import router as vendors_router
 from routes.directory import router as directory_router
+from routes.settings import router as settings_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("vulnops")
@@ -106,6 +107,7 @@ api.include_router(ticketing_router)
 api.include_router(incident_response_router)
 api.include_router(vendors_router)
 api.include_router(directory_router)
+api.include_router(settings_router)
 
 
 @api.get("/")

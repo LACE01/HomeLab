@@ -867,6 +867,19 @@ async def trigger_exploitdb(user: dict = Depends(require_role("admin"))):
     return await sync_exploitdb(db)
 
 
+@router.post("/v1/admin/enrich/security-news")
+async def trigger_security_news(user: dict = Depends(require_role("admin"))):
+    from security_news import sync_security_news
+    return await sync_security_news(db)
+
+
+@router.get("/v1/admin/security-news/status")
+async def security_news_status(user: dict = Depends(require_role("admin"))):
+    total = await db.security_news_articles.count_documents({})
+    latest = await db.security_news_articles.find_one({}, {"_id": 0, "synced_at": 1}, sort=[("synced_at", -1)])
+    return {"articles_cached": total, "last_synced_at": (latest or {}).get("synced_at")}
+
+
 @router.get("/v1/admin/exploitdb/status")
 async def exploitdb_status(user: dict = Depends(require_role("admin"))):
     catalog_size = await db.exploitdb_catalog.count_documents({})

@@ -182,37 +182,48 @@ async def suggest_vendors(db) -> list:
         if category == "Hardware":
             entry["category"] = "Hardware"  # hardware presence always wins the displayed category
 
-    assets = await db.assets.find({}, {"_id": 0, "id": 1, "hardware_info": 1, "os": 1}).to_list(50000)
-    for a in assets:
-        hw = _first_token(a.get("hardware_info"))
-        if hw:
-            _add(hw, "Hardware", a.get("id"), "asset_hardware_info")
-        os_text = (a.get("os") or "").lower()
-        for needle, vendor_name in OS_VENDOR_MAP:
-            if needle in os_text:
-                _add(vendor_name, "Software", a.get("id"), "asset_os")
+    from feature_flags import is_enabled
+    detect_hw = await is_enabled(db, "vendor_detect_hardware")
+    detect_os = await is_enabled(db, "vendor_detect_os")
+    detect_findings = await is_enabled(db, "vendor_detect_findings")
+    detect_edr = await is_enabled(db, "vendor_detect_edr_software")
+
+    if detect_hw or detect_os:
+        assets = await db.assets.find({}, {"_id": 0, "id": 1, "hardware_info": 1, "os": 1}).to_list(50000)
+        for a in assets:
+            if detect_hw:
+                hw = _first_token(a.get("hardware_info"))
+                if hw:
+                    _add(hw, "Hardware", a.get("id"), "asset_hardware_info")
+            if detect_os:
+                os_text = (a.get("os") or "").lower()
+                for needle, vendor_name in OS_VENDOR_MAP:
+                    if needle in os_text:
+                        _add(vendor_name, "Software", a.get("id"), "asset_os")
 
     # Findings/vulnerabilities routinely name the affected product in their title
     # (scanner convention, not this app's own data) or, for SBOM-sourced findings,
     # in component_name -- this is the source that makes "software vulnerabilities
     # imply a vendor" actually work, not just hardware/OS presence.
-    findings_cursor = db.findings.find({}, {"_id": 0, "title": 1, "component_name": 1, "asset_id": 1})
-    async for f in findings_cursor:
-        haystack = f"{f.get('title') or ''} {f.get('component_name') or ''}".lower()
-        for needle, vendor_name in SOFTWARE_VENDOR_KEYWORDS:
-            if needle in haystack:
-                _add(vendor_name, "Software", f.get("asset_id"), "finding_title")
+    if detect_findings:
+        findings_cursor = db.findings.find({}, {"_id": 0, "title": 1, "component_name": 1, "asset_id": 1})
+        async for f in findings_cursor:
+            haystack = f"{f.get('title') or ''} {f.get('component_name') or ''}".lower()
+            for needle, vendor_name in SOFTWARE_VENDOR_KEYWORDS:
+                if needle in haystack:
+                    _add(vendor_name, "Software", f.get("asset_id"), "finding_title")
 
     # Real per-asset installed-software vendors (Defender for Endpoint). asset_id is
     # only set on defender_device rows (per-machine); defender_org rows (asset_id=
     # None, the org-wide software list) are deliberately excluded here -- an
     # asset_count needs real per-asset backing to mean anything.
-    sw_cursor = db.software_inventory.find(
-        {"source": "defender_device", "asset_id": {"$ne": None}},
-        {"_id": 0, "vendor": 1, "asset_id": 1},
-    )
-    async for row in sw_cursor:
-        _add(row.get("vendor"), "Software", row.get("asset_id"), "edr_software_inventory")
+    if detect_edr:
+        sw_cursor = db.software_inventory.find(
+            {"source": "defender_device", "asset_id": {"$ne": None}},
+            {"_id": 0, "vendor": 1, "asset_id": 1},
+        )
+        async for row in sw_cursor:
+            _add(row.get("vendor"), "Software", row.get("asset_id"), "edr_software_inventory")
 
     suggestions = [
         {"name": name, "category": v["category"], "source": "/".join(sorted(v["sources"])), "asset_count": len(v["asset_ids"])}
@@ -441,7 +452,7 @@ async def snapshot_vendor_risk_history(db) -> dict:
     vendors = await db.vendors.find({}, {"_id": 0}).to_list(2000)
     written = 0
     for v in vendors:
-        risk = await compute_vendor_risk(db, v)
+        risk = await refresh_vendor_risk_cache(db, v)
         await db.vendor_risk_history.update_one(
             {"vendor_id": v["id"], "date": today},
             {"$set": {
@@ -462,6 +473,30 @@ async def get_vendor_risk_history(db, vendor_id: str, days: int = 180) -> list:
         {"vendor_id": vendor_id, "date": {"$gte": since}}, {"_id": 0}
     ).sort("date", 1).to_list(2000)
     return items
+
+
+async def refresh_vendor_risk_cache(db, vendor: dict) -> dict:
+    """Computes this vendor's risk live and persists the result onto the vendor
+    document as `risk_cache`, so list/summary views (list_vendors, vendor_stats) can
+    read a cheap precomputed number instead of re-running the full asset/finding
+    scan for every vendor on every page load. At real-world scale (hundreds of
+    linked assets, thousands of linked findings for a vendor like "Microsoft") that
+    scan is expensive enough on its own, and list_vendors/vendor_stats were EACH
+    independently re-running it per vendor -- doubling the cost for zero benefit,
+    since both endpoints load together when the Vendor & Third-Party Risk page opens.
+    The single-vendor detail view (GET /v1/vendors/{id}) still computes and returns
+    a fully live value on every call (that's the one place "authoritative, this
+    exact second" actually matters) -- it just also writes the same result here as
+    a side effect, so the list view reflects it immediately afterward instead of
+    waiting for the next nightly sweep."""
+    risk = await compute_vendor_risk(db, vendor)
+    cache = {
+        "asset_count": risk["asset_count"], "finding_count": risk["finding_count"],
+        "severity_counts": risk["severity_counts"], "risk_score": risk["risk_score"],
+        "risk_band": risk["risk_band"], "computed_at": _now_iso(),
+    }
+    await db.vendors.update_one({"id": vendor["id"]}, {"$set": {"risk_cache": cache}})
+    return risk
 
 
 async def scan_vendor_candidates(db) -> dict:

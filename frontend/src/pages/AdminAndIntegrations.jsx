@@ -60,14 +60,23 @@ export function Integrations() {
   const [qualysScope, setQualysScope] = useState(null);
   const [tiStatus, setTiStatus] = useState(null);
   const [tiSyncing, setTiSyncing] = useState(null);
+  const [newsStatus, setNewsStatus] = useState(null);
   const load = () => api.get("/v1/integrations").then(r => setItems(r.data.items));
   const loadScope = () => api.get("/v1/admin/qualys/scope").then(r => setQualysScope(r.data)).catch(() => setQualysScope(null));
   const loadTi = () => api.get("/v1/admin/threat-intel/status").then(r => setTiStatus(r.data)).catch(() => setTiStatus(null));
-  useEffect(() => { load(); loadScope(); loadTi(); }, []);
+  const loadNews = () => api.get("/v1/admin/security-news/status").then(r => setNewsStatus(r.data)).catch(() => setNewsStatus(null));
+  useEffect(() => { load(); loadScope(); loadTi(); loadNews(); }, []);
 
   const syncFeed = async (feed) => {
     setTiSyncing(feed);
     try {
+      if (feed === "security-news") {
+        const r = await api.post(`/v1/admin/enrich/security-news`);
+        toast.success(`Security news: +${r.data.articles_created} new article(s) from ${r.data.feeds_checked} feed(s).`);
+        if (r.data.errors?.length) toast(`${r.data.errors.length} feed(s) had issues: ${r.data.errors[0]}`, { duration: 8000 });
+        await loadNews();
+        return;
+      }
       const r = await api.post(`/v1/admin/enrich/${feed}`);
       if (r.data.status === "failed") toast.error(`${feed.toUpperCase()} sync failed: ${r.data.error || "unknown error"}`);
       else toast.success(`${feed.toUpperCase()} sync complete.`);
@@ -254,7 +263,7 @@ export function Integrations() {
             </div>
           </div>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
           <div className="border border-[#30363D] rounded p-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5 text-[12.5px] text-slate-200"><ShieldCheck size={15} className="text-red-400"/> CISA KEV</div>
@@ -298,6 +307,18 @@ export function Integrations() {
               {tiStatus?.exploitdb?.catalog_cves ? ` · catalog: ${tiStatus.exploitdb.catalog_cves} CVEs` : ""}
             </div>
             {tiStatus?.exploitdb?.error && <div className="text-[10.5px] text-red-400 mt-1">{tiStatus.exploitdb.error}</div>}
+          </div>
+          <div className="border border-[#30363D] rounded p-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 text-[12.5px] text-slate-200"><Info size={15} className="text-blue-400"/> Security News</div>
+              <button disabled={tiSyncing==="security-news"} onClick={()=>syncFeed("security-news")}
+                className="h-6 px-2 text-[10.5px] border border-[#30363D] hover:border-emerald-500/50 hover:text-emerald-300 rounded disabled:opacity-50">
+                {tiSyncing==="security-news" ? "Syncing…" : "Sync now"}
+              </button>
+            </div>
+            <div className="text-[11px] text-slate-500 mt-2">
+              {newsStatus?.articles_cached ?? 0} article(s) cached from BleepingComputer/Krebs/THN/Dark Reading/SecurityWeek
+            </div>
           </div>
         </div>
       </div>

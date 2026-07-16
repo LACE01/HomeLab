@@ -14,10 +14,25 @@ from vendor_management import (
     CATEGORIES, MONITOR_MODULE_IDS, DPA_STATUSES, QUESTIONNAIRE_STATUSES, RENEWAL_WARN_DAYS,
     suggest_vendors, compute_vendor_risk, check_vendor_compromise, enable_vendor_monitoring,
     disable_vendor_monitoring, get_vendor_risk_history, scan_vendor_candidates,
-    deny_vendor_candidate, _clean, _log,
+    deny_vendor_candidate, refresh_vendor_risk_cache, _clean, _log,
 )
 
 router = APIRouter()
+
+
+async def _cached_risk(db, v: dict) -> dict:
+    """Reads the precomputed risk_cache off a vendor doc (kept fresh by the nightly
+    vendor-risk snapshot sweep and by every visit to that vendor's detail page --
+    see vendor_management.refresh_vendor_risk_cache) instead of recomputing the full
+    asset/finding scan live for every vendor on every list/stats page load. Falls
+    back to a live compute (and writes the cache while at it) for a vendor that's
+    never been cached yet -- brand new install, or a vendor created before this
+    cache existed -- so the list view is self-healing rather than ever showing
+    permanently-missing numbers."""
+    cache = v.get("risk_cache")
+    if cache:
+        return cache
+    return await refresh_vendor_risk_cache(db, v)
 
 
 class VendorBody(BaseModel):
@@ -205,7 +220,7 @@ async def list_vendors(category: Optional[str] = None, status: Optional[str] = N
     items = await db.vendors.find(flt, {"_id": 0}).sort("name", 1).to_list(2000)
     out = []
     for v in items:
-        risk = await compute_vendor_risk(db, v)
+        risk = await _cached_risk(db, v)
         if band and risk["risk_band"] != band:
             continue
         out.append({
@@ -223,7 +238,7 @@ async def vendor_stats(user: dict = Depends(require_module("/vendors"))):
     top_exposure = []
     for v in items:
         by_category[v["category"]] = by_category.get(v["category"], 0) + 1
-        risk = await compute_vendor_risk(db, v)
+        risk = await _cached_risk(db, v)
         by_band[risk["risk_band"]] = by_band.get(risk["risk_band"], 0) + 1
         crit_high = risk["severity_counts"].get("Critical", 0) + risk["severity_counts"].get("High", 0)
         if crit_high > 0:
@@ -233,6 +248,21 @@ async def vendor_stats(user: dict = Depends(require_module("/vendors"))):
         "total_vendors": len(items), "by_category": by_category, "by_band": by_band,
         "top_exposure": top_exposure[:10],
     }
+
+
+@router.post("/v1/vendors/recompute-risk")
+async def recompute_vendor_risk(user: dict = Depends(require_module("/vendors", level="edit"))):
+    """On-demand bulk cache warm -- lets an admin get every vendor's risk_cache up
+    to date right now instead of waiting for the next nightly sweep (useful right
+    after bulk-approving candidates, editing several vendors' match_terms, or just
+    the first time this cache exists on an install that's had vendors sitting
+    around uncached). The list/stats pages self-heal a missing cache automatically
+    on their own, so this is a convenience/speed lever, not something required for
+    correctness."""
+    vendors = await db.vendors.find({}, {"_id": 0}).to_list(2000)
+    for v in vendors:
+        await refresh_vendor_risk_cache(db, v)
+    return {"ok": True, "vendors_refreshed": len(vendors)}
 
 
 @router.get("/v1/vendors/renewals")
@@ -270,11 +300,13 @@ async def get_vendor(vendor_id: str, user: dict = Depends(require_module("/vendo
     v = await db.vendors.find_one({"id": vendor_id}, {"_id": 0})
     if not v:
         raise HTTPException(404, "Vendor not found")
-    risk = await compute_vendor_risk(db, v)
+    risk = await refresh_vendor_risk_cache(db, v)
     exposure = []
     if v.get("domain"):
         exposure = await db.osint_findings.find({"target": v["domain"]}, {"_id": 0}).sort("found_at", -1).to_list(200)
-    return {**v, **risk, "exposure": exposure}
+    from security_news import get_vendor_news
+    news = await get_vendor_news(db, v["name"], v.get("match_terms"))
+    return {**v, **risk, "exposure": exposure, "news": news}
 
 
 @router.patch("/v1/vendors/{vendor_id}")
@@ -299,7 +331,13 @@ async def update_vendor(vendor_id: str, body: VendorUpdateBody, user: dict = Dep
     updates["updated_at"] = now_iso()
     await db.vendors.update_one({"id": vendor_id}, {"$set": updates})
     await _log(db, "updated", vendor_id, user["email"], f"Updated: {', '.join(k for k in updates if k != 'updated_at')}")
-    return {**v, **updates}
+    merged = {**v, **updates}
+    # match_terms/domain/org_criticality all change WHAT gets linked or how it's
+    # scored -- refresh the risk cache now rather than leaving the list view showing
+    # stale numbers (computed under the old match_terms) until the next nightly sweep.
+    if {"match_terms", "domain", "org_criticality", "name"} & updates.keys():
+        await refresh_vendor_risk_cache(db, merged)
+    return merged
 
 
 @router.delete("/v1/vendors/{vendor_id}")
