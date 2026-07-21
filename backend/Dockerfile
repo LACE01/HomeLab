@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxml-writer-perl \
     libnet-ssleay-perl \
     ca-certificates \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -34,6 +35,16 @@ RUN git clone --depth 1 https://github.com/lanmaster53/recon-ng.git /opt/recon-n
     && pip install --no-cache-dir -r /opt/recon-ng/REQUIREMENTS \
     && ln -s /opt/recon-ng/recon-cli /usr/local/bin/recon-cli \
     && ln -s /opt/recon-ng/recon-ng /usr/local/bin/recon-ng
+
+# Trivy -- used ONLY as an SBOM generator (`trivy image --format cyclonedx`) for
+# container image scanning, never in its full CVE-scanning mode. That mode needs
+# its own multi-hundred-MB vulnerability database mirrored inside the container,
+# which is exactly what backend/sbom.py's own docstring explains this app avoids
+# by querying OSV.dev directly instead -- see backend/container_scan.py for the
+# full reasoning. Installed via Trivy's official install script (no separate DB
+# download happens at build time or at SBOM-generation time).
+RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+    | sh -s -- -b /usr/local/bin
 
 COPY . .
 

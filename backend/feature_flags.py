@@ -53,6 +53,9 @@ FLAG_REGISTRY = [
     {"key": "eol_nightly_check", "group": "Scheduled Syncs", "default": True,
      "label": "Nightly end-of-life software check",
      "description": "Automatically re-checks every watched product/cycle against endoflife.date once a day and raises/clears findings on change."},
+    {"key": "container_image_nightly_scan", "group": "Scheduled Syncs", "default": True,
+     "label": "Nightly container image scan",
+     "description": "Automatically re-scans every watched container image once a day (new CVEs get published against unchanged image tags constantly) and raises/clears findings on change."},
 ]
 FLAG_KEYS = {f["key"] for f in FLAG_REGISTRY}
 FLAG_BY_KEY = {f["key"]: f for f in FLAG_REGISTRY}

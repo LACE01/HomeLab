@@ -147,7 +147,13 @@ def _extract_cve(vuln: dict) -> str | None:
 
 
 async def import_sbom(db, content: bytes, filename: str = "", label: str | None = None,
-                       asset_id: str | None = None) -> dict:
+                       asset_id: str | None = None, source_tool: str = "SBOM / OSV.dev",
+                       detection_channel: str = "SBOM upload") -> dict:
+    """source_tool/detection_channel default to the manual-upload labels but can be
+    overridden -- container_scan.py reuses this exact pipeline for Trivy-generated
+    image SBOMs and passes its own labels so those findings read as "Container Image
+    Scan" rather than a generic upload, without duplicating any of the parsing/OSV
+    lookup/finding-dedup logic below."""
     components = parse_sbom(content)
 
     # Check each unique dependency against the threat intel watchlist's malicious-
@@ -204,8 +210,8 @@ async def import_sbom(db, content: bytes, filename: str = "", label: str | None 
                 "description": (vuln.get("summary") or vuln.get("details") or
                                  f"Known vulnerability {vid} in {comp['ecosystem']} package {comp['name']} {comp['version']}")[:2000],
                 "severity": severity, "status": "New", "cve": cve,
-                "source_tool": "SBOM / OSV.dev", "source_tool_type": "Software Composition Analysis",
-                "detection_channel": "SBOM upload",
+                "source_tool": source_tool, "source_tool_type": "Software Composition Analysis",
+                "detection_channel": detection_channel,
                 "asset_id": asset_id, "asset_hostname": source_label,
                 "asset_ip": (asset or {}).get("ip"), "asset_criticality": (asset or {}).get("criticality"),
                 "asset_exposure": (asset or {}).get("exposure"),
