@@ -38,6 +38,15 @@ FLAG_REGISTRY = [
     {"key": "ueba_login_anomaly_detection", "group": "Detection Behaviors", "default": True,
      "label": "Login anomaly detection (UEBA)",
      "description": "Flags a new IP, new country, or impossible-travel pattern on a user's login to this app."},
+    {"key": "auto_hash_virustotal_check", "group": "Detection Behaviors", "default": True,
+     "label": "Automatic VirusTotal hash reputation checks",
+     "description": "Automatically checks every YARA-scanned file's hash against VirusTotal (in addition to your local rules and IOC watchlist) and runs a small nightly backlog sweep for hashes scanned before VirusTotal was configured."},
+    {"key": "hibp_stealer_log_nightly_sync", "group": "Scheduled Syncs", "default": True,
+     "label": "Nightly HaveIBeenPwned stealer-log check",
+     "description": "Automatically checks your org's verified domain for stealer-log-exposed credentials every night, when HaveIBeenPwned is configured."},
+    {"key": "scheduled_report_delivery", "group": "Scheduled Syncs", "default": True,
+     "label": "Scheduled report delivery",
+     "description": "Sends any reports configured under Admin -> Reports on their configured schedule (daily/weekly/monthly). Individual reports can still be paused independently."},
 ]
 FLAG_KEYS = {f["key"] for f in FLAG_REGISTRY}
 FLAG_BY_KEY = {f["key"]: f for f in FLAG_REGISTRY}

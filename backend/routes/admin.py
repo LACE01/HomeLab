@@ -880,6 +880,21 @@ async def security_news_status(user: dict = Depends(require_role("admin"))):
     return {"articles_cached": total, "last_synced_at": (latest or {}).get("synced_at")}
 
 
+@router.post("/v1/admin/enrich/hash-intel-backlog")
+async def trigger_hash_intel_backlog(user: dict = Depends(require_role("admin"))):
+    from hash_intel import auto_check_hash_backlog
+    return await auto_check_hash_backlog(db)
+
+
+@router.get("/v1/admin/hash-intel/status")
+async def hash_intel_status(user: dict = Depends(require_role("admin"))):
+    total_checked = await db.hash_intel_checks.count_documents({})
+    malicious = await db.hash_intel_checks.count_documents({"status": "malicious"})
+    latest = await db.hash_intel_checks.find_one({}, {"_id": 0, "checked_at": 1}, sort=[("checked_at", -1)])
+    return {"hashes_checked": total_checked, "malicious_hits": malicious,
+            "last_checked_at": (latest or {}).get("checked_at")}
+
+
 @router.get("/v1/admin/exploitdb/status")
 async def exploitdb_status(user: dict = Depends(require_role("admin"))):
     catalog_size = await db.exploitdb_catalog.count_documents({})

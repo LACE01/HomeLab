@@ -61,11 +61,13 @@ export function Integrations() {
   const [tiStatus, setTiStatus] = useState(null);
   const [tiSyncing, setTiSyncing] = useState(null);
   const [newsStatus, setNewsStatus] = useState(null);
+  const [hashIntelStatus, setHashIntelStatus] = useState(null);
   const load = () => api.get("/v1/integrations").then(r => setItems(r.data.items));
   const loadScope = () => api.get("/v1/admin/qualys/scope").then(r => setQualysScope(r.data)).catch(() => setQualysScope(null));
   const loadTi = () => api.get("/v1/admin/threat-intel/status").then(r => setTiStatus(r.data)).catch(() => setTiStatus(null));
   const loadNews = () => api.get("/v1/admin/security-news/status").then(r => setNewsStatus(r.data)).catch(() => setNewsStatus(null));
-  useEffect(() => { load(); loadScope(); loadTi(); loadNews(); }, []);
+  const loadHashIntel = () => api.get("/v1/admin/hash-intel/status").then(r => setHashIntelStatus(r.data)).catch(() => setHashIntelStatus(null));
+  useEffect(() => { load(); loadScope(); loadTi(); loadNews(); loadHashIntel(); }, []);
 
   const syncFeed = async (feed) => {
     setTiSyncing(feed);
@@ -75,6 +77,12 @@ export function Integrations() {
         toast.success(`Security news: +${r.data.articles_created} new article(s) from ${r.data.feeds_checked} feed(s).`);
         if (r.data.errors?.length) toast(`${r.data.errors.length} feed(s) had issues: ${r.data.errors[0]}`, { duration: 8000 });
         await loadNews();
+        return;
+      }
+      if (feed === "hash-intel-backlog") {
+        const r = await api.post(`/v1/admin/enrich/hash-intel-backlog`);
+        toast.success(`Hash intel: checked ${r.data.checked} hash(es) against VirusTotal (${r.data.candidates_seen} seen, ${r.data.already_checked} previously checked).`);
+        await loadHashIntel();
         return;
       }
       const r = await api.post(`/v1/admin/enrich/${feed}`);
@@ -263,7 +271,7 @@ export function Integrations() {
             </div>
           </div>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3">
           <div className="border border-[#30363D] rounded p-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5 text-[12.5px] text-slate-200"><ShieldCheck size={15} className="text-red-400"/> CISA KEV</div>
@@ -318,6 +326,21 @@ export function Integrations() {
             </div>
             <div className="text-[11px] text-slate-500 mt-2">
               {newsStatus?.articles_cached ?? 0} article(s) cached from BleepingComputer/Krebs/THN/Dark Reading/SecurityWeek
+            </div>
+          </div>
+          <div className="border border-[#30363D] rounded p-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 text-[12.5px] text-slate-200"><Bug size={15} className="text-red-400"/> Hash Intel (VirusTotal)</div>
+              <button disabled={tiSyncing==="hash-intel-backlog"} onClick={()=>syncFeed("hash-intel-backlog")}
+                className="h-6 px-2 text-[10.5px] border border-[#30363D] hover:border-emerald-500/50 hover:text-emerald-300 rounded disabled:opacity-50">
+                {tiSyncing==="hash-intel-backlog" ? "Syncing…" : "Check backlog"}
+              </button>
+            </div>
+            <div className="text-[11px] text-slate-500 mt-2">
+              {hashIntelStatus?.hashes_checked ?? 0} hash(es) checked · {hashIntelStatus?.malicious_hits ?? 0} malicious hit(s)
+            </div>
+            <div className="text-[10px] text-slate-600 mt-1">
+              Every YARA scan is auto-checked against VirusTotal as it happens — this button only sweeps older scans from before the hash was checked.
             </div>
           </div>
         </div>

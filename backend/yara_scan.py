@@ -169,6 +169,18 @@ async def run_yara_scan(db, filename: str, content: bytes, label: str | None = N
     await check_and_emit(db, sha256, entity_type="asset" if asset_id else "file",
                           entity_id=asset_id or sha256, entity_label=source_label)
 
+    # Also automatically check the hash against VirusTotal's live multi-engine
+    # reputation -- the local watchlist above only catches hashes someone has
+    # already seen and added/synced; this catches hashes VT itself already
+    # knows about even if this is the first time this app has ever seen them.
+    from feature_flags import is_enabled
+    hash_intel_result = None
+    if await is_enabled(db, "auto_hash_virustotal_check"):
+        from hash_intel import check_hash_virustotal
+        hash_intel_result = await check_hash_virustotal(
+            db, sha256, entity_type="asset" if asset_id else "file",
+            entity_id=asset_id or sha256, entity_label=source_label)
+
     if matches:
         from security_events import emit_event
         rule_names = ", ".join(sorted({m.get("rule_name", "unknown") for m in matches})[:5])
@@ -183,5 +195,5 @@ async def run_yara_scan(db, filename: str, content: bytes, label: str | None = N
         "id": record["id"], "filename": filename, "sha256": sha256,
         "rules_checked": len(compiled), "rules_broken": broken,
         "matched_rule_count": len(matches), "findings_created": findings_created,
-        "matches": matches,
+        "matches": matches, "virustotal": hash_intel_result,
     }

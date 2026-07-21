@@ -571,5 +571,32 @@ async def nightly_loop(db, interval_hours: int = 24):
             # up yet", same tolerance the other optional nightly jobs already get.
             logger.info(f"HaveIBeenPwned domain sync skipped/failed: {e}")
             detail["hibp_domain_error"] = str(e)
+        try:
+            from feature_flags import is_enabled
+            if await is_enabled(db, "hibp_stealer_log_nightly_sync"):
+                from hibp_domain import sync_hibp_stealer_logs
+                stealer_result = await sync_hibp_stealer_logs(db)
+                logger.info(f"HaveIBeenPwned stealer log sync: {stealer_result}")
+                detail["hibp_stealer_logs"] = stealer_result
+            else:
+                detail["hibp_stealer_logs"] = "skipped (disabled in Settings)"
+        except Exception as e:
+            # Same tolerance as the breach sync above -- not configured, domain not
+            # verified, or this subscription tier not including stealer logs are all
+            # expected steady states, not something to alarm on in the logs.
+            logger.info(f"HaveIBeenPwned stealer log sync skipped/failed: {e}")
+            detail["hibp_stealer_logs_error"] = str(e)
+        try:
+            from feature_flags import is_enabled
+            if await is_enabled(db, "auto_hash_virustotal_check"):
+                from hash_intel import auto_check_hash_backlog
+                hash_backlog_result = await auto_check_hash_backlog(db)
+                logger.info(f"Hash intel backlog sweep: {hash_backlog_result}")
+                detail["hash_intel_backlog"] = hash_backlog_result
+            else:
+                detail["hash_intel_backlog"] = "skipped (disabled in Settings)"
+        except Exception as e:
+            logger.info(f"Hash intel backlog sweep skipped/failed: {e}")
+            detail["hash_intel_backlog_error"] = str(e)
         await record_heartbeat(db, "nightly_loop", "ok" if ok else "error", detail)
         await asyncio.sleep(interval_hours * 3600)

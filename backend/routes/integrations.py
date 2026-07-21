@@ -228,8 +228,17 @@ async def _dispatch_sync(name: str, db):
         from intune_sync import sync_intune
         return await sync_intune(db)
     if name == "HaveIBeenPwned":
-        from hibp_domain import sync_hibp_domain_breaches
-        return await sync_hibp_domain_breaches(db)
+        from hibp_domain import sync_hibp_domain_breaches, sync_hibp_stealer_logs
+        breach_result = await sync_hibp_domain_breaches(db)
+        # Stealer logs are a separate, subscription-tier-gated HIBP entitlement --
+        # if this account's plan doesn't include them, don't let that failure hide
+        # the breach sync result that DID succeed above; report it alongside
+        # instead of raising.
+        try:
+            stealer_result = await sync_hibp_stealer_logs(db)
+        except Exception as e:
+            stealer_result = {"error": str(e)}
+        return {**breach_result, "stealer_logs": stealer_result}
     raise HTTPException(400, f"'{name}' doesn't have a sync job -- only Test (reachability) is available for it yet.")
 
 
