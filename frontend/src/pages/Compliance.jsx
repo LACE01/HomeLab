@@ -64,22 +64,35 @@ export default function Compliance() {
   if (!summary) return null;
 
   return (
-    <Layout title="Compliance Coverage" subtitle="CIS Controls v8, NIST CSF 2.0, ISO 27001:2022, and SOC 2 coverage across findings and live security capabilities">
+    <Layout title="Compliance Coverage" subtitle="CIS Controls v8, NIST CSF 2.0, ISO 27001:2022, SOC 2, and PCI-DSS v4.0 coverage across findings and live security capabilities">
       <div className="border border-blue-500/30 bg-blue-500/5 rounded-md px-3 py-2.5 mb-5 text-[12px] text-blue-200 leading-relaxed flex items-start gap-2 max-w-3xl">
         <Info size={15} className="shrink-0 mt-0.5"/>
         <div>{summary.methodology_note}</div>
       </div>
 
-      <div className="flex items-center justify-between mb-5">
-        <div className="border border-[#30363D] bg-[#0D1117] rounded-md px-5 py-4 inline-flex items-center gap-4">
-          <div>
-            <div className="text-[10px] uppercase tracking-wider font-mono text-slate-500">CIS Controls Coverage</div>
-            <div className="text-[28px] text-slate-100 font-mono mt-0.5">
-              {summary.coverage_pct != null ? `${summary.coverage_pct}%` : "—"}
+      <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="border border-[#30363D] bg-[#0D1117] rounded-md px-5 py-4 inline-flex items-center gap-4">
+            <div>
+              <div className="text-[10px] uppercase tracking-wider font-mono text-slate-500">CIS Controls Coverage</div>
+              <div className="text-[28px] text-slate-100 font-mono mt-0.5">
+                {summary.coverage_pct != null ? `${summary.coverage_pct}%` : "—"}
+              </div>
+            </div>
+            <div className="text-[11px] text-slate-500 max-w-[180px] leading-relaxed">
+              of mapped controls with no Critical/High severity findings currently open against them
             </div>
           </div>
-          <div className="text-[11px] text-slate-500 max-w-[220px] leading-relaxed">
-            of mapped controls with no Critical/High severity findings currently open against them
+          <div className="border border-purple-500/30 bg-[#0D1117] rounded-md px-5 py-4 inline-flex items-center gap-4">
+            <div>
+              <div className="text-[10px] uppercase tracking-wider font-mono text-slate-500">PCI-DSS v4.0 Coverage</div>
+              <div className="text-[28px] text-purple-300 font-mono mt-0.5">
+                {summary.pci_dss_coverage_pct != null ? `${summary.pci_dss_coverage_pct}%` : "—"}
+              </div>
+            </div>
+            <div className="text-[11px] text-slate-500 max-w-[180px] leading-relaxed">
+              of mapped requirements with no Critical/High severity findings currently open against them
+            </div>
           </div>
         </div>
         <button onClick={download} disabled={downloading}
@@ -141,10 +154,59 @@ export default function Compliance() {
         </div>
       </div>
 
+      {summary.pci_dss_requirements && (
+        <div className="border border-purple-500/20 bg-[#0D1117] rounded-md mt-5">
+          <div className="px-4 py-2 border-b border-[#30363D] flex items-center justify-between">
+            <h3 className="text-[11px] uppercase tracking-wider font-mono text-slate-400">PCI-DSS v4.0 Requirements</h3>
+            <span className="text-[10.5px] text-slate-600">Finding-based, same methodology as CIS Controls above</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 divide-[#30363D]">
+            {summary.pci_dss_requirements.map(c => {
+              const meta = STATUS_META[c.status] || STATUS_META.clean;
+              return (
+                <div key={c.id} onClick={() => openControl(c)}
+                  className={`px-4 py-3 border-b border-[#30363D] md:border-r md:odd:border-r ${c.total > 0 ? "cursor-pointer hover:bg-[#161B22] transition-colors" : ""}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <span className="text-[12px] font-mono text-slate-500">{c.id.replace("PCI-", "Req ")}</span>{" "}
+                      <span className="text-[12.5px] text-slate-200">{c.name}</span>
+                    </div>
+                    <span className={`text-[11px] font-mono ${meta.color}`}>{meta.label}</span>
+                  </div>
+                  {c.total > 0 && (
+                    <div className="flex items-center gap-2 mt-1.5">
+                      <div className="h-1.5 flex-1 bg-slate-800 rounded overflow-hidden flex">
+                        {c.critical > 0 && <div className="bg-red-500 h-full" style={{ width: `${100 * c.critical / c.total}%` }}/>}
+                        {c.high > 0 && <div className="bg-orange-500 h-full" style={{ width: `${100 * c.high / c.total}%` }}/>}
+                        {c.medium > 0 && <div className="bg-amber-500 h-full" style={{ width: `${100 * c.medium / c.total}%` }}/>}
+                        {c.low > 0 && <div className="bg-blue-500 h-full" style={{ width: `${100 * c.low / c.total}%` }}/>}
+                      </div>
+                      <span className="text-[10.5px] text-slate-500 font-mono shrink-0">{c.total} open</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {summary.unmapped_clean_pci_dss?.length > 0 && (
+            <div className="px-4 py-3 border-t border-[#30363D]">
+              <div className="text-[10.5px] text-slate-500 mb-1.5">No signal in this app for (not a gap, just unmeasurable here):</div>
+              <div className="flex flex-wrap gap-1.5">
+                {summary.unmapped_clean_pci_dss.map(c => (
+                  <span key={c.id} className="text-[10.5px] font-mono text-slate-500 border border-[#30363D] rounded px-1.5 py-0.5">
+                    {c.id.replace("PCI-", "Req ")} — {c.name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {summary.operational_controls && (
         <div className="border border-[#30363D] bg-[#0D1117] rounded-md mt-5">
           <div className="px-4 py-2 border-b border-[#30363D] flex items-center justify-between">
-            <h3 className="text-[11px] uppercase tracking-wider font-mono text-slate-400">ISO 27001:2022 / SOC 2 -- Operational Controls</h3>
+            <h3 className="text-[11px] uppercase tracking-wider font-mono text-slate-400">ISO 27001:2022 / SOC 2 / PCI-DSS -- Operational Controls</h3>
             <span className="text-[10.5px] text-slate-600">Capability &amp; usage based, not finding counts</span>
           </div>
           <div className="divide-y divide-[#30363D]">
@@ -158,6 +220,7 @@ export default function Compliance() {
                     <div className="text-[11px] text-slate-500 mt-0.5">{c.evidence}</div>
                     <div className="text-[10.5px] text-slate-600 font-mono mt-1">
                       ISO 27001: {c.iso27001.join(", ")} &middot; SOC 2: {c.soc2.join(", ")}
+                      {c.pci_dss?.length > 0 && <> &middot; PCI-DSS: {c.pci_dss.map(r => r.replace("PCI-", "Req ")).join(", ")}</>}
                     </div>
                   </div>
                   <span className={`text-[11px] font-mono shrink-0 inline-flex items-center gap-1 ${meta.color}`}>

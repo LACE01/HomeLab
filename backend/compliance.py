@@ -1,6 +1,8 @@
-"""Compliance framework coverage -- maps open findings to CIS Controls v8 and NIST
-CSF 2.0 so you have something more concrete than a raw finding count to hand to an
-auditor or use for prioritization.
+"""Compliance framework coverage -- maps open findings to CIS Controls v8, NIST
+CSF 2.0, and PCI-DSS v4.0 (finding-based), plus operational/capability controls to
+ISO 27001:2022 Annex A, SOC 2 Trust Services Criteria, and PCI-DSS v4.0
+(capability-based) -- so you have something more concrete than a raw finding count
+to hand to an auditor or use for prioritization.
 
 This is a heuristic classification (CWE, source tool, and service/port signals), not
 a certified compliance assessment -- there's no framework-certified scanner input
@@ -25,16 +27,36 @@ CIS_CONTROLS = {
 
 NIST_FUNCTIONS = {"GV": "Govern", "ID": "Identify", "PR": "Protect", "DE": "Detect", "RS": "Respond", "RC": "Recover"}
 
+# PCI-DSS v4.0's 12 top-level requirements. Only a subset is reachable from what
+# VulnOps actually tracks (see CATEGORY_META/OPERATIONAL_CONTROLS' "pci_dss" tags
+# below) -- e.g. Requirement 9 (physical access to cardholder data) has no
+# equivalent signal in a vulnerability-management platform and will correctly show
+# up as unmapped rather than being force-fit onto an unrelated finding category.
+PCI_DSS_REQUIREMENTS = {
+    "PCI-1": "Install and Maintain Network Security Controls",
+    "PCI-2": "Apply Secure Configurations to All System Components",
+    "PCI-3": "Protect Stored Account Data",
+    "PCI-4": "Protect Cardholder Data with Strong Cryptography During Transmission",
+    "PCI-5": "Protect All Systems and Networks from Malicious Software",
+    "PCI-6": "Develop and Maintain Secure Systems and Software",
+    "PCI-7": "Restrict Access to System Components by Business Need to Know",
+    "PCI-8": "Identify Users and Authenticate Access to System Components",
+    "PCI-9": "Restrict Physical Access to Cardholder Data",
+    "PCI-10": "Log and Monitor All Access to System Components and Cardholder Data",
+    "PCI-11": "Test Security of Systems and Networks Regularly",
+    "PCI-12": "Support Information Security with Organizational Policies and Programs",
+}
+
 CATEGORY_META = {
-    "vuln_management": {"label": "Vulnerability Management", "cis": ["CIS-7"], "nist": "ID"},
-    "asset_inventory": {"label": "Asset Inventory", "cis": ["CIS-1"], "nist": "ID"},
-    "software_composition": {"label": "Software Composition / Dependencies", "cis": ["CIS-2", "CIS-16"], "nist": "PR"},
-    "app_security": {"label": "Application Security", "cis": ["CIS-16"], "nist": "PR"},
-    "identity_access": {"label": "Identity & Access", "cis": ["CIS-5", "CIS-6"], "nist": "PR"},
-    "network_security": {"label": "Network Security", "cis": ["CIS-12", "CIS-13"], "nist": "PR"},
-    "crypto_pki": {"label": "Cryptography / PKI", "cis": ["CIS-3"], "nist": "PR"},
-    "config_management": {"label": "Secure Configuration", "cis": ["CIS-4"], "nist": "PR"},
-    "other": {"label": "Other / Uncategorized", "cis": [], "nist": None},
+    "vuln_management": {"label": "Vulnerability Management", "cis": ["CIS-7"], "nist": "ID", "pci_dss": ["PCI-11"]},
+    "asset_inventory": {"label": "Asset Inventory", "cis": ["CIS-1"], "nist": "ID", "pci_dss": []},
+    "software_composition": {"label": "Software Composition / Dependencies", "cis": ["CIS-2", "CIS-16"], "nist": "PR", "pci_dss": ["PCI-6"]},
+    "app_security": {"label": "Application Security", "cis": ["CIS-16"], "nist": "PR", "pci_dss": ["PCI-6"]},
+    "identity_access": {"label": "Identity & Access", "cis": ["CIS-5", "CIS-6"], "nist": "PR", "pci_dss": ["PCI-7", "PCI-8"]},
+    "network_security": {"label": "Network Security", "cis": ["CIS-12", "CIS-13"], "nist": "PR", "pci_dss": ["PCI-1"]},
+    "crypto_pki": {"label": "Cryptography / PKI", "cis": ["CIS-3"], "nist": "PR", "pci_dss": ["PCI-3", "PCI-4"]},
+    "config_management": {"label": "Secure Configuration", "cis": ["CIS-4"], "nist": "PR", "pci_dss": ["PCI-2"]},
+    "other": {"label": "Other / Uncategorized", "cis": [], "nist": None, "pci_dss": []},
 }
 
 CWE_CATEGORY = {
@@ -90,34 +112,43 @@ async def compute_compliance_summary(db) -> dict:
         bucket[sev] = bucket.get(sev, 0) + 1
         bucket["total"] += 1
 
-    controls: dict = {}
-    for cat, meta in CATEGORY_META.items():
-        counts = category_counts.get(cat, {"total": 0})
-        for cis_id in meta["cis"]:
-            c = controls.setdefault(cis_id, {
-                "id": cis_id, "name": CIS_CONTROLS.get(cis_id, cis_id), "categories": [],
-                "critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0,
-            })
-            c["categories"].append(meta["label"])
-            c["critical"] += counts.get("Critical", 0)
-            c["high"] += counts.get("High", 0)
-            c["medium"] += counts.get("Medium", 0)
-            c["low"] += counts.get("Low", 0)
-            c["total"] += counts.get("total", 0)
+    def _build_framework_coverage(framework_key: str, framework_catalog: dict) -> tuple:
+        """Shared aggregation for any framework whose CATEGORY_META tag is a list of
+        control/requirement IDs (currently "cis" and "pci_dss") -- rolls open-finding
+        severity counts up from category into control/requirement, derives a status,
+        and reports anything in the catalog with zero mapped categories as
+        unmapped-but-clean (a control this app simply has no signal for yet, not a
+        gap)."""
+        result: dict = {}
+        for cat, meta in CATEGORY_META.items():
+            counts = category_counts.get(cat, {"total": 0})
+            for req_id in meta.get(framework_key, []):
+                c = result.setdefault(req_id, {
+                    "id": req_id, "name": framework_catalog.get(req_id, req_id), "categories": [],
+                    "critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0,
+                })
+                c["categories"].append(meta["label"])
+                c["critical"] += counts.get("Critical", 0)
+                c["high"] += counts.get("High", 0)
+                c["medium"] += counts.get("Medium", 0)
+                c["low"] += counts.get("Low", 0)
+                c["total"] += counts.get("total", 0)
+        for c in result.values():
+            if c["critical"] > 0:
+                c["status"] = "gap"
+            elif c["high"] > 0:
+                c["status"] = "at_risk"
+            elif c["total"] > 0:
+                c["status"] = "monitor"
+            else:
+                c["status"] = "clean"
+        unmapped = [{"id": rid, "name": name} for rid, name in framework_catalog.items() if rid not in result]
+        clean_or_monitor = len([c for c in result.values() if c["status"] in ("clean", "monitor")]) + len(unmapped)
+        coverage = round(100 * clean_or_monitor / len(framework_catalog), 1) if framework_catalog else None
+        return result, unmapped, coverage
 
-    for c in controls.values():
-        if c["critical"] > 0:
-            c["status"] = "gap"
-        elif c["high"] > 0:
-            c["status"] = "at_risk"
-        elif c["total"] > 0:
-            c["status"] = "monitor"
-        else:
-            c["status"] = "clean"
-
-    unmapped_clean = [{"id": cid, "name": name} for cid, name in CIS_CONTROLS.items() if cid not in controls]
-    clean_or_monitor = len([c for c in controls.values() if c["status"] in ("clean", "monitor")]) + len(unmapped_clean)
-    coverage_pct = round(100 * clean_or_monitor / len(CIS_CONTROLS), 1) if CIS_CONTROLS else None
+    controls, unmapped_clean, coverage_pct = _build_framework_coverage("cis", CIS_CONTROLS)
+    pci_requirements, unmapped_clean_pci, pci_coverage_pct = _build_framework_coverage("pci_dss", PCI_DSS_REQUIREMENTS)
 
     nist_functions: dict = {}
     for cat, meta in CATEGORY_META.items():
@@ -136,13 +167,18 @@ async def compute_compliance_summary(db) -> dict:
         "controls": sorted(controls.values(), key=lambda c: c["id"]),
         "unmapped_clean_controls": unmapped_clean,
         "nist_functions": sorted(nist_functions.values(), key=lambda f: f["function"]),
+        "pci_dss_coverage_pct": pci_coverage_pct,
+        "pci_dss_requirements": sorted(pci_requirements.values(), key=lambda c: int(c["id"].split("-")[1])),
+        "unmapped_clean_pci_dss": sorted(unmapped_clean_pci, key=lambda c: int(c["id"].split("-")[1])),
         "categories": [{"category": cat, "label": meta["label"], **category_counts.get(cat, {})} for cat, meta in CATEGORY_META.items()],
         "total_open_findings": len(findings),
         "generated_at": _now_iso(),
         "methodology_note": (
             "Findings are heuristically classified by CWE, source tool, and service/port signals into a small "
-            "set of security categories, then mapped to CIS Controls v8 and NIST CSF 2.0 functions. This is a "
-            "coverage indicator to help prioritize work, not a certified compliance assessment."
+            "set of security categories, then mapped to CIS Controls v8, NIST CSF 2.0 functions, and PCI-DSS "
+            "v4.0 requirements. This is a coverage indicator to help prioritize work, not a certified compliance "
+            "assessment -- a requirement showing 'unmapped' means this app has no relevant signal for it "
+            "(e.g. PCI Requirement 9, physical access controls), not that it doesn't apply to your organization."
         ),
     }
 
@@ -151,12 +187,14 @@ SEVERITY_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
 
 
 async def get_control_findings(db, control_id: str, limit: int = 300) -> dict:
-    """Drill-down for a single CIS control: the actual open findings that make up its
-    counts on the summary page, so 'CIS-7 -- 4701 open' is something you can click into
-    rather than just a number."""
-    categories = [cat for cat, meta in CATEGORY_META.items() if control_id in meta.get("cis", [])]
+    """Drill-down for a single control/requirement (CIS-* or PCI-*): the actual open
+    findings that make up its counts on the summary page, so 'CIS-7 -- 4701 open' or
+    'PCI-11 -- 812 open' is something you can click into rather than just a number."""
+    framework_key = "pci_dss" if control_id.startswith("PCI-") else "cis"
+    catalog = PCI_DSS_REQUIREMENTS if framework_key == "pci_dss" else CIS_CONTROLS
+    categories = [cat for cat, meta in CATEGORY_META.items() if control_id in meta.get(framework_key, [])]
     if not categories:
-        return {"control_id": control_id, "name": CIS_CONTROLS.get(control_id, control_id), "items": [], "total": 0}
+        return {"control_id": control_id, "name": catalog.get(control_id, control_id), "items": [], "total": 0}
 
     open_states = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
     findings = await db.findings.find(
@@ -169,7 +207,7 @@ async def get_control_findings(db, control_id: str, limit: int = 300) -> dict:
     matched.sort(key=lambda f: (SEVERITY_ORDER.get(f.get("severity"), 5), -(f.get("risk_score") or 0)))
 
     return {
-        "control_id": control_id, "name": CIS_CONTROLS.get(control_id, control_id),
+        "control_id": control_id, "name": catalog.get(control_id, control_id),
         "total": len(matched), "items": matched[:limit],
     }
 
@@ -186,19 +224,19 @@ async def get_control_findings(db, control_id: str, limit: int = 300) -> dict:
 # --------------------------------------------------------------------------
 
 OPERATIONAL_CONTROLS = [
-    {"id": "mfa", "label": "Multi-factor authentication", "iso27001": ["A.8.5"], "soc2": ["CC6.1"]},
-    {"id": "session_management", "label": "Session revocation & management", "iso27001": ["A.8.5"], "soc2": ["CC6.1"]},
-    {"id": "login_lockout", "label": "Brute-force / account lockout protection", "iso27001": ["A.8.5"], "soc2": ["CC6.1"]},
-    {"id": "audit_logging", "label": "Authentication audit logging", "iso27001": ["A.8.15"], "soc2": ["CC7.2"]},
-    {"id": "security_monitoring", "label": "Security event monitoring & correlation", "iso27001": ["A.8.16"], "soc2": ["CC7.1"]},
-    {"id": "ueba", "label": "User & entity behavior analytics", "iso27001": ["A.8.16"], "soc2": ["CC7.2"]},
-    {"id": "threat_intelligence", "label": "Threat intelligence program", "iso27001": ["A.5.7"], "soc2": ["CC7.1"]},
-    {"id": "malware_protection", "label": "Malware detection", "iso27001": ["A.8.7"], "soc2": ["CC6.8"]},
-    {"id": "vulnerability_management", "label": "Technical vulnerability management", "iso27001": ["A.8.8"], "soc2": ["CC7.1"]},
-    {"id": "incident_response", "label": "Incident response process", "iso27001": ["A.5.24"], "soc2": ["CC7.4"]},
-    {"id": "crypto_pki", "label": "Cryptography / certificate management", "iso27001": ["A.8.24"], "soc2": ["CC6.7"]},
-    {"id": "backup_continuity", "label": "Backup & business continuity", "iso27001": ["A.5.30"], "soc2": ["A1.2"]},
-    {"id": "ticketing_soar", "label": "Incident ticketing / SOAR integration", "iso27001": ["A.5.24"], "soc2": ["CC7.4"]},
+    {"id": "mfa", "label": "Multi-factor authentication", "iso27001": ["A.8.5"], "soc2": ["CC6.1"], "pci_dss": ["PCI-8"]},
+    {"id": "session_management", "label": "Session revocation & management", "iso27001": ["A.8.5"], "soc2": ["CC6.1"], "pci_dss": ["PCI-8"]},
+    {"id": "login_lockout", "label": "Brute-force / account lockout protection", "iso27001": ["A.8.5"], "soc2": ["CC6.1"], "pci_dss": ["PCI-8"]},
+    {"id": "audit_logging", "label": "Authentication audit logging", "iso27001": ["A.8.15"], "soc2": ["CC7.2"], "pci_dss": ["PCI-10"]},
+    {"id": "security_monitoring", "label": "Security event monitoring & correlation", "iso27001": ["A.8.16"], "soc2": ["CC7.1"], "pci_dss": ["PCI-10"]},
+    {"id": "ueba", "label": "User & entity behavior analytics", "iso27001": ["A.8.16"], "soc2": ["CC7.2"], "pci_dss": ["PCI-10"]},
+    {"id": "threat_intelligence", "label": "Threat intelligence program", "iso27001": ["A.5.7"], "soc2": ["CC7.1"], "pci_dss": ["PCI-11"]},
+    {"id": "malware_protection", "label": "Malware detection", "iso27001": ["A.8.7"], "soc2": ["CC6.8"], "pci_dss": ["PCI-5"]},
+    {"id": "vulnerability_management", "label": "Technical vulnerability management", "iso27001": ["A.8.8"], "soc2": ["CC7.1"], "pci_dss": ["PCI-6", "PCI-11"]},
+    {"id": "incident_response", "label": "Incident response process", "iso27001": ["A.5.24"], "soc2": ["CC7.4"], "pci_dss": ["PCI-12"]},
+    {"id": "crypto_pki", "label": "Cryptography / certificate management", "iso27001": ["A.8.24"], "soc2": ["CC6.7"], "pci_dss": ["PCI-3", "PCI-4"]},
+    {"id": "backup_continuity", "label": "Backup & business continuity", "iso27001": ["A.5.30"], "soc2": ["A1.2"], "pci_dss": []},
+    {"id": "ticketing_soar", "label": "Incident ticketing / SOAR integration", "iso27001": ["A.5.24"], "soc2": ["CC7.4"], "pci_dss": []},
 ]
 
 

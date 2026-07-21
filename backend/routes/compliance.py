@@ -47,10 +47,11 @@ async def export_compliance_pdf(user: dict = Depends(get_current_user)):
     coverage_str = f"{summary['coverage_pct']}%" if summary.get("coverage_pct") is not None else "—"
     gap_count = len([c for c in summary["controls"] if c["status"] == "gap"])
     at_risk_count = len([c for c in summary["controls"] if c["status"] == "at_risk"])
+    pci_coverage_str = f"{summary['pci_dss_coverage_pct']}%" if summary.get("pci_dss_coverage_pct") is not None else "—"
     elements.append(theme.stat_cards([
         {"label": "CIS Controls Coverage", "value": coverage_str, "color": "#2F81F7"},
+        {"label": "PCI-DSS Coverage", "value": pci_coverage_str, "color": "#a855f7"},
         {"label": "Controls with a Gap", "value": str(gap_count), "color": "#ef4444"},
-        {"label": "Controls At Risk", "value": str(at_risk_count), "color": "#f59e0b"},
         {"label": "Open Findings", "value": str(summary.get("total_open_findings", 0)), "color": "#64748b"},
     ]))
 
@@ -77,15 +78,34 @@ async def export_compliance_pdf(user: dict = Depends(get_current_user)):
         rows2 = [[f"{n['function']} — {n['label']}", n["critical"], n["high"], n["total"]] for n in summary["nist_functions"]]
         elements.append(theme.styled_table(["Function", "Critical", "High", "Total Open"], rows2, numeric_cols=(1, 2, 3)))
 
+    if summary.get("pci_dss_requirements"):
+        pci_coverage_str = f"{summary['pci_dss_coverage_pct']}%" if summary.get("pci_dss_coverage_pct") is not None else "—"
+        elements.append(Paragraph(f"PCI-DSS v4.0 Requirements — Coverage {pci_coverage_str}", styles["h2"]))
+        rows_pci = [[c["id"].replace("PCI-", "Req "), c["name"], c["critical"], c["high"], c["medium"], c["low"],
+                     c["status"].replace("_", " ").title()] for c in summary["pci_dss_requirements"]]
+        elements.append(theme.styled_table(
+            ["Requirement", "Name", "Crit", "High", "Med", "Low", "Status"], rows_pci,
+            col_widths=[48, 162, 32, 32, 32, 32, 58], numeric_cols=(2, 3, 4, 5)))
+        if summary.get("unmapped_clean_pci_dss"):
+            elements.append(Spacer(1, 6))
+            elements.append(Paragraph(
+                "Requirements with no equivalent signal in VulnOps (e.g. Requirement 9, physical access controls) "
+                "-- shown as unmapped rather than a false clean bill of health:", styles["muted"]))
+            for c in summary["unmapped_clean_pci_dss"]:
+                elements.append(Paragraph(f"&#8226; <b>{c['id'].replace('PCI-', 'Req ')}</b> — {c['name']}", styles["bullet"]))
+
     if operational_controls:
-        elements.append(Paragraph("ISO 27001:2022 / SOC 2 — Operational Controls", styles["h2"]))
+        elements.append(Paragraph("ISO 27001:2022 / SOC 2 / PCI-DSS — Operational Controls", styles["h2"]))
         elements.append(Paragraph(
             "Capability- and usage-based controls (is the feature in place, is it actually being used) rather than "
             "finding counts -- closer to what an auditor's control questionnaire asks.", styles["muted"]))
         elements.append(Spacer(1, 6))
-        rows3 = [[c["label"], ", ".join(c["iso27001"]), ", ".join(c["soc2"]), c["status"].replace("_", " ").title()]
+        rows3 = [[c["label"], ", ".join(c["iso27001"]), ", ".join(c["soc2"]),
+                  ", ".join(r.replace("PCI-", "") for r in c.get("pci_dss", [])) or "—",
+                  c["status"].replace("_", " ").title()]
                  for c in operational_controls]
-        elements.append(theme.styled_table(["Control", "ISO 27001", "SOC 2", "Status"], rows3, col_widths=[190, 80, 70, 70]))
+        elements.append(theme.styled_table(["Control", "ISO 27001", "SOC 2", "PCI-DSS", "Status"], rows3,
+                                             col_widths=[150, 62, 55, 55, 88]))
 
     theme.build(doc, elements)
     buffer.seek(0)
