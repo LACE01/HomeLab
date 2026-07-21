@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { useNavigate } from "react-router-dom";
-import { Binoculars, ShieldStar, DeviceMobile, ArrowLeft } from "@phosphor-icons/react";
+import { Binoculars, ShieldStar, DeviceMobile, ArrowLeft, WindowsLogo } from "@phosphor-icons/react";
 import { FcGoogle } from "react-icons/fc";
+import { api, API } from "@/lib/api";
 
 export default function Login() {
   const { login, verifyMfa } = useAuth();
@@ -11,6 +12,7 @@ export default function Login() {
   const [pwd, setPwd] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [entraConfigured, setEntraConfigured] = useState(false);
 
   // Set once the password step succeeds on an MFA-enabled account -- switches the
   // form to the "enter your 6-digit code (or a recovery code)" step instead of
@@ -18,6 +20,18 @@ export default function Login() {
   // /auth/mfa/verify, nothing else.
   const [mfaToken, setMfaToken] = useState(null);
   const [mfaCode, setMfaCode] = useState("");
+
+  useEffect(() => {
+    // Whether to show "Sign in with Microsoft" at all -- depends on both
+    // ENTRA_SSO_ENABLED and the Microsoft Entra ID connector's app registration
+    // actually being configured, so ask the backend rather than guessing from an
+    // env var alone (see routes/auth.py's /auth/entra/status).
+    api.get("/auth/entra/status").then(r => setEntraConfigured(!!r.data?.configured)).catch(() => {});
+
+    if (new URLSearchParams(window.location.search).get("error") === "entra_sso") {
+      setErr("Microsoft sign-in didn't complete -- try again, or use email/password below.");
+    }
+  }, []);
 
   const onSubmit = async (e) => {
     e.preventDefault();
@@ -43,6 +57,13 @@ export default function Login() {
   const signInWithGoogle = () => {
     const redirectUrl = window.location.origin + "/";
     window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+  };
+
+  // Full-page navigation (not an XHR) -- the backend handles the entire OAuth
+  // authorization-code exchange server-side and redirects back to "/" with a
+  // session cookie already set. See routes/auth.py's entra_sso_login/_callback.
+  const signInWithMicrosoft = () => {
+    window.location.href = `${API}/auth/entra/login`;
   };
 
   return (
@@ -105,6 +126,28 @@ export default function Login() {
                     className="w-full h-9 bg-white hover:bg-slate-100 text-slate-900 text-[13px] font-medium rounded transition-colors flex items-center justify-center gap-2"
                   >
                     <FcGoogle size={18}/> Continue with Google
+                  </button>
+
+                  <div className="flex items-center gap-3 my-4">
+                    <div className="flex-1 h-px bg-[#30363D]"/>
+                    <span className="text-[10px] font-mono text-slate-600 uppercase tracking-wider">or email</span>
+                    <div className="flex-1 h-px bg-[#30363D]"/>
+                  </div>
+                </>
+              )}
+
+              {/* Microsoft Entra ID SSO -- shown only once the backend confirms
+                  ENTRA_SSO_ENABLED + a redirect URI + the Entra ID connector's app
+                  registration are all actually configured (see /auth/entra/status). */}
+              {entraConfigured && (
+                <>
+                  <button
+                    data-testid="microsoft-signin"
+                    type="button"
+                    onClick={signInWithMicrosoft}
+                    className="w-full h-9 bg-[#2F2F2F] hover:bg-[#3a3a3a] text-white text-[13px] font-medium rounded transition-colors flex items-center justify-center gap-2"
+                  >
+                    <WindowsLogo size={18} weight="fill" className="text-blue-400"/> Sign in with Microsoft
                   </button>
 
                   <div className="flex items-center gap-3 my-4">

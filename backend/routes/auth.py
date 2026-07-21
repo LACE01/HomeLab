@@ -1,4 +1,6 @@
-"""Authentication routes: login, logout, /me, Google OAuth session exchange."""
+"""Authentication routes: login, logout, /me, Google OAuth session exchange,
+Microsoft Entra ID SSO."""
+import logging
 import os
 import secrets
 import uuid
@@ -6,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr
 
 from db import db
@@ -14,6 +17,8 @@ from auth_utils import (
     create_mfa_pending_token, decode_mfa_pending_token,
 )
 from routes.common import now_iso
+
+logger = logging.getLogger("vulnops.auth")
 
 router = APIRouter()
 
@@ -412,6 +417,175 @@ async def google_session(body: GoogleSessionBody, response: Response):
     )
     return {"user": {"id": user["id"], "email": user["email"], "name": user["name"],
                      "role": user["role"], "picture": picture}}
+
+
+# --------------------------- Microsoft Entra ID SSO (login) ---------------------------
+# Reuses the SAME Azure AD app registration as the "Microsoft Entra ID" connector
+# (see entra_sync.py / msgraph.py) rather than requiring a second one -- the
+# connector's tenant_id/client_id/client_secret already live in db.integrations,
+# and a single Azure AD app registration can serve both the client-credentials grant
+# (background directory sync) and the authorization-code grant (interactive login)
+# at once, as long as a Web platform redirect URI is added to it in the Azure portal.
+# SSO login is a separate opt-in from the connector being configured -- an org might
+# sync directory data without wanting to allow logging into Nightwatch itself via
+# SSO -- gated by ENTRA_SSO_ENABLED, same "quietly no-op until explicitly turned on"
+# convention as BACKUP_SCHEDULE_ENABLED and every optional connector elsewhere here.
+#
+# The callback exchanges the authorization code for an access token server-side
+# (the client_secret never reaches the browser) and then calls Microsoft Graph's
+# /me endpoint with that token to get the signed-in user's profile -- this doubles
+# as proof the token is genuine (Graph rejects anything invalid/expired/wrong-
+# audience) without this app needing to independently verify an id_token's JWT
+# signature against Microsoft's JWKS.
+ENTRA_AUTHORIZE_URL_TMPL = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize"
+ENTRA_TOKEN_URL_TMPL = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+ENTRA_SCOPE = "openid profile email User.Read"
+
+
+def _entra_sso_enabled() -> bool:
+    return os.environ.get("ENTRA_SSO_ENABLED", "false").lower() in ("true", "1", "yes")
+
+
+async def _entra_sso_app() -> dict:
+    """Returns {tenant_id, client_id, client_secret, redirect_uri} or raises
+    ValueError with a specific, actionable reason for whichever piece is missing."""
+    if not _entra_sso_enabled():
+        raise ValueError("Microsoft SSO login isn't enabled on this deployment (set ENTRA_SSO_ENABLED=true)")
+    redirect_uri = os.environ.get("ENTRA_SSO_REDIRECT_URI")
+    if not redirect_uri:
+        raise ValueError(
+            "ENTRA_SSO_REDIRECT_URI isn't set -- this must exactly match a redirect URI "
+            "registered on the Azure AD app"
+        )
+    integration = await db.integrations.find_one({"name": "Microsoft Entra ID"}, {"_id": 0})
+    cfg = (integration or {}).get("config") or {}
+    tenant_id, client_id, client_secret = cfg.get("tenant_id"), cfg.get("client_id"), cfg.get("client_secret")
+    if not (tenant_id and client_id and client_secret):
+        raise ValueError(
+            "The Microsoft Entra ID integration isn't configured yet -- add tenant ID, client ID, "
+            "and client secret under Integrations -> Microsoft Entra ID (SSO login reuses that same "
+            "app registration)."
+        )
+    return {"tenant_id": tenant_id, "client_id": client_id, "client_secret": client_secret, "redirect_uri": redirect_uri}
+
+
+@router.get("/auth/entra/status")
+async def entra_sso_status():
+    """Public, unauthenticated -- the login page needs to know whether to show the
+    "Sign in with Microsoft" button at all, before anyone has a session to check."""
+    try:
+        await _entra_sso_app()
+        return {"configured": True}
+    except ValueError as e:
+        return {"configured": False, "reason": str(e)}
+
+
+@router.get("/auth/entra/login")
+async def entra_sso_login():
+    try:
+        app_cfg = await _entra_sso_app()
+    except ValueError as e:
+        raise HTTPException(501, str(e))
+    from urllib.parse import urlencode
+    state = secrets.token_urlsafe(24)
+    params = {
+        "client_id": app_cfg["client_id"], "response_type": "code", "redirect_uri": app_cfg["redirect_uri"],
+        "response_mode": "query", "scope": ENTRA_SCOPE, "state": state,
+    }
+    url = ENTRA_AUTHORIZE_URL_TMPL.format(tenant_id=app_cfg["tenant_id"]) + "?" + urlencode(params)
+    redirect = RedirectResponse(url, status_code=302)
+    redirect.set_cookie(key="entra_oauth_state", value=state, httponly=True, secure=False,
+                         samesite="lax", max_age=600, path="/")
+    return redirect
+
+
+def _entra_fail(reason: str) -> RedirectResponse:
+    logger.info(f"Entra SSO login failed: {reason}")
+    redirect = RedirectResponse("/login?error=entra_sso", status_code=302)
+    redirect.delete_cookie("entra_oauth_state", path="/")
+    return redirect
+
+
+@router.get("/auth/entra/callback")
+async def entra_sso_callback(request: Request, code: Optional[str] = None, state: Optional[str] = None,
+                              error: Optional[str] = None, error_description: Optional[str] = None):
+    if error:
+        return _entra_fail(error_description or error)
+    if not code or not state:
+        return _entra_fail("callback missing code/state")
+    cookie_state = request.cookies.get("entra_oauth_state")
+    if not cookie_state or cookie_state != state:
+        return _entra_fail("state mismatch (possible CSRF, or the login attempt expired)")
+
+    try:
+        app_cfg = await _entra_sso_app()
+    except ValueError as e:
+        return _entra_fail(str(e))
+
+    import httpx
+    token_url = ENTRA_TOKEN_URL_TMPL.format(tenant_id=app_cfg["tenant_id"])
+    data = {
+        "client_id": app_cfg["client_id"], "client_secret": app_cfg["client_secret"],
+        "grant_type": "authorization_code", "code": code, "redirect_uri": app_cfg["redirect_uri"],
+        "scope": ENTRA_SCOPE,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            token_resp = await c.post(token_url, data=data)
+        token_body = token_resp.json() if token_resp.content else {}
+        if token_resp.status_code != 200:
+            return _entra_fail(token_body.get("error_description") or token_body.get("error") or f"HTTP {token_resp.status_code}")
+        access_token = token_body.get("access_token")
+        if not access_token:
+            return _entra_fail("Azure AD token response had no access_token")
+
+        async with httpx.AsyncClient(timeout=20) as c:
+            me_resp = await c.get("https://graph.microsoft.com/v1.0/me",
+                                   headers={"Authorization": f"Bearer {access_token}"})
+        if me_resp.status_code != 200:
+            return _entra_fail(f"Couldn't fetch profile from Microsoft Graph: HTTP {me_resp.status_code}")
+        profile = me_resp.json()
+    except httpx.HTTPError as e:
+        return _entra_fail(f"Couldn't reach Microsoft: {e}")
+
+    # Azure AD accounts don't always have `mail` populated (common for accounts
+    # created without an Exchange mailbox) -- userPrincipalName is the reliable
+    # fallback and is itself an email-shaped identifier for nearly every tenant.
+    email = (profile.get("mail") or profile.get("userPrincipalName") or "").lower()
+    if not email:
+        return _entra_fail("Microsoft didn't return an email or userPrincipalName for this account")
+
+    allowed_domain = (os.environ.get("ENTRA_SSO_ALLOWED_DOMAIN") or "").strip().lstrip("@").lower()
+    if allowed_domain and not email.endswith("@" + allowed_domain):
+        return _entra_fail(f"'{email}' isn't in the domain allowed to sign in via SSO on this deployment")
+
+    name = profile.get("displayName") or email
+    oid = profile.get("id")
+    ip = _client_ip(request)
+
+    user = await db.users.find_one({"email": email})
+    if user is None:
+        user = {
+            "id": str(uuid.uuid4()), "email": email, "name": name,
+            "role": os.environ.get("ENTRA_SSO_DEFAULT_ROLE", "analyst"),
+            "auth_provider": "entra", "entra_oid": oid,
+            "created_at": now_iso(), "password_hash": None, "teams": [],
+        }
+        await db.users.insert_one(user)
+    else:
+        if user.get("active") is False:
+            await _log_login_attempt(request, email, False, reason="account disabled", user_id=user["id"])
+            return _entra_fail("this account is disabled")
+        # Never touch role/teams on an existing user -- SSO only ever authenticates
+        # who they are, it doesn't get to silently change what they're allowed to do.
+        await db.users.update_one({"email": email}, {"$set": {"name": name, "entra_oid": oid}})
+        user = await db.users.find_one({"email": email})
+
+    await _log_login_attempt(request, email, True, reason="sso_entra", user_id=user["id"])
+    redirect = RedirectResponse("/", status_code=302)
+    await _complete_login(request, redirect, user, ip)
+    redirect.delete_cookie("entra_oauth_state", path="/")
+    return redirect
 
 
 # `hash_password` is re-exported because admin.py user-create uses it; keep import here
