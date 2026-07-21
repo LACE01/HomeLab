@@ -188,6 +188,7 @@ async def on_startup():
     import asyncio as _a
     from nightly import nightly_loop, threat_intel_loop, digest_dispatch_loop
     from qualys_sync import qualys_poll_loop
+    from tenable_sync import tenable_poll_loop
     from routes.nmap import nmap_scan_loop
     from routes.nikto import nikto_scan_loop
     from routes.reconng import recon_scheduled_loop
@@ -208,6 +209,8 @@ async def on_startup():
     _a.create_task(digest_dispatch_loop(db, interval_hours=1))
     # Qualys live sync loop (60min) — skips when integration is not configured
     _a.create_task(qualys_poll_loop(db, interval_minutes=60))
+    # Tenable Nessus live sync loop (60min) — skips when integration is not configured
+    _a.create_task(tenable_poll_loop(db, interval_minutes=60))
     # Scheduled Nmap scan loop (15min poll) — runs at most one config's scan at a time
     _a.create_task(nmap_scan_loop(db, interval_minutes=15))
     # Scheduled Nikto web-app scan loop (15min poll) — runs at most one scan at a time

@@ -833,6 +833,47 @@ async def list_qualys_runs(user: dict = Depends(require_role("admin"))):
     return {"items": items}
 
 
+@router.post("/v1/admin/tenable/sync/run")
+async def trigger_tenable_sync(user: dict = Depends(require_role("admin"))):
+    """Kick off a Tenable Nessus sync in the background and return immediately.
+    The browser polls GET /v1/admin/tenable/sync/runs for completion. Mirrors
+    /v1/admin/qualys/sync/run's async-job-with-placeholder-row pattern exactly."""
+    from tenable_sync import run_tenable_sync
+    import asyncio
+    import uuid as _uuid
+    existing = await db.tenable_sync_runs.find_one({"status": "running"}, {"_id": 0})
+    if existing:
+        return {"id": existing["id"], "status": "running", "message": "Sync already in progress"}
+
+    job_id = str(_uuid.uuid4())
+    await db.tenable_sync_runs.insert_one({
+        "id": job_id, "status": "running", "ran_at": now_iso(),
+        "summary": {"scans_found": 0, "created": 0, "updated": 0, "deduped": 0, "failed": 0},
+        "errors": [],
+    })
+
+    async def _runner():
+        try:
+            result = await run_tenable_sync(db)
+            # run_tenable_sync writes its own record; remove the placeholder
+            await db.tenable_sync_runs.delete_one({"id": job_id})
+            return result
+        except Exception as e:
+            await db.tenable_sync_runs.update_one(
+                {"id": job_id},
+                {"$set": {"status": "failed", "errors": [{"stage": "runner", "error": str(e)}]}},
+            )
+
+    asyncio.create_task(_runner())
+    return {"id": job_id, "status": "running", "message": "Sync started — poll /v1/admin/tenable/sync/runs"}
+
+
+@router.get("/v1/admin/tenable/sync/runs")
+async def list_tenable_runs(user: dict = Depends(require_role("admin"))):
+    items = await db.tenable_sync_runs.find({}, {"_id": 0}).sort("ran_at", -1).limit(50).to_list(50)
+    return {"items": items}
+
+
 @router.post("/v1/admin/qualys/sync/tags")
 async def qualys_sync_tags(user: dict = Depends(require_role("admin"))):
     """Lightweight: re-pull only the Qualys asset-tag memberships and stamp `tags`

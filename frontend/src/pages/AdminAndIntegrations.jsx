@@ -145,6 +145,40 @@ export function Integrations() {
     } finally { setTesting(null); }
   };
 
+  const syncTenable = async (i) => {
+    setTesting(i.id);
+    let toastId;
+    try {
+      const r = await api.post(`/v1/admin/tenable/sync/run`);
+      toastId = toast.loading(`${i.name}: sync started — pulling completed scan results…`);
+      const startId = r.data?.id;
+      const startedAt = Date.now();
+      const MAX_MS = 10 * 60 * 1000; // 10 min cap
+      while (Date.now() - startedAt < MAX_MS) {
+        await new Promise(res => setTimeout(res, 4000));
+        const runs = await api.get("/v1/admin/tenable/sync/runs");
+        const latest = (runs.data?.items || [])[0];
+        if (latest && latest.status !== "running" && latest.id !== startId) {
+          const s = latest.summary || {};
+          toast.success(
+            `${i.name}: +${s.created || 0} new · ↻${s.updated || 0} updated · ` +
+            `${s.scans_processed || 0}/${s.scans_found || 0} scan(s) processed` +
+            (s.auto_closed ? ` · ${s.auto_closed} auto-closed` : ""),
+            { id: toastId }
+          );
+          break;
+        }
+        if (latest && latest.id === startId && latest.status === "failed") {
+          toast.error(`${i.name}: sync failed — ${latest.errors?.[0]?.error || "unknown error"}`, { id: toastId });
+          break;
+        }
+      }
+      await load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Sync failed to start", { id: toastId });
+    } finally { setTesting(null); }
+  };
+
   // Connectors with real (non-Qualys) sync jobs wired up -- see backend
   // routes/integrations.py's _dispatch_sync for the full list.
   const GENERIC_SYNC_CONNECTORS = [
@@ -401,6 +435,12 @@ export function Integrations() {
                     <Lightning size={12}/> {testing===i.id ? "Syncing…" : "Sync now"}
                   </button>
                 )}
+                {i.name === "Tenable Nessus" && i.status !== "not_configured" && (
+                  <button data-testid={`sync-${i.id}`} disabled={testing===i.id} onClick={()=>syncTenable(i)}
+                    className="h-7 px-2.5 text-[11px] bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25 rounded inline-flex items-center gap-1 disabled:opacity-50">
+                    <Lightning size={12}/> {testing===i.id ? "Syncing…" : "Sync now"}
+                  </button>
+                )}
                 {GENERIC_SYNC_CONNECTORS.includes(i.name) && i.status !== "not_configured" && (
                   <button data-testid={`sync-${i.id}`} disabled={testing===i.id} onClick={()=>syncGeneric(i)}
                     className="h-7 px-2.5 text-[11px] bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25 rounded inline-flex items-center gap-1 disabled:opacity-50">
@@ -432,7 +472,7 @@ export function Integrations() {
               <div>
                 <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Endpoint URL</label>
                 <input data-testid="cfg-endpoint" value={form.endpoint} onChange={(e)=>setForm({...form, endpoint:e.target.value})}
-                  placeholder={editing.name === "OpenCTI" ? "https://your-opencti-host (or the full .../graphql URL if it's non-default, e.g. behind a reverse proxy on .../public/graphql)" : "https://qualysapi.qualys.com"}
+                  placeholder={editing.name === "OpenCTI" ? "https://your-opencti-host (or the full .../graphql URL if it's non-default, e.g. behind a reverse proxy on .../public/graphql)" : editing.name === "Tenable Nessus" ? "https://your-nessus-host:8834" : "https://qualysapi.qualys.com"}
                   className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200"/>
                 {editing.name === "OpenCTI" && (
                   <div className="text-[10.5px] text-slate-500 mt-1">
@@ -501,7 +541,9 @@ export function Integrations() {
                     </div>
                   )}
                   <div>
-                    <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">{form.auth_type === "basic" ? "Password" : "API Key / Token"}</label>
+                    <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">
+                      {form.auth_type === "basic" ? "Password" : editing.name === "Tenable Nessus" ? "Access Key" : "API Key / Token"}
+                    </label>
                     <input data-testid="cfg-api-key" type="password" value={form.api_key} onChange={(e)=>setForm({...form, api_key:e.target.value})}
                       placeholder={editing.config?.api_key ? "•••••• (leave blank to keep existing)" : "Paste credential"}
                       className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
@@ -511,6 +553,22 @@ export function Integrations() {
                       <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Client Secret</label>
                       <input data-testid="cfg-api-secret" type="password" value={form.api_secret} onChange={(e)=>setForm({...form, api_secret:e.target.value})}
                         className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
+                    </div>
+                  )}
+                  {editing.name === "Tenable Nessus" && form.auth_type === "api_key" && (
+                    <div>
+                      <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Secret Key</label>
+                      <input data-testid="cfg-api-secret" type="password" value={form.api_secret} onChange={(e)=>setForm({...form, api_secret:e.target.value})}
+                        placeholder={editing.config?.api_secret ? "•••••• (leave blank to keep existing)" : "The matching secretKey from Nessus → Settings → My Account → API Keys"}
+                        className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
+                    </div>
+                  )}
+                  {editing.name === "Tenable Nessus" && (
+                    <div className="text-[10.5px] text-slate-500 leading-relaxed">
+                      Generate an Access Key + Secret Key from your Nessus console under Settings → My Account → API Keys
+                      (recommended), or switch Auth Type to Basic Auth to use a regular console username/password instead
+                      (older Nessus versions, or if you'd rather not generate keys). Self-signed certificates on the
+                      scanner itself are accepted automatically — no need to import one here.
                     </div>
                   )}
                 </>

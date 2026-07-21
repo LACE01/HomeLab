@@ -57,6 +57,7 @@ jobs:
             tests/test_pci_dss_compliance.py \
             tests/test_scheduled_reports.py \
             tests/test_security_news.py \
+            tests/test_tenable_sync.py \
             tests/test_vendor_candidates.py \
             tests/test_vendor_finding_detection.py \
             tests/test_vendor_gaps.py \

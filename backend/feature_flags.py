@@ -59,6 +59,9 @@ FLAG_REGISTRY = [
     {"key": "secrets_scan_nightly_check", "group": "Scheduled Syncs", "default": True,
      "label": "Nightly secrets/credential leak scan",
      "description": "Automatically re-scans every watched git repository once a day for hardcoded credentials and raises/clears findings on change."},
+    {"key": "tenable_nightly_sync", "group": "Scheduled Syncs", "default": True,
+     "label": "Nightly Tenable Nessus sync",
+     "description": "Automatically pulls the latest completed scan results from Tenable Nessus every hour, when configured. Manual \"Sync now\" from Integrations is unaffected either way."},
 ]
 FLAG_KEYS = {f["key"] for f in FLAG_REGISTRY}
 FLAG_BY_KEY = {f["key"]: f for f in FLAG_REGISTRY}
