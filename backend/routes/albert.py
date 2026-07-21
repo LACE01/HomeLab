@@ -197,6 +197,8 @@ async def list_albert_alerts(
     device: Optional[str] = None,
     q: Optional[str] = None,
     alert_message: Optional[str] = None,
+    source_port: Optional[str] = None,
+    destination_port: Optional[str] = None,
     acknowledged: Optional[bool] = None,
     include_suppressed: bool = False,
     page: int = 1,
@@ -214,6 +216,19 @@ async def list_albert_alerts(
         flt["category"] = category
     if device:
         flt["device"] = device
+    if source_port:
+        # Ports are stored as whatever type the export cell gave us (int is the
+        # common case, but tolerate string) -- match either representation
+        # rather than assuming one.
+        try:
+            flt["source_port"] = {"$in": [int(source_port), str(source_port)]}
+        except ValueError:
+            flt["source_port"] = source_port
+    if destination_port:
+        try:
+            flt["destination_port"] = {"$in": [int(destination_port), str(destination_port)]}
+        except ValueError:
+            flt["destination_port"] = destination_port
     if alert_message:
         # Exact match, used for "drill into this exact signature" clicks from the
         # Alert Signatures Explained panel -- deliberately not folded into `q`

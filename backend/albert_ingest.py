@@ -584,6 +584,7 @@ async def compute_albert_stats(db, days: int = 30, include_suppressed: bool = Fa
     all_alerts = await db.albert_alerts.find(query, {
         "_id": 0, "time_gmt": 1, "severity": 1, "category": 1, "device": 1,
         "source_ip": 1, "destination_ip": 1, "disposition": 1,
+        "source_port": 1, "destination_port": 1,
     }).to_list(200000)
     suppressed_count = await db.albert_alerts.count_documents({"suppressed": True, "time_gmt": {"$gte": cutoff}})
 
@@ -592,6 +593,7 @@ async def compute_albert_stats(db, days: int = 30, include_suppressed: bool = Fa
 
     severity_counts, category_counts, device_counts = {}, {}, {}
     src_ip_counts, dst_ip_counts = {}, {}
+    src_port_counts, dst_port_counts = {}, {}
     daily_counts = {}  # day -> count (within range)
     dev_cat_daily_all = {}  # (device, category) -> {day: count} across ALL history
 
@@ -613,6 +615,17 @@ async def compute_albert_stats(db, days: int = 30, include_suppressed: bool = Fa
                 src_ip_counts[a["source_ip"]] = src_ip_counts.get(a["source_ip"], 0) + 1
             if a.get("destination_ip"):
                 dst_ip_counts[a["destination_ip"]] = dst_ip_counts.get(a["destination_ip"], 0) + 1
+            # Ports are ints in most rows but can arrive as strings/floats from
+            # Excel depending on cell formatting -- normalize to a plain str key
+            # so "445" and 445 don't count as two different ports.
+            src_port = a.get("source_port")
+            if src_port not in (None, ""):
+                key = str(int(src_port)) if isinstance(src_port, float) and src_port.is_integer() else str(src_port)
+                src_port_counts[key] = src_port_counts.get(key, 0) + 1
+            dst_port = a.get("destination_port")
+            if dst_port not in (None, ""):
+                key = str(int(dst_port)) if isinstance(dst_port, float) and dst_port.is_integer() else str(dst_port)
+                dst_port_counts[key] = dst_port_counts.get(key, 0) + 1
             daily_counts[day] = daily_counts.get(day, 0) + 1
 
     def _mean_std(values):
@@ -646,5 +659,6 @@ async def compute_albert_stats(db, days: int = 30, include_suppressed: bool = Fa
         "device_counts": device_counts,
         "daily_trend": [{"day": d, "count": c} for d, c in sorted(daily_counts.items())],
         "top_source_ips": _top(src_ip_counts), "top_destination_ips": _top(dst_ip_counts),
+        "top_source_ports": _top(src_port_counts), "top_destination_ports": _top(dst_port_counts),
         "anomalies": anomalies[:20],
     }

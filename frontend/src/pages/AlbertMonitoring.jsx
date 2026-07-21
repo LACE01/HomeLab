@@ -148,6 +148,8 @@ export default function AlbertMonitoring() {
   const [category, setCategory] = useState("");
   const [device, setDevice] = useState("");
   const [alertMessage, setAlertMessage] = useState("");
+  const [sourcePort, setSourcePort] = useState("");
+  const [destPort, setDestPort] = useState("");
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState(null);
   const [showRawStream, setShowRawStream] = useState(false);
@@ -201,6 +203,8 @@ export default function AlbertMonitoring() {
       if (category) params.category = category;
       if (device) params.device = device;
       if (alertMessage) params.alert_message = alertMessage;
+      if (sourcePort) params.source_port = sourcePort;
+      if (destPort) params.destination_port = destPort;
       const r = await api.get("/v1/admin/albert/alerts", { params });
       setAlerts(r.data);
       setSelectedIds(new Set());
@@ -216,7 +220,7 @@ export default function AlbertMonitoring() {
 
   useEffect(() => { loadDashboard(days); }, [days]);
   useEffect(() => { loadDeviceTrend(); }, []);
-  useEffect(() => { loadAlerts(); }, [page, q, severity, category, device, alertMessage, includeSuppressed]);
+  useEffect(() => { loadAlerts(); }, [page, q, severity, category, device, alertMessage, sourcePort, destPort, includeSuppressed]);
   useEffect(() => { loadAllowlist(); }, []);
 
   const scrollToAlerts = () => {
@@ -225,12 +229,12 @@ export default function AlbertMonitoring() {
 
   const filterBy = (setter, value, resetOthers = true) => {
     setPage(1);
-    if (resetOthers) { setQ(""); setSeverity(""); setCategory(""); setDevice(""); setAlertMessage(""); }
+    if (resetOthers) { setQ(""); setSeverity(""); setCategory(""); setDevice(""); setAlertMessage(""); setSourcePort(""); setDestPort(""); }
     setter(value);
     scrollToAlerts();
   };
 
-  const clearFilters = () => { setQ(""); setSeverity(""); setCategory(""); setDevice(""); setAlertMessage(""); setPage(1); };
+  const clearFilters = () => { setQ(""); setSeverity(""); setCategory(""); setDevice(""); setAlertMessage(""); setSourcePort(""); setDestPort(""); setPage(1); };
 
   const upload = async (file) => {
     setUploading(true);
@@ -484,7 +488,7 @@ export default function AlbertMonitoring() {
   const categoryData = Object.entries(stats?.category_counts || {}).map(([name, count]) => ({ name, count }));
   const deviceData = Object.entries(stats?.device_counts || {}).map(([name, count]) => ({ name, count }));
   const anomalyDays = new Set((stats?.anomalies || []).map(a => a.day));
-  const anyFilterActive = q || severity || category || device || alertMessage;
+  const anyFilterActive = q || severity || category || device || alertMessage || sourcePort || destPort;
 
   return (
     <Layout title="Albert Network Monitoring" subtitle="CIS/MS-ISAC network sensor alert exports — trends, breakdowns, and plain-English signature explanations">
@@ -667,6 +671,33 @@ export default function AlbertMonitoring() {
             </Panel>
           </div>
 
+          <div className="grid grid-cols-2 gap-4 mb-4">
+            <Panel title="Top Source Ports">
+              <div className="space-y-1.5">
+                {(stats?.top_source_ports || []).slice(0, 8).map((p, i) => (
+                  <div key={i} className="flex items-center justify-between text-[12px] cursor-pointer hover:text-blue-300"
+                    onClick={() => filterBy(setSourcePort, p.value)}>
+                    <span className="font-mono text-slate-300">{p.value}</span>
+                    <span className="text-slate-500">{p.count}</span>
+                  </div>
+                ))}
+                {(!stats?.top_source_ports || stats.top_source_ports.length === 0) && <div className="text-[12px] text-slate-500">No data</div>}
+              </div>
+            </Panel>
+            <Panel title="Top Destination Ports">
+              <div className="space-y-1.5">
+                {(stats?.top_destination_ports || []).slice(0, 8).map((p, i) => (
+                  <div key={i} className="flex items-center justify-between text-[12px] cursor-pointer hover:text-blue-300"
+                    onClick={() => filterBy(setDestPort, p.value)}>
+                    <span className="font-mono text-slate-300">{p.value}</span>
+                    <span className="text-slate-500">{p.count}</span>
+                  </div>
+                ))}
+                {(!stats?.top_destination_ports || stats.top_destination_ports.length === 0) && <div className="text-[12px] text-slate-500">No data</div>}
+              </div>
+            </Panel>
+          </div>
+
           <Panel title="Alert Signatures Explained" actions={<span className="text-[10.5px] text-slate-500">click a signature to see its alerts</span>}>
             <div className="space-y-2.5">
               {signatures.map((s, i) => (
@@ -793,6 +824,12 @@ export default function AlbertMonitoring() {
           {alertMessage && (
             <div className="mb-2 text-[11.5px] text-blue-300 flex items-center gap-1.5">
               <CaretRight size={11} /> Showing alerts for signature: <span className="font-medium">{alertMessage}</span>
+            </div>
+          )}
+
+          {(sourcePort || destPort) && (
+            <div className="mb-2 text-[11.5px] text-blue-300 flex items-center gap-1.5">
+              <CaretRight size={11} /> Showing alerts for {sourcePort ? `source port ${sourcePort}` : `destination port ${destPort}`}
             </div>
           )}
 
