@@ -56,6 +56,9 @@ FLAG_REGISTRY = [
     {"key": "container_image_nightly_scan", "group": "Scheduled Syncs", "default": True,
      "label": "Nightly container image scan",
      "description": "Automatically re-scans every watched container image once a day (new CVEs get published against unchanged image tags constantly) and raises/clears findings on change."},
+    {"key": "secrets_scan_nightly_check", "group": "Scheduled Syncs", "default": True,
+     "label": "Nightly secrets/credential leak scan",
+     "description": "Automatically re-scans every watched git repository once a day for hardcoded credentials and raises/clears findings on change."},
 ]
 FLAG_KEYS = {f["key"] for f in FLAG_REGISTRY}
 FLAG_BY_KEY = {f["key"]: f for f in FLAG_REGISTRY}

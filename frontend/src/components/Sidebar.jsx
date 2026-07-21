@@ -6,7 +6,7 @@ import {
   ShieldCheck, PlugsConnected, FileArrowDown, GearSix, SignOut, Database,
   UsersThree, Bell, ShareNetwork, BookOpen, Robot, Globe, Certificate, Package, MagnifyingGlass, ClipboardText, SlackLogo, Heartbeat, HardDrive, Notepad, Virus, FlowArrow,
   CaretDown, LockKey, CalendarBlank, FirstAidKit, Siren, SlidersHorizontal, Devices, Binoculars, Gauge, WebhooksLogo, Archive, Broadcast, Warning,
-  Buildings, At, CalendarX, Cube,
+  Buildings, At, CalendarX, Cube, Key,
 } from "@phosphor-icons/react";
 
 const COLLAPSE_KEY = "vulnops.sidebar.collapsedGroups";
@@ -109,6 +109,7 @@ export default function Sidebar() {
           <NavItem to="/admin/email-auth" icon={At} label="Email Authentication" testid="nav-email-auth" />
           <NavItem to="/admin/eol-tracking" icon={CalendarX} label="End-of-Life Software" testid="nav-eol-tracking" />
           <NavItem to="/admin/container-scan" icon={Cube} label="Container Image Scanning" testid="nav-container-scan" />
+          <NavItem to="/admin/secrets-scan" icon={Key} label="Secrets Scanning" testid="nav-secrets-scan" />
           <NavItem to="/easm" icon={MagnifyingGlass} label="Attack Surface" testid="nav-easm" />
           <NavItem to="/tickets" icon={Ticket} label="Tickets" testid="nav-tickets" />
           <NavItem to="/exceptions" icon={ShieldCheck} label="Exceptions" testid="nav-exceptions" />

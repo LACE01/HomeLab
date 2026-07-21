@@ -48,6 +48,7 @@ from routes.certs import router as certs_router
 from routes.domain_email_security import router as domain_email_security_router
 from routes.eol_tracking import router as eol_tracking_router
 from routes.container_scan import router as container_scan_router
+from routes.secrets_scan import router as secrets_scan_router
 from routes.sbom import router as sbom_router
 from routes.easm import router as easm_router
 from routes.compliance import router as compliance_router
@@ -94,6 +95,7 @@ api.include_router(certs_router)
 api.include_router(domain_email_security_router)
 api.include_router(eol_tracking_router)
 api.include_router(container_scan_router)
+api.include_router(secrets_scan_router)
 api.include_router(sbom_router)
 api.include_router(easm_router)
 api.include_router(compliance_router)
@@ -193,6 +195,7 @@ async def on_startup():
     from domain_email_security import domain_email_monitor_loop
     from eol_tracking import eol_monitor_loop
     from container_scan import container_scan_loop
+    from secrets_scan import secrets_scan_loop
     from easm import easm_scan_loop
     from backup import backup_loop
     from routes.automation import automation_scheduler_loop
@@ -220,6 +223,8 @@ async def on_startup():
     _a.create_task(eol_monitor_loop(db, interval_hours=24))
     # Container image vulnerability scan loop (once/day)
     _a.create_task(container_scan_loop(db, interval_hours=24))
+    # Secrets/credential leak scan loop (once/day)
+    _a.create_task(secrets_scan_loop(db, interval_hours=24))
     # EASM passive subdomain discovery loop (once/day)
     _a.create_task(easm_scan_loop(db, interval_hours=24))
     # Scheduled DB backup loop -- no-ops unless BACKUP_SCHEDULE_ENABLED=true (see backup.py)

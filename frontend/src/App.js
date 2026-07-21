@@ -38,6 +38,7 @@ import TlsCerts from "@/pages/TlsCerts";
 import EmailAuthMonitoring from "@/pages/EmailAuthMonitoring";
 import EolTracking from "@/pages/EolTracking";
 import ContainerScanning from "@/pages/ContainerScanning";
+import SecretsScanning from "@/pages/SecretsScanning";
 import SbomUpload from "@/pages/SbomUpload";
 import Easm from "@/pages/Easm";
 import Compliance from "@/pages/Compliance";
@@ -147,6 +148,7 @@ const AppRouter = () => {
       <Route path="/admin/email-auth" element={<Protected module="/admin/email-auth"><EmailAuthMonitoring/></Protected>}/>
       <Route path="/admin/eol-tracking" element={<Protected module="/admin/eol-tracking"><EolTracking/></Protected>}/>
       <Route path="/admin/container-scan" element={<Protected module="/admin/container-scan"><ContainerScanning/></Protected>}/>
+      <Route path="/admin/secrets-scan" element={<Protected module="/admin/secrets-scan"><SecretsScanning/></Protected>}/>
       <Route path="/admin/sbom" element={<Protected module="/admin/sbom"><SbomUpload/></Protected>}/>
       <Route path="/admin/yara" element={<Protected module="/admin/yara"><Yara/></Protected>}/>
       <Route path="/easm" element={<Protected module="/easm"><Easm/></Protected>}/>

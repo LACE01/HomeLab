@@ -47,6 +47,7 @@ jobs:
             tests/test_asset_albert_link.py \
             tests/test_backups_offsite_and_verify.py \
             tests/test_container_scan.py \
+            tests/test_secrets_scan.py \
             tests/test_domain_email_security.py \
             tests/test_entra_sso.py \
             tests/test_eol_tracking.py \
