@@ -30,7 +30,7 @@ TRIGGERS = [
     "osint_exposure_found", "ir_case_opened", "ir_obligation_notify",
     "albert_allowlist_review_due", "vendor_compromise_found", "vendor_contract_renewal_due",
     "stale_accounts_found", "edr_high_risk_device_found", "email_auth_issue",
-    "eol_software_issue", "secret_leak_found",
+    "eol_software_issue", "secret_leak_found", "aws_cspm_finding",
 ]
 
 CHANNELS = ["email", "discord", "slack", "teams", "webhook", "sms"]
@@ -178,6 +178,13 @@ TEMPLATES = {
             "🔑 A possible {secret_type} was found committed in {repo} ({filename}).\n\n"
             "• **Severity:** {severity}\n\nThe actual value is never stored -- open the file to see it, "
             "then rotate the credential.\n\nOpen: {url}"
+        ),
+    },
+    "aws_cspm_finding": {
+        "subject": "[Nightwatch] AWS misconfiguration: {title}",
+        "body": (
+            "☁️ AWS CSPM found a new issue on account {account_id}.\n\n"
+            "• **Resource:** {resource_id}\n• **Severity:** {severity}\n\nOpen: {url}"
         ),
     },
     "ir_case_opened": {

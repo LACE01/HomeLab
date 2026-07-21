@@ -70,6 +70,9 @@ class IntegrationConfig(BaseModel):
     client_secret: Optional[str] = None
     # Org's own domain for domain-wide breach monitoring (HaveIBeenPwned Domain Search)
     domain: Optional[str] = None
+    # AWS region for AWS CSPM (EC2/RDS/EBS checks are single-region; IAM/S3 are
+    # global regardless of what's set here -- see aws_cspm.py's module docstring)
+    region: Optional[str] = None
 
 
 # Cloudflare's own service-token detail page (and most API docs, including OpenCTI's
@@ -117,7 +120,14 @@ async def update_integration(integration_id: str, body: IntegrationConfig, user:
     # If credentials are now present, lift the "not_configured" status to "healthy" (user must Test to confirm)
     new_status = integration.get("status", "not_configured")
     has_creds = cfg.get("api_key") or cfg.get("username") or (cfg.get("client_id") and cfg.get("client_secret") and cfg.get("tenant_id"))
-    if cfg.get("endpoint") and has_creds and new_status == "not_configured":
+    # AWS CSPM has no "endpoint" concept at all (boto3 resolves per-service AWS
+    # endpoints from the region) -- gate its status lift on region + key pair
+    # instead of the generic endpoint+has_creds check every other connector uses.
+    is_configured = (
+        (cfg.get("region") and cfg.get("api_key") and cfg.get("api_secret")) if integration["name"] == "AWS CSPM"
+        else (cfg.get("endpoint") and has_creds)
+    )
+    if is_configured and new_status == "not_configured":
         new_status = "healthy"
     await db.integrations.update_one({"id": integration_id}, {"$set": {"config": cfg, "status": new_status, "last_changed_at": now_iso()}})
     return {"ok": True}
@@ -150,6 +160,22 @@ async def test_integration(integration_id: str, user: dict = Depends(require_rol
         try:
             await get_client_credentials_token(db, name, MSGRAPH_CONNECTOR_SCOPES[name], force_refresh=True)
             result = {"ok": True, "message": f"{name}: Azure AD app registration authenticated successfully (token acquired)."}
+        except Exception as e:
+            result = {"ok": False, "message": str(e)}
+    elif name == "AWS CSPM":
+        # No "endpoint" concept at all for AWS -- boto3 resolves the right
+        # per-service endpoint from the region. A real STS GetCallerIdentity call
+        # is both the reachability check AND proof the access key/secret pair is
+        # actually valid together, same "real call, not just non-blank fields"
+        # standard every other connector's Test gets.
+        if not (cfg.get("api_key") and cfg.get("api_secret")):
+            await db.integrations.update_one({"id": integration_id}, {"$set": {"status": "degraded", "sync_errors": (integration.get("sync_errors") or 0) + 1}})
+            raise HTTPException(400, "Missing Access Key ID or Secret Key — configure the connector first")
+        try:
+            from aws_cspm import _clients
+            clients = _clients(cfg)
+            identity = clients["sts"].get_caller_identity()
+            result = {"ok": True, "message": f"Authenticated to AWS account {identity['Account']} as {identity['Arn'].split('/')[-1]}."}
         except Exception as e:
             result = {"ok": False, "message": str(e)}
     else:

@@ -874,6 +874,46 @@ async def list_tenable_runs(user: dict = Depends(require_role("admin"))):
     return {"items": items}
 
 
+@router.post("/v1/admin/aws-cspm/scan/run")
+async def trigger_aws_cspm_scan(user: dict = Depends(require_role("admin"))):
+    """Kick off an AWS CSPM scan in the background and return immediately. The
+    browser polls GET /v1/admin/aws-cspm/scan/runs for completion -- same
+    async-job-with-placeholder-row pattern as Qualys/Tenable."""
+    from aws_cspm import run_aws_cspm_scan
+    import asyncio
+    import uuid as _uuid
+    existing = await db.aws_cspm_scan_runs.find_one({"status": "running"}, {"_id": 0})
+    if existing:
+        return {"id": existing["id"], "status": "running", "message": "Scan already in progress"}
+
+    job_id = str(_uuid.uuid4())
+    await db.aws_cspm_scan_runs.insert_one({
+        "id": job_id, "status": "running", "ran_at": now_iso(),
+        "summary": {"checks_run": 0, "created": 0, "updated": 0, "failed": 0},
+        "errors": [],
+    })
+
+    async def _runner():
+        try:
+            result = await run_aws_cspm_scan(db)
+            await db.aws_cspm_scan_runs.delete_one({"id": job_id})
+            return result
+        except Exception as e:
+            await db.aws_cspm_scan_runs.update_one(
+                {"id": job_id},
+                {"$set": {"status": "failed", "errors": [{"stage": "runner", "error": str(e)}]}},
+            )
+
+    asyncio.create_task(_runner())
+    return {"id": job_id, "status": "running", "message": "Scan started — poll /v1/admin/aws-cspm/scan/runs"}
+
+
+@router.get("/v1/admin/aws-cspm/scan/runs")
+async def list_aws_cspm_runs(user: dict = Depends(require_role("admin"))):
+    items = await db.aws_cspm_scan_runs.find({}, {"_id": 0}).sort("ran_at", -1).limit(50).to_list(50)
+    return {"items": items}
+
+
 @router.post("/v1/admin/qualys/sync/tags")
 async def qualys_sync_tags(user: dict = Depends(require_role("admin"))):
     """Lightweight: re-pull only the Qualys asset-tag memberships and stamp `tags`

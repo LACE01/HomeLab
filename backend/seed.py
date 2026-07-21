@@ -35,6 +35,13 @@ SCANNERS = [
     {"name": "Wiz",                         "type": "cloud",          "logo": "wiz"},
     {"name": "GitHub Advanced Security",    "type": "appsec",         "logo": "github"},
     {"name": "Snyk",                        "type": "appsec",         "logo": "snyk"},
+    # This app's own read-only AWS misconfiguration scanner (S3/SG/IAM/CloudTrail/
+    # RDS/EBS) -- not a wrapper around AWS Security Hub/Config, so it works even on
+    # accounts that never enabled those. See aws_cspm.py's module docstring for the
+    # exact check list and scope limits (AWS only for now, single region for
+    # EC2/RDS/EBS checks).
+    {"name": "AWS CSPM",                    "type": "cloud",          "logo": "aws",
+     "default_config": {"region": "us-east-1"}},
 ]
 
 WORKFLOW_CONNECTORS = [

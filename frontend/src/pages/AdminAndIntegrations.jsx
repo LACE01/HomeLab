@@ -179,6 +179,40 @@ export function Integrations() {
     } finally { setTesting(null); }
   };
 
+  const syncAwsCspm = async (i) => {
+    setTesting(i.id);
+    let toastId;
+    try {
+      const r = await api.post(`/v1/admin/aws-cspm/scan/run`);
+      toastId = toast.loading(`${i.name}: scan started — checking S3/security groups/IAM/CloudTrail/RDS/EBS…`);
+      const startId = r.data?.id;
+      const startedAt = Date.now();
+      const MAX_MS = 10 * 60 * 1000;
+      while (Date.now() - startedAt < MAX_MS) {
+        await new Promise(res => setTimeout(res, 4000));
+        const runs = await api.get("/v1/admin/aws-cspm/scan/runs");
+        const latest = (runs.data?.items || [])[0];
+        if (latest && latest.status !== "running" && latest.id !== startId) {
+          const s = latest.summary || {};
+          toast.success(
+            `${i.name}: +${s.created || 0} new · ↻${s.updated || 0} updated · ${s.findings_found || 0} issue(s) found` +
+            (s.auto_closed ? ` · ${s.auto_closed} auto-closed` : "") +
+            (s.checks_failed ? ` · ${s.checks_failed}/${s.checks_run} check(s) failed (permissions?)` : ""),
+            { id: toastId }
+          );
+          break;
+        }
+        if (latest && latest.id === startId && latest.status === "failed") {
+          toast.error(`${i.name}: scan failed — ${latest.errors?.[0]?.error || "unknown error"}`, { id: toastId });
+          break;
+        }
+      }
+      await load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Scan failed to start", { id: toastId });
+    } finally { setTesting(null); }
+  };
+
   // Connectors with real (non-Qualys) sync jobs wired up -- see backend
   // routes/integrations.py's _dispatch_sync for the full list.
   const GENERIC_SYNC_CONNECTORS = [
@@ -223,6 +257,7 @@ export function Integrations() {
       client_id: i.config?.client_id || "",
       client_secret: "",  // never prefill — masked
       domain: i.config?.domain || "",
+      region: i.config?.region || "",
     });
   };
 
@@ -441,6 +476,12 @@ export function Integrations() {
                     <Lightning size={12}/> {testing===i.id ? "Syncing…" : "Sync now"}
                   </button>
                 )}
+                {i.name === "AWS CSPM" && i.status !== "not_configured" && (
+                  <button data-testid={`sync-${i.id}`} disabled={testing===i.id} onClick={()=>syncAwsCspm(i)}
+                    className="h-7 px-2.5 text-[11px] bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25 rounded inline-flex items-center gap-1 disabled:opacity-50">
+                    <Lightning size={12}/> {testing===i.id ? "Scanning…" : "Scan now"}
+                  </button>
+                )}
                 {GENERIC_SYNC_CONNECTORS.includes(i.name) && i.status !== "not_configured" && (
                   <button data-testid={`sync-${i.id}`} disabled={testing===i.id} onClick={()=>syncGeneric(i)}
                     className="h-7 px-2.5 text-[11px] bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25 rounded inline-flex items-center gap-1 disabled:opacity-50">
@@ -469,6 +510,7 @@ export function Integrations() {
               <button onClick={()=>setEditing(null)} className="text-slate-500 hover:text-slate-200">✕</button>
             </div>
             <div className="p-4 space-y-3">
+              {editing.name !== "AWS CSPM" && (
               <div>
                 <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Endpoint URL</label>
                 <input data-testid="cfg-endpoint" value={form.endpoint} onChange={(e)=>setForm({...form, endpoint:e.target.value})}
@@ -483,6 +525,18 @@ export function Integrations() {
                   </div>
                 )}
               </div>
+              )}
+              {editing.name === "AWS CSPM" && (
+                <div>
+                  <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Region</label>
+                  <input data-testid="cfg-region" value={form.region} onChange={(e)=>setForm({...form, region:e.target.value})}
+                    placeholder="us-east-1"
+                    className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
+                  <div className="text-[10.5px] text-slate-500 mt-1">
+                    Security group / RDS / EBS checks only look at this one region. IAM and S3 checks always cover the whole account regardless of what's set here.
+                  </div>
+                </div>
+              )}
               {editing.name === "HaveIBeenPwned" && (
                 <div>
                   <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Domain</label>
@@ -495,7 +549,26 @@ export function Integrations() {
                   </div>
                 </div>
               )}
-              {MSGRAPH_CONNECTORS.includes(editing.name) ? (
+              {editing.name === "AWS CSPM" ? (
+                <>
+                  <div>
+                    <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Access Key ID</label>
+                    <input data-testid="cfg-api-key" type="password" value={form.api_key} onChange={(e)=>setForm({...form, api_key:e.target.value})}
+                      placeholder={editing.config?.api_key ? "•••••• (leave blank to keep existing)" : "AKIA…"}
+                      className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Secret Access Key</label>
+                    <input data-testid="cfg-api-secret" type="password" value={form.api_secret} onChange={(e)=>setForm({...form, api_secret:e.target.value})}
+                      placeholder={editing.config?.api_secret ? "•••••• (leave blank to keep existing)" : "Paste secret access key"}
+                      className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
+                  </div>
+                  <div className="text-[10.5px] text-slate-500 leading-relaxed">
+                    Use a dedicated read-only IAM user (attach the AWS-managed <code className="font-mono bg-black/30 px-1 rounded">SecurityAudit</code> policy,
+                    or a custom policy scoped to List/Describe/Get on S3, EC2, IAM, CloudTrail, and RDS) — this connector never needs write access to your account.
+                  </div>
+                </>
+              ) : MSGRAPH_CONNECTORS.includes(editing.name) ? (
                 <>
                   <div>
                     <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Tenant ID</label>

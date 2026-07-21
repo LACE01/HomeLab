@@ -62,6 +62,9 @@ FLAG_REGISTRY = [
     {"key": "tenable_nightly_sync", "group": "Scheduled Syncs", "default": True,
      "label": "Nightly Tenable Nessus sync",
      "description": "Automatically pulls the latest completed scan results from Tenable Nessus every hour, when configured. Manual \"Sync now\" from Integrations is unaffected either way."},
+    {"key": "aws_cspm_nightly_scan", "group": "Scheduled Syncs", "default": True,
+     "label": "Nightly AWS CSPM scan",
+     "description": "Automatically re-runs the AWS misconfiguration checks (S3/security groups/IAM/CloudTrail/RDS/EBS) once a day, when configured. Manual \"Scan now\" from Integrations is unaffected either way."},
 ]
 FLAG_KEYS = {f["key"] for f in FLAG_REGISTRY}
 FLAG_BY_KEY = {f["key"]: f for f in FLAG_REGISTRY}
