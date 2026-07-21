@@ -52,6 +52,36 @@ async def delete_backup_endpoint(backup_id: str, user: dict = Depends(require_ro
     return {"ok": True}
 
 
+@router.get("/v1/admin/backups/offsite-status")
+async def get_offsite_status(user: dict = Depends(require_role("admin"))):
+    from backup import offsite_status
+    return offsite_status()
+
+
+@router.post("/v1/admin/backups/{backup_id}/verify")
+async def verify_backup_endpoint(backup_id: str, user: dict = Depends(require_role("admin"))):
+    from backup import verify_backup_by_id
+    try:
+        return await verify_backup_by_id(db, backup_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+
+
+@router.post("/v1/admin/backups/{backup_id}/upload-offsite")
+async def upload_offsite_endpoint(backup_id: str, user: dict = Depends(require_role("admin"))):
+    from backup import upload_offsite_by_id, offsite_configured
+    if not offsite_configured():
+        raise HTTPException(400, "Off-site storage isn't configured -- set BACKUP_S3_BUCKET (and related BACKUP_S3_* vars) in your .env")
+    try:
+        return await upload_offsite_by_id(db, backup_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+
+
 @router.post("/v1/admin/backups/restore")
 async def restore_backup_endpoint(
     file: UploadFile = File(...),

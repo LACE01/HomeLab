@@ -45,6 +45,7 @@ jobs:
             tests/test_albert_gaps2.py \
             tests/test_albert_ports.py \
             tests/test_asset_albert_link.py \
+            tests/test_backups_offsite_and_verify.py \
             tests/test_domain_email_security.py \
             tests/test_feature_flags.py \
             tests/test_hash_intel_and_stealer_logs.py \

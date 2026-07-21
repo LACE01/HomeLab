@@ -96,3 +96,4 @@ websockets==16.0
 yara-python==4.5.4
 yarl==1.24.2
 zipp==4.1.0
+boto3==1.43.52
