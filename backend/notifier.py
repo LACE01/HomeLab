@@ -30,6 +30,7 @@ TRIGGERS = [
     "osint_exposure_found", "ir_case_opened", "ir_obligation_notify",
     "albert_allowlist_review_due", "vendor_compromise_found", "vendor_contract_renewal_due",
     "stale_accounts_found", "edr_high_risk_device_found", "email_auth_issue",
+    "eol_software_issue",
 ]
 
 CHANNELS = ["email", "discord", "slack", "teams", "webhook", "sms"]
@@ -162,6 +163,13 @@ TEMPLATES = {
             "📧 An email authentication issue was found for {domain}.\n\n"
             "• **Check:** {check_type}\n• **Severity:** {severity}\n"
             "• **Reason:** {reason}\n\nOpen: {url}"
+        ),
+    },
+    "eol_software_issue": {
+        "subject": "[Nightwatch] End-of-life software: {product} {cycle}",
+        "body": (
+            "📅 {product} {cycle} has an end-of-life issue.\n\n"
+            "• **Severity:** {severity}\n• **Reason:** {reason}\n\nOpen: {url}"
         ),
     },
     "ir_case_opened": {

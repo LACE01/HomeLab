@@ -50,6 +50,9 @@ FLAG_REGISTRY = [
     {"key": "email_auth_nightly_check", "group": "Scheduled Syncs", "default": True,
      "label": "Nightly SPF/DKIM/DMARC domain check",
      "description": "Automatically re-checks every watched domain's email authentication records once a day and raises/clears findings on change."},
+    {"key": "eol_nightly_check", "group": "Scheduled Syncs", "default": True,
+     "label": "Nightly end-of-life software check",
+     "description": "Automatically re-checks every watched product/cycle against endoflife.date once a day and raises/clears findings on change."},
 ]
 FLAG_KEYS = {f["key"] for f in FLAG_REGISTRY}
 FLAG_BY_KEY = {f["key"]: f for f in FLAG_REGISTRY}

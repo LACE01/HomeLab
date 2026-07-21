@@ -46,6 +46,7 @@ from routes.threat_intel import router as threat_intel_router
 from routes.ticketing import router as ticketing_router
 from routes.certs import router as certs_router
 from routes.domain_email_security import router as domain_email_security_router
+from routes.eol_tracking import router as eol_tracking_router
 from routes.sbom import router as sbom_router
 from routes.easm import router as easm_router
 from routes.compliance import router as compliance_router
@@ -90,6 +91,7 @@ api.include_router(criticality_router)
 api.include_router(charts_router)
 api.include_router(certs_router)
 api.include_router(domain_email_security_router)
+api.include_router(eol_tracking_router)
 api.include_router(sbom_router)
 api.include_router(easm_router)
 api.include_router(compliance_router)
@@ -187,6 +189,7 @@ async def on_startup():
     from routes.reconng import recon_scheduled_loop
     from cert_monitor import cert_monitor_loop
     from domain_email_security import domain_email_monitor_loop
+    from eol_tracking import eol_monitor_loop
     from easm import easm_scan_loop
     from backup import backup_loop
     from routes.automation import automation_scheduler_loop
@@ -210,6 +213,8 @@ async def on_startup():
     # Email authentication (SPF/DKIM/DMARC) monitoring loop (once/day -- DNS
     # records like these change rarely)
     _a.create_task(domain_email_monitor_loop(db, interval_hours=24))
+    # End-of-life software/OS tracking loop (once/day -- EOL dates don't change often)
+    _a.create_task(eol_monitor_loop(db, interval_hours=24))
     # EASM passive subdomain discovery loop (once/day)
     _a.create_task(easm_scan_loop(db, interval_hours=24))
     # Scheduled DB backup loop -- no-ops unless BACKUP_SCHEDULE_ENABLED=true (see backup.py)
