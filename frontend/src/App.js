@@ -35,6 +35,7 @@ import NiktoScans from "@/pages/NiktoScans";
 import ReconOSINT from "@/pages/ReconOSINT";
 import CriticalityScoring from "@/pages/CriticalityScoring";
 import TlsCerts from "@/pages/TlsCerts";
+import EmailAuthMonitoring from "@/pages/EmailAuthMonitoring";
 import SbomUpload from "@/pages/SbomUpload";
 import Easm from "@/pages/Easm";
 import Compliance from "@/pages/Compliance";
@@ -141,6 +142,7 @@ const AppRouter = () => {
       <Route path="/operational" element={<Protected module="/operational"><Operational/></Protected>}/>
       <Route path="/attack-paths" element={<Protected module="/attack-paths"><AttackPaths/></Protected>}/>
       <Route path="/admin/tls-certs" element={<Protected module="/admin/tls-certs"><TlsCerts/></Protected>}/>
+      <Route path="/admin/email-auth" element={<Protected module="/admin/email-auth"><EmailAuthMonitoring/></Protected>}/>
       <Route path="/admin/sbom" element={<Protected module="/admin/sbom"><SbomUpload/></Protected>}/>
       <Route path="/admin/yara" element={<Protected module="/admin/yara"><Yara/></Protected>}/>
       <Route path="/easm" element={<Protected module="/easm"><Easm/></Protected>}/>

@@ -79,6 +79,7 @@ MODULE_REGISTRY = [
     {"key": "/attack-paths", "label": "Attack Paths", "group": "Vulnerability Management"},
     {"key": "/exposure", "label": "Exposure", "group": "Vulnerability Management"},
     {"key": "/admin/tls-certs", "label": "TLS Certificates", "group": "Vulnerability Management"},
+    {"key": "/admin/email-auth", "label": "Email Authentication (SPF/DKIM/DMARC)", "group": "Vulnerability Management"},
     {"key": "/easm", "label": "Attack Surface", "group": "Vulnerability Management"},
     {"key": "/tickets", "label": "Tickets", "group": "Vulnerability Management"},
     {"key": "/exceptions", "label": "Exceptions", "group": "Vulnerability Management"},

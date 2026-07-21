@@ -47,6 +47,9 @@ FLAG_REGISTRY = [
     {"key": "scheduled_report_delivery", "group": "Scheduled Syncs", "default": True,
      "label": "Scheduled report delivery",
      "description": "Sends any reports configured under Admin -> Reports on their configured schedule (daily/weekly/monthly). Individual reports can still be paused independently."},
+    {"key": "email_auth_nightly_check", "group": "Scheduled Syncs", "default": True,
+     "label": "Nightly SPF/DKIM/DMARC domain check",
+     "description": "Automatically re-checks every watched domain's email authentication records once a day and raises/clears findings on change."},
 ]
 FLAG_KEYS = {f["key"] for f in FLAG_REGISTRY}
 FLAG_BY_KEY = {f["key"]: f for f in FLAG_REGISTRY}
