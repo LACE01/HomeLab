@@ -404,6 +404,18 @@ async def digest_dispatch_loop(db, interval_hours: int = 1):
         except Exception as e:
             logger.exception(f"Digest dispatch failed: {e}")
             ok, detail["error"] = False, str(e)
+        try:
+            from feature_flags import is_enabled
+            if await is_enabled(db, "scheduled_report_delivery"):
+                from scheduled_reports import run_due_scheduled_reports
+                report_result = await run_due_scheduled_reports(db)
+                logger.info(f"Scheduled report dispatch: {report_result}")
+                detail["scheduled_reports"] = report_result
+            else:
+                detail["scheduled_reports"] = "skipped (disabled in Settings)"
+        except Exception as e:
+            logger.exception(f"Scheduled report dispatch failed: {e}")
+            ok, detail["scheduled_reports_error"] = False, str(e)
         await record_heartbeat(db, "digest_dispatch_loop", "ok" if ok else "error", detail)
         await asyncio.sleep(interval_hours * 3600)
 

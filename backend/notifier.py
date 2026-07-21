@@ -10,6 +10,8 @@ import smtplib
 import ssl as ssl_lib
 import uuid
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
 import json as _json
 import logging
 from datetime import datetime, timezone
@@ -240,9 +242,12 @@ async def _send_webhook(webhook_url: str, subject: str, body: str, ctx: dict) ->
     return {"status_code": r.status_code, "ok": 200 <= r.status_code < 300, "text": r.text[:200]}
 
 
-async def _send_smtp(to_addr: str, subject: str, body: str) -> dict:
+async def _send_smtp(to_addr: str, subject: str, body: str, attachments: Optional[list] = None) -> dict:
     """Plain SMTP via stdlib smtplib. Blocking, so it runs in a thread -- this is a
-    once-per-notification call, not a hot path, so a thread per send is plenty."""
+    once-per-notification call, not a hot path, so a thread per send is plenty.
+
+    attachments (optional): list of {"filename": str, "content": bytes, "content_type": str}
+    -- used by scheduled_reports.py to attach a generated PDF/CSV report."""
     import asyncio
     host = os.environ.get("SMTP_HOST")
     port = int(os.environ.get("SMTP_PORT", "587"))
@@ -252,7 +257,15 @@ async def _send_smtp(to_addr: str, subject: str, body: str) -> dict:
     use_tls = os.environ.get("SMTP_USE_TLS", "true").lower() not in ("false", "0", "no")
 
     def _send():
-        msg = MIMEText(body, "plain")
+        if attachments:
+            msg = MIMEMultipart()
+            msg.attach(MIMEText(body, "plain"))
+            for att in attachments:
+                part = MIMEApplication(att["content"], Name=att["filename"])
+                part["Content-Disposition"] = f'attachment; filename="{att["filename"]}"'
+                msg.attach(part)
+        else:
+            msg = MIMEText(body, "plain")
         msg["Subject"] = subject
         msg["From"] = from_addr
         msg["To"] = to_addr
@@ -292,33 +305,55 @@ async def _send_sms(to_number: str, subject: str, body: str) -> dict:
                     "Point SMS_WEBHOOK_URL at your SMS gateway's HTTP API (Twilio, etc.) to send real texts."}
 
 
-async def _send_email(to_addr: str, subject: str, body: str) -> dict:
+async def _send_email(to_addr: str, subject: str, body: str, attachments: Optional[list] = None) -> dict:
     """Prefers plain SMTP (SMTP_HOST) since that's the self-hosted-friendly option --
-    falls back to Resend's API if that's what's configured, then simulates."""
+    falls back to Resend's API if that's what's configured, then simulates.
+
+    attachments (optional): list of {"filename": str, "content": bytes, "content_type": str}."""
     if not to_addr:
         return {"status_code": 0, "ok": False, "text": "Channel has no 'to' address configured"}
 
     smtp_host = os.environ.get("SMTP_HOST")
     if smtp_host:
         try:
-            return await _send_smtp(to_addr, subject, body)
+            return await _send_smtp(to_addr, subject, body, attachments=attachments)
         except Exception as e:
             logger.exception("SMTP send failed")
             return {"status_code": 0, "ok": False, "text": f"SMTP error: {e}"}
 
     api_key = os.environ.get("RESEND_API_KEY")
     if api_key:
-        async with httpx.AsyncClient(timeout=10) as c:
+        import base64
+        payload = {"from": "Nightwatch <noreply@vulnops.io>",
+                   "to": [to_addr], "subject": subject,
+                   "html": body.replace("\n", "<br>")}
+        if attachments:
+            # Resend's documented attachment shape: base64-encoded content, keyed
+            # by "filename"/"content" -- https://resend.com/docs/api-reference/emails/send-email
+            payload["attachments"] = [
+                {"filename": a["filename"], "content": base64.b64encode(a["content"]).decode("ascii")}
+                for a in attachments
+            ]
+        async with httpx.AsyncClient(timeout=20) as c:
             r = await c.post("https://api.resend.com/emails",
                              headers={"Authorization": f"Bearer {api_key}"},
-                             json={"from": "Nightwatch <noreply@vulnops.io>",
-                                   "to": [to_addr], "subject": subject,
-                                   "html": body.replace("\n", "<br>")})
+                             json=payload)
         return {"status_code": r.status_code, "ok": 200 <= r.status_code < 300, "text": r.text[:200]}
 
     return {"status_code": 0, "ok": True, "simulated": True,
             "text": "SIMULATED -- no SMTP_HOST or RESEND_API_KEY configured, so nothing was actually sent. "
-                    "Set SMTP_HOST/SMTP_USERNAME/SMTP_PASSWORD in your .env to send real email."}
+                    "Set SMTP_HOST/SMTP_USERNAME/SMTP_PASSWORD in your .env to send real email."
+                    + (f" ({len(attachments)} attachment(s) would have been included.)" if attachments else "")}
+
+
+async def send_email_with_attachment(to_addr: str, subject: str, body: str, attachments: list) -> dict:
+    """Public entry point for anything outside the template/channel-based notification
+    system that needs to send a plain email with a file attached -- currently just
+    scheduled_reports.py. Deliberately bypasses the channel/template machinery (no
+    notification_channels doc, no TEMPLATES rendering) since a scheduled report's
+    recipient list and body are just plain config, not an event-driven notification
+    rule."""
+    return await _send_email(to_addr, subject, body, attachments=attachments)
 
 
 async def deliver(channel: dict, template_id: str, ctx: dict, db) -> dict:

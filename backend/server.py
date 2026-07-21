@@ -27,6 +27,7 @@ from routes.workflows import router as workflows_router
 from routes.integrations import router as integrations_router
 from routes.dashboards import router as dashboards_router
 from routes.reports_routes import router as reports_router
+from routes.scheduled_reports import router as scheduled_reports_router
 from routes.admin import router as admin_router
 from routes.preferences import router as preferences_router
 from routes.playbooks import router as playbooks_router
@@ -76,6 +77,7 @@ api.include_router(workflows_router)
 api.include_router(integrations_router)
 api.include_router(dashboards_router)
 api.include_router(reports_router)
+api.include_router(scheduled_reports_router)
 api.include_router(admin_router)
 api.include_router(preferences_router)
 api.include_router(playbooks_router)

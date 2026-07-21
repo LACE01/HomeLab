@@ -3,7 +3,7 @@ import TrendChart from "@/components/TrendChart";
 import { api, API } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
-import { FileArrowDown, FilePdf, FileCsv, Sparkle, Funnel } from "@phosphor-icons/react";
+import { FileArrowDown, FilePdf, FileCsv, Sparkle, Funnel, Clock, PaperPlaneTilt, Trash, ToggleLeft, ToggleRight } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const CATEGORY_COLORS = { executive: "blue", operational: "green", security: "red", compliance: "purple" };
@@ -35,7 +35,16 @@ export default function Reports() {
   const [preview, setPreview] = useState(null); // {count} | null while unknown
   const [previewLoading, setPreviewLoading] = useState(false);
 
-  useEffect(() => { api.get("/v1/reports/catalog").then(r => setCatalog(r.data)); }, []);
+  // Scheduled reports
+  const [schedules, setSchedules] = useState([]);
+  const [scheduleBusy, setScheduleBusy] = useState(null);
+  const [newSchedule, setNewSchedule] = useState({
+    name: "", source: "prebuilt", report_id: "", fmt: "pdf", frequency: "weekly", recipientsText: "",
+  });
+
+  const loadSchedules = () => api.get("/v1/reports/scheduled").then(r => setSchedules(r.data.items)).catch(() => setSchedules([]));
+
+  useEffect(() => { api.get("/v1/reports/catalog").then(r => setCatalog(r.data)); loadSchedules(); }, []);
 
   const previewPayload = () => {
     const filters = {};
@@ -84,6 +93,54 @@ export default function Reports() {
 
   const toggleArr = (arr, val) => arr.includes(val) ? arr.filter(x=>x!==val) : [...arr, val];
 
+  const createSchedule = async () => {
+    const recipients = newSchedule.recipientsText.split(",").map(s => s.trim()).filter(Boolean);
+    if (!newSchedule.name.trim()) { toast.error("Give this schedule a name"); return; }
+    if (newSchedule.source === "prebuilt" && !newSchedule.report_id) { toast.error("Pick a report"); return; }
+    if (recipients.length === 0) { toast.error("Add at least one recipient email"); return; }
+    setScheduleBusy("create");
+    try {
+      const body = newSchedule.source === "prebuilt"
+        ? { name: newSchedule.name, source: "prebuilt", report_id: newSchedule.report_id, fmt: newSchedule.fmt, frequency: newSchedule.frequency, recipients }
+        : { name: newSchedule.name, source: "custom", custom_config: previewPayload(), fmt: newSchedule.fmt, frequency: newSchedule.frequency, recipients };
+      await api.post("/v1/reports/scheduled", body);
+      toast.success("Scheduled report created");
+      setNewSchedule({ name: "", source: "prebuilt", report_id: "", fmt: "pdf", frequency: "weekly", recipientsText: "" });
+      await loadSchedules();
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed to create schedule"); }
+    finally { setScheduleBusy(null); }
+  };
+
+  const sendScheduleNow = async (s) => {
+    setScheduleBusy(s.id);
+    try {
+      const r = await api.post(`/v1/reports/scheduled/${s.id}/send-now`);
+      if (r.data.ok) toast.success(`Sent to ${r.data.sent_to.join(", ")}`);
+      else toast.error(`Some recipients failed: ${r.data.errors.join("; ")}`);
+      await loadSchedules();
+    } catch (e) { toast.error(e.response?.data?.detail || "Send failed"); }
+    finally { setScheduleBusy(null); }
+  };
+
+  const toggleSchedule = async (s) => {
+    setScheduleBusy(s.id);
+    try {
+      await api.patch(`/v1/reports/scheduled/${s.id}`, { enabled: !s.enabled });
+      await loadSchedules();
+    } catch (e) { toast.error("Failed to update schedule"); }
+    finally { setScheduleBusy(null); }
+  };
+
+  const deleteSchedule = async (s) => {
+    setScheduleBusy(s.id);
+    try {
+      await api.delete(`/v1/reports/scheduled/${s.id}`);
+      toast.success("Schedule deleted");
+      await loadSchedules();
+    } catch (e) { toast.error("Failed to delete schedule"); }
+    finally { setScheduleBusy(null); }
+  };
+
   return (
     <Layout title="Reports" subtitle="Pre-built reports and a dynamic report builder — export to PDF or CSV">
       {/* Pre-built catalog */}
@@ -112,6 +169,102 @@ export default function Reports() {
               </div>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* Scheduled reports */}
+      <div className="mb-6">
+        <div className="flex items-center gap-2 mb-3">
+          <Clock size={16} className="text-amber-400"/>
+          <h2 className="text-[13px] uppercase tracking-wider font-mono text-slate-300">Scheduled Reports</h2>
+        </div>
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+          {schedules.length === 0 ? (
+            <div className="text-[12px] text-slate-500 mb-4">No scheduled reports yet — set one up below to have a report emailed automatically on a cadence.</div>
+          ) : (
+            <div className="space-y-2 mb-4">
+              {schedules.map(s => (
+                <div key={s.id} data-testid={`schedule-${s.id}`} className="flex items-center justify-between gap-3 border border-[#21262D] rounded px-3 py-2">
+                  <div className="min-w-0">
+                    <div className="text-[13px] text-slate-200 flex items-center gap-2">
+                      {s.name}
+                      <Chip color={s.enabled ? "green" : "slate"}>{s.enabled ? "enabled" : "paused"}</Chip>
+                      <span className="text-[10.5px] text-slate-500 font-mono">{s.frequency} · {s.fmt.toUpperCase()}</span>
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-0.5">
+                      {s.source === "prebuilt" ? s.report_id : "custom builder config"} → {s.recipients.join(", ")}
+                    </div>
+                    <div className="text-[10px] text-slate-600 mt-0.5">
+                      {s.last_sent_at ? `Last sent ${new Date(s.last_sent_at).toLocaleString()}` : "Never sent yet"}
+                      {s.last_send_error ? <span className="text-red-400 ml-1.5">· {s.last_send_error}</span> : null}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button data-testid={`schedule-send-${s.id}`} disabled={scheduleBusy===s.id} onClick={()=>sendScheduleNow(s)}
+                      title="Send now" className="h-7 w-7 flex items-center justify-center border border-[#30363D] hover:border-blue-500/50 hover:text-blue-300 text-slate-400 rounded disabled:opacity-50">
+                      <PaperPlaneTilt size={13}/>
+                    </button>
+                    <button data-testid={`schedule-toggle-${s.id}`} disabled={scheduleBusy===s.id} onClick={()=>toggleSchedule(s)}
+                      title={s.enabled ? "Pause" : "Resume"} className="h-7 w-7 flex items-center justify-center border border-[#30363D] hover:border-amber-500/50 hover:text-amber-300 text-slate-400 rounded disabled:opacity-50">
+                      {s.enabled ? <ToggleRight size={15}/> : <ToggleLeft size={15}/>}
+                    </button>
+                    <button data-testid={`schedule-delete-${s.id}`} disabled={scheduleBusy===s.id} onClick={()=>deleteSchedule(s)}
+                      title="Delete" className="h-7 w-7 flex items-center justify-center border border-[#30363D] hover:border-red-500/50 hover:text-red-300 text-slate-400 rounded disabled:opacity-50">
+                      <Trash size={13}/>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="border-t border-[#30363D] pt-3">
+            <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500 mb-2">New schedule</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-2 items-end">
+              <div className="lg:col-span-2">
+                <label className="text-[10px] uppercase tracking-wider font-mono text-slate-500">Name</label>
+                <input data-testid="sched-name" value={newSchedule.name} onChange={(e)=>setNewSchedule({...newSchedule, name: e.target.value})}
+                  placeholder="e.g. Weekly exec summary" className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12.5px]"/>
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-wider font-mono text-slate-500">Report</label>
+                <select data-testid="sched-source" value={newSchedule.source === "custom" ? "__custom__" : newSchedule.report_id}
+                  onChange={(e)=> e.target.value === "__custom__"
+                    ? setNewSchedule({...newSchedule, source: "custom", report_id: ""})
+                    : setNewSchedule({...newSchedule, source: "prebuilt", report_id: e.target.value})}
+                  className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12.5px]">
+                  <option value="">Pick a report…</option>
+                  {catalog.items.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+                  <option value="__custom__">— Current builder config below —</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-wider font-mono text-slate-500">Format</label>
+                <select data-testid="sched-fmt" value={newSchedule.fmt} onChange={(e)=>setNewSchedule({...newSchedule, fmt: e.target.value})}
+                  className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12.5px]">
+                  <option value="pdf">PDF</option><option value="csv">CSV</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-wider font-mono text-slate-500">Frequency</label>
+                <select data-testid="sched-freq" value={newSchedule.frequency} onChange={(e)=>setNewSchedule({...newSchedule, frequency: e.target.value})}
+                  className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12.5px]">
+                  <option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option>
+                </select>
+              </div>
+              <div className="lg:col-span-2">
+                <label className="text-[10px] uppercase tracking-wider font-mono text-slate-500">Recipients (comma-separated)</label>
+                <input data-testid="sched-recipients" value={newSchedule.recipientsText} onChange={(e)=>setNewSchedule({...newSchedule, recipientsText: e.target.value})}
+                  placeholder="ciso@example.com, soc@example.com" className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12.5px]"/>
+              </div>
+              <div className="lg:col-span-4 text-[10.5px] text-slate-600">
+                &ldquo;— Current builder config below —&rdquo; schedules whatever filters/group-by are currently set in the Dynamic Report Builder further down the page.
+              </div>
+              <button data-testid="sched-create" disabled={scheduleBusy==='create'} onClick={createSchedule}
+                className="h-9 px-3 text-[12.5px] bg-amber-500/90 hover:bg-amber-400 text-black font-medium rounded inline-flex items-center justify-center gap-1.5 disabled:opacity-50">
+                <Clock size={13}/> {scheduleBusy==='create' ? "Creating…" : "Schedule"}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 

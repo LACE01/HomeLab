@@ -54,20 +54,25 @@ async def _open_findings_filter():
 
 
 def _csv_response(rows: list, headers: list, filename: str):
-    from fastapi.responses import StreamingResponse
+    # Plain Response (not StreamingResponse) -- the CSV is already fully built in
+    # memory by the time we get here regardless, so there was never any actual
+    # streaming happening. Using Response instead means `.body` holds the raw
+    # bytes directly, which scheduled_reports.py reuses to attach the exact same
+    # report to an email without regenerating it or reverse-engineering a
+    # streaming iterator.
+    from fastapi import Response
     output = io.StringIO()
     w = csv.writer(output)
     w.writerow(headers)
     for r in rows:
         w.writerow([r.get(h, "") if isinstance(r, dict) else r[i] for i, h in enumerate(headers)])
-    output.seek(0)
-    return StreamingResponse(iter([output.getvalue()]), media_type="text/csv",
-                             headers={"Content-Disposition": f"attachment; filename={filename}.csv"})
+    return Response(content=output.getvalue(), media_type="text/csv",
+                     headers={"Content-Disposition": f"attachment; filename={filename}.csv"})
 
 
 def _pdf_response(title: str, sections: list, filename: str):
     """sections: list of dicts: {type:'text', value:'...'} or {type:'table', headers:[], rows:[[]]}"""
-    from fastapi.responses import StreamingResponse
+    from fastapi import Response
     from reportlab.platypus import Paragraph, Spacer
     import pdf_theme as theme
 
@@ -91,9 +96,8 @@ def _pdf_response(title: str, sections: list, filename: str):
             elements.append(theme.styled_table(sec["headers"], sec["rows"], numeric_cols=numeric_cols))
             elements.append(Spacer(1, 10))
     theme.build(doc, elements)
-    buf.seek(0)
-    return StreamingResponse(buf, media_type="application/pdf",
-                             headers={"Content-Disposition": f"attachment; filename={filename}.pdf"})
+    return Response(content=buf.getvalue(), media_type="application/pdf",
+                     headers={"Content-Disposition": f"attachment; filename={filename}.pdf"})
 
 
 async def run_prebuilt(db, report_id: str, fmt: str):
