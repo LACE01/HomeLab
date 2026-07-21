@@ -21,13 +21,16 @@ rather than a rigid foreign key:
     lets a pure-software vendor like Adobe, which has no asset-level presence,
     still show real linked findings)
   - db.software_inventory, when populated by the Microsoft Defender for
-    Endpoint EDR connector (see defender_sync.py) -- real, agent-reported
-    "this software is installed on this specific asset" facts, not a
-    substring guess. This is the one source that isn't an inference; without
-    Defender for Endpoint configured, this app still has no dedicated
-    per-asset software inventory and the substring-matching sources above
-    remain the only signal, which is honest about what's actually available
-    rather than pretending otherwise.
+    Endpoint EDR connector (see defender_sync.py) OR Qualys GAV/CSAM (see
+    qualys_gav.py) -- real, agent-/scanner-reported "this software is
+    installed on this specific asset" facts, not a substring guess (Qualys's
+    own per-software `publisher` field is used directly as the vendor, same
+    as Defender's). See DEVICE_SOFTWARE_SOURCES below for the exact list of
+    source values this covers. This is the one source that isn't an
+    inference; without at least one of those connectors configured, this app
+    still has no dedicated per-asset software inventory and the
+    substring-matching sources above remain the only signal, which is honest
+    about what's actually available rather than pretending otherwise.
 
 Risk scoring reuses routes.risk_register's exact 5x5 likelihood x impact
 matrix (_score/_band) rather than inventing a second scoring system:
@@ -48,6 +51,14 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 CATEGORIES = ["Hardware", "Software", "Cloud Service / SaaS", "MSP / Service Provider", "Other"]
+
+# db.software_inventory sources that represent a REAL per-device installed-software
+# fact (not the Defender org-wide "this software exists somewhere" list, which has
+# no asset_id and isn't reliable per-asset signal on its own) -- both entries here
+# are agent-/scanner-reported, not substring-inferred. Add a new connector's source
+# name here (and nowhere else) to make it count for vendor detection, the Asset
+# Detail software panel, and _linked_assets' structural asset matching all at once.
+DEVICE_SOFTWARE_SOURCES = ["defender_device", "qualys_device"]
 
 # Contract/compliance tracking -- the "vendor management" half of this module, not
 # just risk tracking: knowing a DPA is missing or a contract is about to lapse is as
@@ -213,17 +224,18 @@ async def suggest_vendors(db) -> list:
                 if needle in haystack:
                     _add(vendor_name, "Software", f.get("asset_id"), "finding_title")
 
-    # Real per-asset installed-software vendors (Defender for Endpoint). asset_id is
-    # only set on defender_device rows (per-machine); defender_org rows (asset_id=
-    # None, the org-wide software list) are deliberately excluded here -- an
-    # asset_count needs real per-asset backing to mean anything.
+    # Real per-asset installed-software vendors (Defender for Endpoint AND/OR
+    # Qualys GAV/CSAM -- see DEVICE_SOFTWARE_SOURCES). asset_id is only set on
+    # per-device rows; Defender's org-wide rows (asset_id=None, the org-wide
+    # software list) are deliberately excluded here -- an asset_count needs real
+    # per-asset backing to mean anything.
     if detect_edr:
         sw_cursor = db.software_inventory.find(
-            {"source": "defender_device", "asset_id": {"$ne": None}},
+            {"source": {"$in": DEVICE_SOFTWARE_SOURCES}, "asset_id": {"$ne": None}},
             {"_id": 0, "vendor": 1, "asset_id": 1},
         )
         async for row in sw_cursor:
-            _add(row.get("vendor"), "Software", row.get("asset_id"), "edr_software_inventory")
+            _add(row.get("vendor"), "Software", row.get("asset_id"), "device_software_inventory")
 
     suggestions = [
         {"name": name, "category": v["category"], "source": "/".join(sorted(v["sources"])), "asset_count": len(v["asset_ids"])}
@@ -258,14 +270,15 @@ async def _linked_assets(db, vendor: dict) -> tuple:
         ors.append({"hostname": {"$regex": t, "$options": "i"}})
     assets = await db.assets.find({"$or": ors}, {"_id": 0}).to_list(1000)
 
-    # Real per-asset software-vendor linkage (Defender for Endpoint), when available --
-    # picks up assets running this vendor's software even when nothing about the
-    # asset's hardware_info/os/hostname happens to match, which is exactly the
-    # precision gap the substring approach above can't close on its own.
+    # Real per-asset software-vendor linkage (Defender for Endpoint and/or Qualys
+    # GAV/CSAM -- see DEVICE_SOFTWARE_SOURCES), when available -- picks up assets
+    # running this vendor's software even when nothing about the asset's
+    # hardware_info/os/hostname happens to match, which is exactly the precision
+    # gap the substring approach above can't close on its own.
     structural_ids = {a["id"] for a in assets}
     sw_ors = [{"vendor": {"$regex": t, "$options": "i"}} for t in terms]
     sw_rows = await db.software_inventory.find(
-        {"source": "defender_device", "asset_id": {"$ne": None}, "$or": sw_ors},
+        {"source": {"$in": DEVICE_SOFTWARE_SOURCES}, "asset_id": {"$ne": None}, "$or": sw_ors},
         {"_id": 0, "asset_id": 1},
     ).to_list(5000)
     extra_ids = {r["asset_id"] for r in sw_rows} - structural_ids

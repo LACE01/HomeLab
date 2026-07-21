@@ -92,11 +92,15 @@ async def asset_findings(asset_id: str, user: dict = Depends(get_current_user)):
 @router.get("/v1/assets/{asset_id}/software")
 async def asset_software_inventory(asset_id: str, user: dict = Depends(get_current_user)):
     """Per-asset installed-software list, populated by the Microsoft Defender for
-    Endpoint EDR connector's per-device sync (see defender_sync.py). Distinct from
-    SBOM component data (sbom.py) -- this is agent-reported OS-level installed
-    software, not application dependency manifests."""
+    Endpoint EDR connector's per-device sync (see defender_sync.py) and/or Qualys
+    GAV/CSAM's per-host software pull (see qualys_gav.py) -- see
+    vendor_management.DEVICE_SOFTWARE_SOURCES for the exact source list this
+    accepts. Distinct from SBOM component data (sbom.py) -- this is agent-/
+    scanner-reported OS-level installed software, not application dependency
+    manifests."""
+    from vendor_management import DEVICE_SOFTWARE_SOURCES
     items = await db.software_inventory.find(
-        {"source": "defender_device", "asset_id": asset_id}, {"_id": 0},
+        {"source": {"$in": DEVICE_SOFTWARE_SOURCES}, "asset_id": asset_id}, {"_id": 0},
     ).sort("vendor", 1).to_list(2000)
     return {"items": items, "total": len(items)}
 

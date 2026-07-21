@@ -127,9 +127,12 @@ export function Integrations() {
           // separately-licensed Qualys module -- surfaced as its own info/success toast so
           // a licensing gap there never looks like the main sync failed.
           if (s.asset_inventory_error) {
-            toast(`Asset hardware/last-logged-in-user sync skipped: ${s.asset_inventory_error}`, { duration: 10000 });
+            toast(`Qualys GAV/CSAM asset enrichment skipped: ${s.asset_inventory_error}`, { duration: 10000 });
           } else if (s.asset_inventory?.assets_enriched) {
-            toast.success(`Hardware + last-logged-in-user data updated for ${s.asset_inventory.assets_enriched} asset(s).`);
+            toast.success(
+              `Hardware/OS/business-info updated for ${s.asset_inventory.assets_enriched} asset(s)` +
+              (s.asset_inventory.software_entries_synced ? ` · ${s.asset_inventory.software_entries_synced} software entries synced (feeds Vendor detection)` : "") + "."
+            );
           }
           break;
         }

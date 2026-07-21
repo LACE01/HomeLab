@@ -658,6 +658,93 @@ export function AssetDetail() {
         </div>
       )}
 
+      {(a.hardware_manufacturer || a.os_publisher || a.qualys_business_info || a.open_ports || a.volumes || a.network_interfaces) && (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden mb-4">
+          <div className="px-4 py-2 border-b border-[#30363D]">
+            <h3 className="text-[11px] uppercase tracking-wider font-mono text-slate-400 flex items-center gap-1.5">
+              <Info size={13} /> Qualys Asset Intelligence (GAV/CSAM)
+            </h3>
+          </div>
+          <div className="p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+            {(a.hardware_manufacturer || a.hardware_model || a.hardware_category) && (
+              <div>
+                <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider mb-1.5">Hardware</div>
+                <div className="space-y-1 text-[12px]">
+                  <div className="flex justify-between"><span className="text-slate-500">Manufacturer</span><span className="text-slate-300">{a.hardware_manufacturer || "—"}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Model</span><span className="text-slate-300">{a.hardware_model || "—"}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Category</span><span className="text-slate-300">{a.hardware_category || "—"}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Processor</span><span className="text-slate-300 truncate max-w-[160px]" title={a.processor_description}>{a.processor_description || "—"}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">CPUs / Memory</span><span className="font-mono text-slate-300">{a.cpu_count || "—"} / {a.total_memory_mb ? `${Math.round(a.total_memory_mb/1024)} GB` : "—"}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">BIOS serial</span><span className="font-mono text-slate-300">{a.bios_serial_number || "—"}</span></div>
+                </div>
+              </div>
+            )}
+            {(a.os_publisher || a.os_version || a.os_lifecycle_stage) && (
+              <div>
+                <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider mb-1.5">Operating System</div>
+                <div className="space-y-1 text-[12px]">
+                  <div className="flex justify-between"><span className="text-slate-500">Publisher</span><span className="text-slate-300">{a.os_publisher || "—"}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Version</span><span className="font-mono text-slate-300">{a.os_version || "—"}{a.os_edition ? ` (${a.os_edition})` : ""}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Architecture</span><span className="text-slate-300">{a.os_architecture || "—"}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Lifecycle</span>
+                    <Chip color={a.os_lifecycle_stage?.toLowerCase().includes("eol") || a.os_lifecycle_stage?.toLowerCase().includes("eos") ? "red" : "slate"}>{a.os_lifecycle_stage || "—"}</Chip></div>
+                  {a.os_eol_date && <div className="flex justify-between"><span className="text-slate-500">End of life</span><span className="text-slate-300">{fmtDate(a.os_eol_date)}</span></div>}
+                </div>
+              </div>
+            )}
+            {(a.qualys_business_info || a.qualys_location || a.qualys_criticality_score != null) && (
+              <div>
+                <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider mb-1.5">Business Context</div>
+                <div className="space-y-1 text-[12px]">
+                  {a.qualys_criticality_score != null && <div className="flex justify-between"><span className="text-slate-500">Qualys criticality</span><span className="text-slate-300">{a.qualys_criticality_score}</span></div>}
+                  {a.qualys_business_info?.owned_by && <div className="flex justify-between"><span className="text-slate-500">Owned by</span><span className="text-slate-300">{a.qualys_business_info.owned_by}</span></div>}
+                  {a.qualys_business_info?.department && <div className="flex justify-between"><span className="text-slate-500">Department</span><span className="text-slate-300">{a.qualys_business_info.department}</span></div>}
+                  {a.qualys_business_info?.environment && <div className="flex justify-between"><span className="text-slate-500">Environment</span><span className="text-slate-300">{a.qualys_business_info.environment}</span></div>}
+                  {a.qualys_location?.city && <div className="flex justify-between"><span className="text-slate-500">Location</span><span className="text-slate-300">{[a.qualys_location.city, a.qualys_location.state, a.qualys_location.country].filter(Boolean).join(", ")}</span></div>}
+                  {a.qualys_tags?.length > 0 && (
+                    <div className="pt-1 flex flex-wrap gap-1">{a.qualys_tags.slice(0, 8).map(t => <Chip key={t} color="slate">{t}</Chip>)}</div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+          {(a.open_ports?.length > 0 || a.volumes?.length > 0 || a.network_interfaces?.length > 0) && (
+            <div className="border-t border-[#30363D] p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+              {a.open_ports?.length > 0 && (
+                <div>
+                  <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider mb-1.5">Open Ports ({a.open_ports.length})</div>
+                  <div className="text-[11.5px] font-mono text-slate-300 space-y-0.5 max-h-32 overflow-y-auto">
+                    {a.open_ports.slice(0, 20).map((p, i) => (
+                      <div key={i}>{p.port}/{p.protocol}{p.service ? ` — ${p.service}` : ""}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {a.volumes?.length > 0 && (
+                <div>
+                  <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider mb-1.5">Disk Volumes ({a.volumes.length})</div>
+                  <div className="text-[11.5px] text-slate-300 space-y-0.5 max-h-32 overflow-y-auto">
+                    {a.volumes.slice(0, 20).map((v, i) => (
+                      <div key={i} className="font-mono">{v.name}: {v.free_bytes != null && v.size_bytes ? `${Math.round(v.free_bytes/1e9)}/${Math.round(v.size_bytes/1e9)} GB free` : "—"}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {a.network_interfaces?.length > 0 && (
+                <div>
+                  <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider mb-1.5">Network Interfaces ({a.network_interfaces.length})</div>
+                  <div className="text-[11.5px] font-mono text-slate-300 space-y-0.5 max-h-32 overflow-y-auto">
+                    {a.network_interfaces.slice(0, 20).map((ni, i) => (
+                      <div key={i}>{ni.ipv4 || ni.ipv6 || "—"} {ni.mac ? `(${ni.mac})` : ""}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {(a.defender_device_id || a.intune_device_id || software.total > 0) && (
         <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden mb-4">
           <div className="px-4 py-2 border-b border-[#30363D]">

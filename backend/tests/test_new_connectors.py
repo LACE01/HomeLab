@@ -336,7 +336,7 @@ import vendor_management
 suggestions = run(vendor_management.suggest_vendors(db))
 edr_suggestion = next((s for s in suggestions if s["name"] == "Adobe Inc."), None)
 assert edr_suggestion is not None, suggestions
-assert edr_suggestion["source"] == "edr_software_inventory"
+assert edr_suggestion["source"] == "device_software_inventory"  # renamed when Qualys GAV/CSAM became a second device-software source
 assert edr_suggestion["asset_count"] == 1
 print("PASS: suggest_vendors() surfaces a real EDR-detected software vendor with correct asset_count")
 
