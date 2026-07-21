@@ -1,0 +1,6 @@
+# Test-only dependencies, kept separate from requirements.txt so the production
+# Docker image doesn't carry test tooling. Install with:
+#   pip install -r requirements.txt -r requirements-dev.txt
+-r requirements.txt
+mongomock==4.3.0
+mongomock-motor==0.0.36
