@@ -11,7 +11,10 @@ from db import db
 from rbac import require_module
 from auth_utils import get_current_user
 from routes.common import now_iso
-from threat_intel_watchlist import add_ioc, IOC_TYPES, sync_threatfox_feed, sync_opensourcemalware_feed
+from threat_intel_watchlist import (
+    add_ioc, IOC_TYPES, sync_threatfox_feed, sync_opensourcemalware_feed,
+    sync_opencti_feed, sync_otx_feed,
+)
 
 router = APIRouter()
 
@@ -103,6 +106,40 @@ async def delete_ioc(
     return {"ok": True}
 
 
+@router.get("/v1/admin/threat-intel/watchlist/{ioc_id}")
+async def get_ioc(
+    ioc_id: str, user: dict = Depends(get_current_user),
+    _rbac: dict = Depends(require_module("/admin/threat-intel")),
+):
+    """Full detail for one IOC, including the `detail` dict of raw source fields
+    (STIX pattern, OTX pulse, ThreatFox malware family, OSM advisory, etc.) that
+    the watchlist list view doesn't need but the click-to-expand detail modal
+    does -- kept as a separate GET so the list endpoint's payload stays light."""
+    doc = await db.ioc_watchlist.find_one({"id": ioc_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "IOC not found")
+    return doc
+
+
+@router.get("/v1/admin/threat-intel/watchlist/{ioc_id}/matches")
+async def ioc_matches(
+    ioc_id: str, user: dict = Depends(get_current_user),
+    _rbac: dict = Depends(require_module("/admin/threat-intel")),
+):
+    """Recent security_events this IOC actually triggered (via check_and_emit's
+    raw={"watchlist_id": ...}) -- the "where/when did this hit something in our
+    environment" half of the detail modal, complementing get_ioc's "why is this
+    considered malicious" half."""
+    doc = await db.ioc_watchlist.find_one({"id": ioc_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "IOC not found")
+    cursor = db.security_events.find(
+        {"raw.watchlist_id": ioc_id}, {"_id": 0},
+    ).sort("last_seen_at", -1).limit(25)
+    events = await cursor.to_list(length=None)
+    return {"items": events, "total": len(events)}
+
+
 @router.post("/v1/admin/threat-intel/sync-now")
 async def sync_now(
     user: dict = Depends(get_current_user),
@@ -131,6 +168,34 @@ async def sync_now_opensourcemalware(
     return result
 
 
+@router.post("/v1/admin/threat-intel/sync-now/opencti")
+async def sync_now_opencti(
+    user: dict = Depends(get_current_user),
+    _rbac: dict = Depends(require_module("/admin/threat-intel", level="edit")),
+):
+    try:
+        result = await sync_opencti_feed(db)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"OpenCTI sync failed: {e}")
+    return result
+
+
+@router.post("/v1/admin/threat-intel/sync-now/otx")
+async def sync_now_otx(
+    user: dict = Depends(get_current_user),
+    _rbac: dict = Depends(require_module("/admin/threat-intel", level="edit")),
+):
+    try:
+        result = await sync_otx_feed(db)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"AlienVault OTX sync failed: {e}")
+    return result
+
+
 @router.get("/v1/admin/threat-intel/stats")
 async def stats(
     user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/admin/threat-intel")),
@@ -144,27 +209,27 @@ async def stats(
 
 
 async def threat_intel_watchlist_sync_loop(db, interval_hours: float = 12):
-    """Periodic bulk pull from ThreatFox and OpenSourceMalware, mirroring
-    splunk_sync_loop/wazuh_sync_loop's pattern. Silently no-ops (just logs) for
-    whichever feed isn't configured -- this loop is always registered, configuring
-    either integration is what turns that half of it on."""
+    """Periodic bulk pull from ThreatFox, OpenSourceMalware, OpenCTI, and
+    AlienVault OTX, mirroring splunk_sync_loop/wazuh_sync_loop's pattern.
+    Silently no-ops (just logs) for whichever feed isn't configured -- this loop
+    is always registered, configuring any of the four integrations is what turns
+    that quarter of it on."""
     import asyncio
     import logging
     logger = logging.getLogger("threat_intel_watchlist_sync_loop")
     await asyncio.sleep(90)  # stagger past Splunk/Wazuh's own startup staggers
     while True:
-        try:
-            result = await sync_threatfox_feed(db)
-            logger.info(f"ThreatFox feed sync: {result}")
-        except ValueError:
-            pass  # not configured yet -- expected/quiet, not an error
-        except Exception as e:
-            logger.warning(f"ThreatFox feed sync failed: {e}")
-        try:
-            result = await sync_opensourcemalware_feed(db)
-            logger.info(f"OpenSourceMalware feed sync: {result}")
-        except ValueError:
-            pass  # not configured yet -- expected/quiet, not an error
-        except Exception as e:
-            logger.warning(f"OpenSourceMalware feed sync failed: {e}")
+        for label, sync_fn in (
+            ("ThreatFox", sync_threatfox_feed),
+            ("OpenSourceMalware", sync_opensourcemalware_feed),
+            ("OpenCTI", sync_opencti_feed),
+            ("AlienVault OTX", sync_otx_feed),
+        ):
+            try:
+                result = await sync_fn(db)
+                logger.info(f"{label} feed sync: {result}")
+            except ValueError:
+                pass  # not configured yet -- expected/quiet, not an error
+            except Exception as e:
+                logger.warning(f"{label} feed sync failed: {e}")
         await asyncio.sleep(interval_hours * 3600)

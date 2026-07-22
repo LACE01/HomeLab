@@ -1,17 +1,51 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import {
   Plus, X, Trash, CircleNotch, Binoculars, UploadSimple, Siren, MagnifyingGlass, Package,
+  Database, Broadcast, CaretRight, ArrowSquareOut, Clock,
 } from "@phosphor-icons/react";
 
 const IOC_TYPES = ["ip", "domain", "hash", "url", "package"];
 const SEVERITIES = ["Info", "Low", "Medium", "High", "Critical"];
 
 const SEVERITY_COLOR = { Info: "slate", Low: "blue", Medium: "amber", High: "orange", Critical: "red" };
+
+const SOURCE_LABELS = {
+  "abuse.ch_threatfox_feed": "ThreatFox feed",
+  "opensourcemalware_feed": "OpenSourceMalware feed",
+  "opencti_feed": "OpenCTI feed",
+  "otx_feed": "AlienVault OTX feed",
+  "manual": "Manual",
+};
+
+// Field-key -> human label overrides for the detail drill-down. Any detail key
+// not listed here just gets its snake_case turned into Title Case.
+const DETAIL_LABELS = {
+  malware: "Malware family", malware_alias: "Malware alias", threat_type: "Threat type",
+  confidence_level: "Confidence level", first_seen: "First seen", last_seen: "Last seen",
+  reference: "Reference", reporter: "Reporter", threatfox_ioc_id: "ThreatFox IOC ID",
+  ecosystem: "Ecosystem", package_name: "Package name", severity_level: "Severity level",
+  threat_description: "Description", discovered_date: "Discovered", advisory_url: "Advisory",
+  indicator_name: "Indicator name", description: "Description", pattern: "STIX pattern",
+  valid_until: "Valid until", score: "OpenCTI score", labels: "Labels",
+  opencti_indicator_id: "OpenCTI indicator ID", pulse_name: "OTX pulse", pulse_id: "Pulse ID",
+  pulse_description: "Pulse description", author: "Pulse author", tags: "Tags",
+  references: "References", indicator_type: "OTX indicator type",
+  indicator_description: "Indicator description", indicator_created: "Indicator created",
+};
+
+function fieldLabel(key) {
+  return DETAIL_LABELS[key] || key.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function fieldValue(v) {
+  if (v === null || v === undefined || v === "") return null;
+  if (Array.isArray(v)) return v.length ? v.join(", ") : null;
+  return String(v);
+}
 
 export default function ThreatIntelWatchlist() {
   const [items, setItems] = useState([]);
@@ -22,7 +56,8 @@ export default function ThreatIntelWatchlist() {
   const [q, setQ] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
-  const [syncing, setSyncing] = useState(null); // "threatfox" | "opensourcemalware" | null
+  const [selected, setSelected] = useState(null); // IOC row currently open in the detail modal
+  const [syncing, setSyncing] = useState(null); // "threatfox" | "opensourcemalware" | "opencti" | "otx" | null
 
   const load = async () => {
     try {
@@ -45,33 +80,23 @@ export default function ThreatIntelWatchlist() {
 
   const search = (e) => { e.preventDefault(); load(); };
 
-  const removeIoc = async (item) => {
+  const removeIoc = async (e, item) => {
+    e.stopPropagation();
     if (!window.confirm(`Remove "${item.value}" from the watchlist?`)) return;
     await api.delete(`/v1/admin/threat-intel/watchlist/${item.id}`);
     toast.success("Removed");
     load();
   };
 
-  const syncNow = async () => {
-    setSyncing("threatfox");
+  const runSync = async (key, label, path) => {
+    setSyncing(key);
     try {
-      const r = await api.post("/v1/admin/threat-intel/sync-now");
-      toast.success(`ThreatFox sync: ${r.data.added} new IOC(s) added (${r.data.seen ?? 0} seen)`);
+      const r = await api.post(path);
+      const errNote = r.data.errors?.length ? ` (${r.data.errors.length} error(s), see server logs)` : "";
+      toast.success(`${label} sync: ${r.data.added} new IOC(s) added (${r.data.seen ?? 0} seen)${errNote}`);
       load();
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Sync failed");
-    } finally { setSyncing(null); }
-  };
-
-  const syncOpenSourceMalware = async () => {
-    setSyncing("opensourcemalware");
-    try {
-      const r = await api.post("/v1/admin/threat-intel/sync-now/opensourcemalware");
-      const errNote = r.data.errors?.length ? ` (${r.data.errors.length} ecosystem error(s), see server logs)` : "";
-      toast.success(`OpenSourceMalware sync: ${r.data.added} new package IOC(s) added (${r.data.seen ?? 0} seen)${errNote}`);
-      load();
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Sync failed");
+      toast.error(e.response?.data?.detail || `${label} sync failed`);
     } finally { setSyncing(null); }
   };
 
@@ -79,16 +104,26 @@ export default function ThreatIntelWatchlist() {
     <Layout title="Threat Intel Watchlist"
       subtitle="A living list of known-bad IPs, domains, hashes, and URLs -- checked automatically against new assets and file scans, not just on-demand lookups"
       actions={
-        <div className="flex items-center gap-2">
-          <button onClick={syncNow} disabled={!!syncing}
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          <button onClick={() => runSync("threatfox", "ThreatFox", "/v1/admin/threat-intel/sync-now")} disabled={!!syncing}
             className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-slate-500 disabled:opacity-50 text-slate-300 rounded inline-flex items-center gap-1.5">
             {syncing === "threatfox" ? <CircleNotch size={14} className="animate-spin"/> : <Binoculars size={14}/>}
-            Sync ThreatFox feed
+            Sync ThreatFox
           </button>
-          <button onClick={syncOpenSourceMalware} disabled={!!syncing}
+          <button onClick={() => runSync("opensourcemalware", "OpenSourceMalware", "/v1/admin/threat-intel/sync-now/opensourcemalware")} disabled={!!syncing}
             className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-slate-500 disabled:opacity-50 text-slate-300 rounded inline-flex items-center gap-1.5">
             {syncing === "opensourcemalware" ? <CircleNotch size={14} className="animate-spin"/> : <Package size={14}/>}
             Sync OpenSourceMalware
+          </button>
+          <button onClick={() => runSync("opencti", "OpenCTI", "/v1/admin/threat-intel/sync-now/opencti")} disabled={!!syncing}
+            className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-slate-500 disabled:opacity-50 text-slate-300 rounded inline-flex items-center gap-1.5">
+            {syncing === "opencti" ? <CircleNotch size={14} className="animate-spin"/> : <Database size={14}/>}
+            Sync OpenCTI
+          </button>
+          <button onClick={() => runSync("otx", "AlienVault OTX", "/v1/admin/threat-intel/sync-now/otx")} disabled={!!syncing}
+            className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-slate-500 disabled:opacity-50 text-slate-300 rounded inline-flex items-center gap-1.5">
+            {syncing === "otx" ? <CircleNotch size={14} className="animate-spin"/> : <Broadcast size={14}/>}
+            Sync OTX
           </button>
           <button onClick={() => setImportOpen(true)}
             className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-slate-500 text-slate-300 rounded inline-flex items-center gap-1.5">
@@ -101,12 +136,13 @@ export default function ThreatIntelWatchlist() {
         </div>
       }>
       <div className="border border-blue-500/30 bg-blue-500/5 rounded-md px-3 py-2.5 mb-4 text-[12px] text-blue-200 leading-relaxed max-w-3xl">
-        This list grows three ways: manually added/pasted IOCs, a scheduled pull of abuse.ch's ThreatFox feed
-        (reuses the same Auth-Key already configured under Integrations &rarr; abuse.ch (ThreatFox) for the
-        on-demand recon-ng lookup), and a scheduled pull of OpenSourceMalware.com's verified malicious open-source
-        package feed (needs an API token configured under Integrations &rarr; OpenSourceMalware). New Qualys assets
-        are checked against watchlisted IPs, every YARA file scan checks the file's hash, and every SBOM upload
-        checks each dependency's package name -- all three raise a Security Alert automatically on a match.
+        This list grows five ways: manually added/pasted IOCs, a scheduled pull of abuse.ch's ThreatFox feed, a
+        scheduled pull of OpenSourceMalware.com's verified malicious open-source package feed, a scheduled pull of
+        our own OpenCTI instance's recent Indicators, and a scheduled pull of AlienVault OTX's subscribed pulses
+        (each reuses the same connection already configured under Integrations for that source's on-demand recon-ng
+        lookup). New Qualys assets are checked against watchlisted IPs, every YARA file scan checks the file's hash,
+        and every SBOM upload checks each dependency's package name -- all three raise a Security Alert automatically
+        on a match. Click any row below to see exactly why a value is considered malicious and where it's matched.
       </div>
 
       {stats && (
@@ -137,7 +173,7 @@ export default function ThreatIntelWatchlist() {
         <div className="text-[12.5px] text-slate-500 py-8 text-center">Loading…</div>
       ) : items.length === 0 ? (
         <div className="border border-[#30363D] bg-[#0D1117] rounded-md py-10 text-center text-[12.5px] text-slate-500">
-          No IOCs on the watchlist yet. Add one manually, bulk import a list, or sync the ThreatFox feed.
+          No IOCs on the watchlist yet. Add one manually, bulk import a list, or sync a feed above.
         </div>
       ) : (
         <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">
@@ -155,26 +191,30 @@ export default function ThreatIntelWatchlist() {
             </thead>
             <tbody>
               {items.map(it => (
-                <tr key={it.id} className="border-b border-[#30363D] last:border-0 hover:bg-slate-800/20">
+                <tr key={it.id} onClick={() => setSelected(it)}
+                  className="border-b border-[#30363D] last:border-0 hover:bg-slate-800/20 cursor-pointer">
                   <td className="px-4 py-2.5 font-mono text-slate-200">{it.value}</td>
                   <td className="px-4 py-2.5 text-slate-400">{it.ioc_type}</td>
                   <td className="px-4 py-2.5"><Chip color={SEVERITY_COLOR[it.severity] || "slate"}>{it.severity}</Chip></td>
                   <td className="px-4 py-2.5 text-slate-500 truncate max-w-[220px]" title={it.notes || ""}>
-                    {it.source === "abuse.ch_threatfox_feed" ? "ThreatFox feed" : "Manual"}
+                    {SOURCE_LABELS[it.source] || it.source || "Manual"}
                     {it.notes && <span className="text-slate-600"> &middot; {it.notes}</span>}
                   </td>
                   <td className="px-4 py-2.5">
                     {it.hits > 0 ? (
-                      <Link to="/alerts" className="inline-flex items-center gap-1 text-amber-400 hover:underline">
+                      <span className="inline-flex items-center gap-1 text-amber-400">
                         <Siren size={12}/> {it.hits}
-                      </Link>
+                      </span>
                     ) : <span className="text-slate-600">0</span>}
                   </td>
                   <td className="px-4 py-2.5 text-slate-500">{new Date(it.added_at).toLocaleDateString()}</td>
                   <td className="px-4 py-2.5 text-right">
-                    <button onClick={() => removeIoc(it)} className="text-slate-500 hover:text-red-400">
-                      <Trash size={14}/>
-                    </button>
+                    <div className="flex items-center justify-end gap-2.5">
+                      <button onClick={(e) => removeIoc(e, it)} className="text-slate-500 hover:text-red-400">
+                        <Trash size={14}/>
+                      </button>
+                      <CaretRight size={13} className="text-slate-600"/>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -186,6 +226,7 @@ export default function ThreatIntelWatchlist() {
 
       {addOpen && <AddIocModal onClose={() => setAddOpen(false)} onSaved={() => { setAddOpen(false); load(); }}/>}
       {importOpen && <BulkImportModal onClose={() => setImportOpen(false)} onSaved={() => { setImportOpen(false); load(); }}/>}
+      {selected && <IocDetailModal item={selected} onClose={() => setSelected(null)}/>}
     </Layout>
   );
 }
@@ -195,6 +236,111 @@ function StatCard({ label, value }) {
     <div className="border border-[#30363D] bg-[#0D1117] rounded-md px-3.5 py-3">
       <div className="text-[11px] text-slate-500 uppercase tracking-wider">{label}</div>
       <div className="text-[20px] text-slate-100 font-semibold mt-0.5">{value ?? 0}</div>
+    </div>
+  );
+}
+
+function IocDetailModal({ item, onClose }) {
+  const [matches, setMatches] = useState(null);
+  const [matchesLoading, setMatchesLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setMatchesLoading(true);
+    api.get(`/v1/admin/threat-intel/watchlist/${item.id}/matches`)
+      .then(r => { if (!cancelled) setMatches(r.data.items || []); })
+      .catch(() => { if (!cancelled) setMatches([]); })
+      .finally(() => { if (!cancelled) setMatchesLoading(false); });
+    return () => { cancelled = true; };
+  }, [item.id]);
+
+  const detail = item.detail || null;
+  const detailEntries = detail
+    ? Object.entries(detail).map(([k, v]) => [k, fieldValue(v)]).filter(([, v]) => v !== null)
+    : [];
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-[#0D1117] border border-[#30363D] rounded-md w-full max-w-lg max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#30363D] sticky top-0 bg-[#0D1117]">
+          <div>
+            <div className="text-[14px] text-slate-100 font-medium font-mono">{item.value}</div>
+            <div className="text-[11px] text-slate-500 mt-0.5">{item.ioc_type} &middot; {SOURCE_LABELS[item.source] || item.source || "Manual"}</div>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-200"><X size={18}/></button>
+        </div>
+
+        <div className="p-5 space-y-5">
+          <div className="flex items-center gap-4 text-[12.5px]">
+            <div>
+              <div className="text-[11px] text-slate-500 uppercase tracking-wider">Severity</div>
+              <div className="mt-1"><Chip color={SEVERITY_COLOR[item.severity] || "slate"}>{item.severity}</Chip></div>
+            </div>
+            <div>
+              <div className="text-[11px] text-slate-500 uppercase tracking-wider">Hits</div>
+              <div className="mt-1 text-slate-200">{item.hits ?? 0}</div>
+            </div>
+            <div>
+              <div className="text-[11px] text-slate-500 uppercase tracking-wider">Added</div>
+              <div className="mt-1 text-slate-200">{new Date(item.added_at).toLocaleDateString()}</div>
+            </div>
+          </div>
+
+          <div>
+            <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-2">Why this is flagged</div>
+            {item.notes && (
+              <div className="text-[12.5px] text-slate-300 mb-2">{item.notes}</div>
+            )}
+            {detailEntries.length > 0 ? (
+              <div className="border border-[#30363D] rounded-md divide-y divide-[#30363D]">
+                {detailEntries.map(([k, v]) => (
+                  <div key={k} className="px-3 py-2 flex items-start gap-3 text-[12px]">
+                    <div className="w-36 shrink-0 text-slate-500">{fieldLabel(k)}</div>
+                    <div className="text-slate-200 break-all">
+                      {/^https?:\/\//.test(v) ? (
+                        <a href={v} target="_blank" rel="noreferrer" className="text-blue-400 hover:underline inline-flex items-center gap-1">
+                          {v} <ArrowSquareOut size={11}/>
+                        </a>
+                      ) : v}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-[12px] text-slate-500 border border-[#30363D] rounded-md px-3 py-3">
+                {item.source === "manual"
+                  ? "This IOC was added manually -- no feed detail beyond the note above."
+                  : "No additional source detail was captured for this entry."}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+              <Clock size={12}/> Recent matches in this environment
+            </div>
+            {matchesLoading ? (
+              <div className="text-[12px] text-slate-500 py-3 text-center">Loading…</div>
+            ) : matches && matches.length > 0 ? (
+              <div className="border border-[#30363D] rounded-md divide-y divide-[#30363D]">
+                {matches.map(ev => (
+                  <div key={ev.id} className="px-3 py-2.5 text-[12px]">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-200">{ev.entity_label || ev.entity_id || "Unknown entity"}</span>
+                      <span className="text-slate-500">{ev.last_seen_at ? new Date(ev.last_seen_at).toLocaleString() : ""}</span>
+                    </div>
+                    {ev.description && <div className="text-slate-500 mt-0.5">{ev.description}</div>}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-[12px] text-slate-500 border border-[#30363D] rounded-md px-3 py-3">
+                Hasn't matched anything in this environment yet.
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
