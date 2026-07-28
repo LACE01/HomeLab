@@ -7,6 +7,7 @@ import { Chip } from "@/components/Badges";
 import {
   ArrowLeft, CaretDown, CaretRight, CheckCircle, Printer, ArrowRight,
   Warning, ClipboardText, Scales, ListChecks, Gavel, NotePencil, ClockCounterClockwise,
+  Users, ShieldCheck, Copy, ArrowsClockwise, LinkSimple, Sparkle, PaperPlaneTilt,
 } from "@phosphor-icons/react";
 
 const RISK_COLOR = { Low: "blue", Medium: "amber", High: "orange", Critical: "red" };
@@ -24,6 +25,8 @@ const TABS = [
   { id: "risk", label: "Risk Scoring", icon: Scales },
   { id: "findings", label: "Findings", icon: Warning },
   { id: "decision", label: "Decision", icon: Gavel },
+  { id: "interviews", label: "Interviews", icon: Users },
+  { id: "checks", label: "External Checks", icon: ShieldCheck },
   { id: "notes", label: "Notes", icon: NotePencil },
   { id: "audit", label: "Audit Log", icon: ClockCounterClockwise },
 ];
@@ -74,6 +77,15 @@ export default function SecurityReviewDetail() {
             className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-blue-500/40 hover:text-blue-300 rounded inline-flex items-center gap-1.5 text-slate-300">
             <Printer size={13}/> Report
           </button>
+          {closed && (
+            <button onClick={async () => {
+              const r = await api.post(`/v1/security-reviews/${id}/revalidate`);
+              toast.success(`${r.data.review_number} created — confirm what changed`);
+              navigate(`/security-reviews/${r.data.id}`);
+            }} className="h-8 px-3 text-[12px] border border-purple-500/40 text-purple-300 rounded inline-flex items-center gap-1.5">
+              <ArrowsClockwise size={13}/> Re-validate
+            </button>
+          )}
           <select value={review.status} onChange={e => setStatus(e.target.value)} disabled={closed}
             className="h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-200 disabled:opacity-60">
             {meta.statuses.map(s => <option key={s} value={s}>{s}</option>)}
@@ -156,6 +168,8 @@ export default function SecurityReviewDetail() {
       {tab === "risk" && <RiskTab id={id} review={review} meta={meta} closed={closed} onChange={load}/>}
       {tab === "findings" && <FindingsTab id={id} findings={findings} closed={closed} onChange={load}/>}
       {tab === "decision" && <DecisionTab id={id} review={review} meta={meta} closed={closed} onChange={load}/>}
+      {tab === "interviews" && <InterviewsTab id={id} closed={closed}/>}
+      {tab === "checks" && <ExternalChecksTab id={id} review={review} closed={closed} onChange={load}/>}
       {tab === "notes" && <NotesTab id={id} closed={closed}/>}
       {tab === "audit" && <AuditTab id={id}/>}
 
@@ -245,6 +259,7 @@ function PlaybookTab({ id, steps, closed, onChange }) {
               {isOpen && (
                 <div className="border-t border-[#30363D] px-4 py-3 space-y-3">
                   <div className="text-[12.5px] text-slate-300 leading-relaxed">{s.guidance}</div>
+                  {s.autofill_hook && <AutofillPanel id={id} hook={s.autofill_hook}/>}
                   {s.expected_output && (
                     <div className="text-[11.5px] text-slate-500"><span className="text-slate-400 font-medium">Expected output:</span> {s.expected_output}</div>
                   )}
@@ -295,16 +310,119 @@ function PlaybookTab({ id, steps, closed, onChange }) {
   );
 }
 
+function AutofillPanel({ id, hook }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const runHook = async () => {
+    setLoading(true);
+    try {
+      const r = await api.get(`/v1/security-reviews/${id}/autofill/${hook}`);
+      setData(r.data);
+    } catch (e) { toast.error(e.response?.data?.detail || "Auto-fill failed"); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div className="border border-blue-500/25 bg-blue-500/5 rounded-md p-3">
+      <div className="flex items-center justify-between">
+        <div className="text-[10.5px] uppercase tracking-wider font-mono text-blue-300">Auto-fill: {hook}</div>
+        <button onClick={runHook} disabled={loading}
+          className="h-7 px-2.5 text-[11.5px] border border-blue-500/40 text-blue-300 rounded inline-flex items-center gap-1.5 disabled:opacity-50">
+          <Sparkle size={12}/> {loading ? "Pulling…" : data ? "Refresh" : "Pull from platform"}
+        </button>
+      </div>
+      {data && (
+        <div className="mt-2 space-y-1.5 text-[11.5px] text-slate-300">
+          <div className="text-[10px] text-slate-500 font-mono">{data.source_tag}</div>
+          {hook === "prior_reviews_lookup" && null}
+          {hook === "asset_inventory_check" && (
+            <>
+              {data.shadow_deployment && (
+                <div className="text-amber-300">Shadow deployment detected — a draft finding was created on the Findings tab.</div>
+              )}
+              <div>{data.software_hits.length} installed-software match(es), {data.assets.length} matching asset(s), {(data.linked_assets || []).length} linked asset(s).</div>
+              {data.linked_assets?.map(a => (
+                <div key={a.id} className="text-slate-400">Linked: {a.hostname} · {a.os} · {a.criticality}{a.internet_facing ? " · internet-facing" : ""}</div>
+              ))}
+            </>
+          )}
+          {hook === "open_findings_pull" && (
+            <>
+              <div>{data.total_open} open finding(s) across {data.asset_count} linked asset(s) — {data.overdue} past SLA.</div>
+              <div className="flex gap-1.5 flex-wrap">
+                {Object.entries(data.severity_counts).map(([sev, n]) => (
+                  <Chip key={sev} color={SEV_COLOR[sev] || "slate"}>{sev}: {n}</Chip>
+                ))}
+              </div>
+              {data.top_qids.slice(0, 5).map(t => (
+                <div key={t.qid} className="text-slate-400 font-mono text-[10.5px]">QID {t.qid} ×{t.count} — {t.title}</div>
+              ))}
+            </>
+          )}
+          {hook === "osint_compromise_pull" && (
+            data.hits.length === 0 ? <div>No OSINT/compromise hits on file for this domain.</div> : (
+              <div className="space-y-1">
+                {data.hits.slice(0, 8).map(h => (
+                  <div key={h.id}>
+                    <span className="text-amber-300">{h.module_label || h.module}</span> — {h.label}
+                    {h.detail && <div className="text-slate-500 text-[10.5px]">{h.detail}</div>}
+                  </div>
+                ))}
+                {data.vendor_id && <a href={`/vendors/${data.vendor_id}`} className="text-blue-300 hover:underline">Open vendor page for full drill-down →</a>}
+              </div>
+            )
+          )}
+          {hook === "governance_crosswalk" && (
+            <div className="space-y-1">
+              {data.items.map((it, i) => (
+                <div key={i}><Chip color="purple">{it.classification}</Chip> <span className="ml-1">{it.requirement}</span></div>
+              ))}
+              {data.items.length === 0 && <div>No classification-driven requirements apply.</div>}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------------------------- Questionnaire ---------------------------- */
 
 function QuestionnaireTab({ id, questionnaire, responses, review, closed, onChange }) {
   const respByOrder = Object.fromEntries((responses || []).map(r => [r.question_order, r]));
   const [evidenceDrafts, setEvidenceDrafts] = useState({});
+  const [vendorQ, setVendorQ] = useState(null);
+  const [autoAnswering, setAutoAnswering] = useState(false);
   if (!questionnaire) return <div className="text-slate-500 text-[12.5px]">No questionnaire template attached.</div>;
 
   const activeClassifications = review.data_classifications || [];
-  const questions = questionnaire.questions.filter(q =>
-    !q.conditional_on || activeClassifications.includes(q.conditional_on));
+  // Cascading conditions: a question can depend on a data classification OR on a
+  // prior answer ("q13:yes" = only shown once Q13 is answered yes).
+  const condMet = (cond) => {
+    if (!cond) return true;
+    if (cond.startsWith("q") && cond.includes(":")) {
+      const [qref, want] = cond.slice(1).split(":");
+      return respByOrder[parseInt(qref, 10)]?.answer === want;
+    }
+    return activeClassifications.includes(cond);
+  };
+  const questions = questionnaire.questions.filter(q => condMet(q.conditional_on));
+
+  const autoAnswer = async () => {
+    setAutoAnswering(true);
+    try {
+      const r = await api.post(`/v1/security-reviews/${id}/auto-answer`);
+      toast.success(`${r.data.answered.length} question(s) auto-answered from platform data`);
+      onChange();
+    } catch (e) { toast.error(e.response?.data?.detail || "Auto-answer failed"); }
+    finally { setAutoAnswering(false); }
+  };
+
+  const loadVendorQ = async () => {
+    const r = await api.get(`/v1/security-reviews/${id}/vendor-questionnaire`);
+    setVendorQ(r.data);
+  };
   const skipped = questionnaire.questions.length - questions.length;
   const domains = [...new Set(questions.map(q => q.domain))];
   const answered = questions.filter(q => respByOrder[q.order]).length;
@@ -321,11 +439,26 @@ function QuestionnaireTab({ id, questionnaire, responses, review, closed, onChan
 
   return (
     <div>
-      <div className="text-[11.5px] text-slate-500 mb-3">
-        {answered} of {questions.length} answered
-        {skipped > 0 && <span> · {skipped} conditional question(s) hidden (classification not selected)</span>}
-        <span> · template v{questionnaire.version}</span>
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <div className="text-[11.5px] text-slate-500">
+          {answered} of {questions.length} answered
+          {skipped > 0 && <span> · {skipped} conditional question(s) hidden</span>}
+          <span> · template v{questionnaire.version}</span>
+        </div>
+        <div className="flex gap-2">
+          {!closed && (
+            <button onClick={autoAnswer} disabled={autoAnswering}
+              className="h-8 px-3 text-[12px] border border-blue-500/40 text-blue-300 rounded inline-flex items-center gap-1.5 disabled:opacity-50">
+              <Sparkle size={13}/> {autoAnswering ? "Answering…" : "Auto-answer from platform data"}
+            </button>
+          )}
+          <button onClick={loadVendorQ}
+            className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-slate-500 text-slate-300 rounded inline-flex items-center gap-1.5">
+            <PaperPlaneTilt size={13}/> Vendor questionnaire
+          </button>
+        </div>
       </div>
+      {vendorQ && <VendorQuestionnairePanel id={id} vendorQ={vendorQ} closed={closed} onChange={() => { loadVendorQ(); onChange(); }}/>}
       <div className="space-y-4">
         {domains.map(domain => (
           <div key={domain} className="border border-[#30363D] bg-[#0D1117] rounded-md">
@@ -355,6 +488,14 @@ function QuestionnaireTab({ id, questionnaire, responses, review, closed, onChan
                         ))}
                       </div>
                     </div>
+                    {resp?.auto_answered && (
+                      <div className="text-[10.5px] text-blue-300 mt-1 inline-flex items-center gap-1">
+                        <Sparkle size={10}/> Auto-answered — {resp.source_tag} (override by picking a different answer)
+                      </div>
+                    )}
+                    {resp?.analyst_overridden && (
+                      <div className="text-[10.5px] text-amber-300 mt-1">Analyst override of an auto answer (recorded in audit log)</div>
+                    )}
                     {resp && (
                       <input placeholder="Evidence / notes…" disabled={closed}
                         value={evidenceDrafts[q.order] !== undefined ? evidenceDrafts[q.order] : (resp.evidence_text || "")}
@@ -369,6 +510,141 @@ function QuestionnaireTab({ id, questionnaire, responses, review, closed, onChan
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function VendorQuestionnairePanel({ id, vendorQ, closed, onChange }) {
+  const track = async (what) => {
+    try {
+      await api.post(`/v1/security-reviews/${id}/vendor-questionnaire/track`, { [what]: true });
+      toast.success(what === "sent" ? "Marked sent — SLA clock paused while awaiting the vendor" : "Marked received — SLA clock resumed");
+      onChange();
+    } catch (e) { toast.error(e.response?.data?.detail || "Tracking failed"); }
+  };
+  return (
+    <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4 mb-4">
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <div className="text-[11px] uppercase tracking-wider font-mono text-slate-400">
+          Vendor-facing questionnaire ({vendorQ.questions.length} questions)
+        </div>
+        <div className="flex gap-2 items-center">
+          <button onClick={() => { navigator.clipboard.writeText(vendorQ.text); toast.success("Copied"); }}
+            className="h-7 px-2.5 text-[11.5px] border border-[#30363D] text-slate-300 rounded inline-flex items-center gap-1"><Copy size={12}/> Copy</button>
+          {!closed && !vendorQ.sent_at && (
+            <button onClick={() => track("sent")}
+              className="h-7 px-2.5 text-[11.5px] border border-blue-500/40 text-blue-300 rounded">Mark sent</button>
+          )}
+          {!closed && vendorQ.sent_at && !vendorQ.received_at && (
+            <button onClick={() => track("received")}
+              className="h-7 px-2.5 text-[11.5px] border border-emerald-500/40 text-emerald-300 rounded">Mark received</button>
+          )}
+        </div>
+      </div>
+      <div className="text-[10.5px] text-slate-500 mb-2">
+        {vendorQ.sent_at ? `Sent ${new Date(vendorQ.sent_at).toLocaleDateString()}` : "Not sent yet"}
+        {vendorQ.received_at && ` · received ${new Date(vendorQ.received_at).toLocaleDateString()}`}
+        {vendorQ.sent_at && !vendorQ.received_at && " · SLA paused · chase at 10 business days"}
+      </div>
+      <pre className="text-[11px] text-slate-400 bg-[#161B22] border border-[#30363D] rounded p-3 max-h-56 overflow-y-auto whitespace-pre-wrap">{vendorQ.text}</pre>
+    </div>
+  );
+}
+
+function InterviewsTab({ id, closed }) {
+  const [items, setItems] = useState([]);
+  const [form, setForm] = useState({ who: "", role: "", when: "", summary: "" });
+  const load = () => api.get(`/v1/security-reviews/${id}/interviews`).then(r => setItems(r.data.items || []));
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [id]);
+
+  const add = async () => {
+    if (!form.who.trim()) { toast.error("Who was interviewed?"); return; }
+    await api.post(`/v1/security-reviews/${id}/interviews`, { ...form, when: form.when || null });
+    setForm({ who: "", role: "", when: "", summary: "" });
+    load();
+  };
+
+  return (
+    <div className="max-w-2xl space-y-3">
+      <div className="text-[11px] text-slate-500">Stakeholder input — renders into the technical appendix.</div>
+      {!closed && (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4 space-y-2.5">
+          <div className="grid grid-cols-3 gap-2">
+            <input placeholder="Who" value={form.who} onChange={e => setForm({ ...form, who: e.target.value })}
+              className="h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-200"/>
+            <input placeholder="Role" value={form.role} onChange={e => setForm({ ...form, role: e.target.value })}
+              className="h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-200"/>
+            <input type="date" value={form.when} onChange={e => setForm({ ...form, when: e.target.value })}
+              className="h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-200"/>
+          </div>
+          <textarea rows={2} placeholder="Summary of what they said…" value={form.summary}
+            onChange={e => setForm({ ...form, summary: e.target.value })}
+            className="w-full px-3 py-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"/>
+          <button onClick={add} className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded">Capture interview</button>
+        </div>
+      )}
+      {items.map(it => (
+        <div key={it.id} className="border border-[#30363D] bg-[#0D1117] rounded-md px-4 py-2.5">
+          <div className="text-[12.5px] text-slate-200">{it.who} <span className="text-slate-500">({it.role || "—"}) · {it.when}</span></div>
+          {it.summary && <div className="text-[12px] text-slate-400 mt-1">{it.summary}</div>}
+        </div>
+      ))}
+      {items.length === 0 && <div className="text-[12px] text-slate-500">No interviews captured yet.</div>}
+    </div>
+  );
+}
+
+const CHECK_STATUS_META = {
+  ok: { color: "emerald", label: "OK" },
+  attention: { color: "amber", label: "Needs attention" },
+  manual: { color: "slate", label: "Check manually" },
+};
+
+function ExternalChecksTab({ id, review, closed, onChange }) {
+  const [running, setRunning] = useState(false);
+  const checks = review.external_checks;
+
+  const runChecks = async () => {
+    setRunning(true);
+    try {
+      await api.post(`/v1/security-reviews/${id}/external-checks`);
+      toast.success("External checks complete");
+      onChange();
+    } catch (e) { toast.error(e.response?.data?.detail || "Checks failed"); }
+    finally { setRunning(false); }
+  };
+
+  return (
+    <div className="max-w-2xl space-y-3">
+      <div className="text-[11px] text-slate-500">
+        Best-effort automated checks against the vendor: TLS/security headers, breach-history signal, NVD CVE lookup.
+        Failed checks degrade to manual steps — they never block the review.
+      </div>
+      {!closed && (
+        <button onClick={runChecks} disabled={running}
+          className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-white rounded inline-flex items-center gap-1.5">
+          <ShieldCheck size={13}/> {running ? "Running…" : checks ? "Re-run checks" : "Run external checks"}
+        </button>
+      )}
+      {checks && (
+        <div className="space-y-2">
+          <div className="text-[10.5px] text-slate-500 font-mono">Last run {new Date(checks.ran_at).toLocaleString()}</div>
+          {checks.results.map((c, i) => {
+            const meta_ = CHECK_STATUS_META[c.status] || CHECK_STATUS_META.manual;
+            return (
+              <div key={i} className="border border-[#30363D] bg-[#0D1117] rounded-md px-4 py-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-[12px] text-slate-200 font-mono">{c.check}</div>
+                  <Chip color={meta_.color}>{meta_.label}</Chip>
+                </div>
+                <div className="text-[12px] text-slate-400 mt-1">{c.summary}</div>
+                <div className="text-[10px] text-slate-600 font-mono mt-1">{c.source_tag}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {!checks && <div className="text-[12px] text-slate-500">Not run yet.</div>}
     </div>
   );
 }
@@ -461,6 +737,19 @@ function RiskTab({ id, review, meta, closed, onChange }) {
   const [controls, setControls] = useState(review.compensating_controls || "");
   const [override, setOverride] = useState(review.analyst_override_justification || "");
   const [saving, setSaving] = useState(false);
+  const [suggestion, setSuggestion] = useState(null);
+
+  useEffect(() => {
+    api.get(`/v1/security-reviews/${review.id}/suggested-risk`).then(r => setSuggestion(r.data)).catch(() => {});
+    // eslint-disable-next-line
+  }, [review.id]);
+
+  const acceptSuggestion = () => {
+    if (!suggestion) return;
+    setInhLik(suggestion.likelihood);
+    setInhImp(prev => ({ ...prev, ...suggestion.impacts }));
+    toast.success("Suggestion applied to the inherent score — adjust as needed");
+  };
 
   const save = async () => {
     if (!inhLik || !Object.values(inhImp).some(Boolean)) {
@@ -471,6 +760,7 @@ function RiskTab({ id, review, meta, closed, onChange }) {
     try {
       await api.put(`/v1/security-reviews/${id}/risk-score`, {
         inherent_likelihood: inhLik, inherent_impacts: inhImp,
+        suggested_band: suggestion?.band || null,
         residual_likelihood: resLik || null, residual_impacts: resLik ? resImp : null,
         not_adopting_likelihood: notLik || null, not_adopting_impacts: notLik ? notImp : null,
         compensating_controls: controls, override_justification: override,
@@ -489,6 +779,27 @@ function RiskTab({ id, review, meta, closed, onChange }) {
 
   return (
     <div className="space-y-4">
+      {suggestion && suggestion.band && (
+        <div className="border border-purple-500/30 bg-purple-500/5 rounded-md px-4 py-3 flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <div className="text-[10.5px] uppercase tracking-wider font-mono text-purple-300 mb-1">
+              Suggested inherent risk <span className="text-slate-500 normal-case">— {suggestion.source_tag}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Chip color={RISK_COLOR[suggestion.band]}>{suggestion.band}</Chip>
+              <span className="text-[11.5px] text-slate-400">likelihood {suggestion.likelihood} × max impact {Math.max(...Object.values(suggestion.impacts))}</span>
+            </div>
+            <ul className="mt-1.5 text-[11.5px] text-slate-400 list-disc ml-4">
+              {suggestion.rationale.map((r2, i) => <li key={i}>{r2}</li>)}
+            </ul>
+            <div className="text-[10.5px] text-slate-500 mt-1">Never auto-finalized — accept it, or score differently with a justification.</div>
+          </div>
+          {!closed && (
+            <button onClick={acceptSuggestion}
+              className="h-8 px-3 text-[12px] border border-purple-500/40 text-purple-300 rounded shrink-0">Apply suggestion</button>
+          )}
+        </div>
+      )}
       <div className="grid md:grid-cols-3 gap-3">
         <ScoreGrid label="Inherent (adopted as-is)" likelihood={inhLik} impacts={inhImp}
           setLikelihood={setInhLik} setImpact={(d, n) => setInhImp(p => ({ ...p, [d]: n }))} dims={dims} disabled={closed}/>
@@ -611,6 +922,7 @@ function FindingsTab({ id, findings, closed, onChange }) {
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <Chip color={SEV_COLOR[f.severity]}>{f.severity}</Chip>
+                {f.status === "draft" && <Chip color="blue">Draft — auto-generated{f.source_tag ? ` · ${f.source_tag}` : ""}</Chip>}
                 {f.is_condition_of_approval && (
                   <Chip color={f.condition_met === "met" ? "emerald" : f.condition_met === "not_met" ? "red" : "amber"}>
                     Condition {f.condition_met || "pending"}{f.condition_deadline ? ` · due ${f.condition_deadline}` : ""}
@@ -629,6 +941,10 @@ function FindingsTab({ id, findings, closed, onChange }) {
             </div>
             {!closed && (
               <div className="flex flex-col gap-1 shrink-0 items-end">
+                {f.status === "draft" && (
+                  <button onClick={() => patch(f, { status: "open" })}
+                    className="h-7 px-2 text-[11px] border border-blue-500/40 text-blue-300 rounded">Accept draft</button>
+                )}
                 {f.is_condition_of_approval && f.condition_met !== "met" && (
                   <button onClick={() => patch(f, { condition_met: "met" })}
                     className="h-7 px-2 text-[11px] border border-emerald-500/40 text-emerald-300 rounded">Mark condition met</button>
@@ -793,10 +1109,22 @@ function PrintRiskBadge({ label, band, colors }) {
 function ReportModal({ id, onClose }) {
   const [data, setData] = useState(null);
   useEffect(() => { api.get(`/v1/security-reviews/${id}/report-data`).then(r => setData(r.data)); }, [id]);
+  const [shareUrl, setShareUrl] = useState(null);
   if (!data) return null;
-  const { review, findings, responses, questionnaire, generated_at } = data;
+  const { review, findings, responses, questionnaire, generated_at, interviews, executive_summary } = data;
+  const visibleFindings = findings.filter(f => f.status !== "draft");
+
+  const makeShareLink = async () => {
+    try {
+      const r = await api.post(`/v1/security-reviews/${id}/share-link`, { expires_days: 30 });
+      const url = `${window.location.origin}/shared-report/${r.data.token}`;
+      setShareUrl(url);
+      navigator.clipboard.writeText(url);
+      toast.success("Share link created and copied — expires in 30 days");
+    } catch (e) { toast.error(e.response?.data?.detail || "Share link failed"); }
+  };
   const d = review.decision;
-  const conditions = findings.filter(f => f.is_condition_of_approval);
+  const conditions = findings.filter(f => f.is_condition_of_approval && f.status !== "draft");
   const respByOrder = Object.fromEntries((responses || []).map(r => [r.question_order, r]));
   const RISK_PRINT = { Low: "#3b82f6", Medium: "#f59e0b", High: "#f97316", Critical: "#ef4444" };
 
@@ -813,9 +1141,17 @@ function ReportModal({ id, onClose }) {
                 {review.requestor_name && <> · Requestor: {review.requestor_name} ({review.requestor_department})</>}
               </div>
             </div>
-            <button onClick={() => window.print()} className="print:hidden h-8 px-3 text-[12px] bg-slate-800 text-white rounded">Print / PDF</button>
+            <div className="print:hidden flex gap-2">
+              <button onClick={makeShareLink} className="h-8 px-3 text-[12px] border border-slate-400 text-slate-700 rounded inline-flex items-center gap-1"><LinkSimple size={13}/> Share link</button>
+              <button onClick={() => window.print()} className="h-8 px-3 text-[12px] bg-slate-800 text-white rounded">Print / PDF</button>
+            </div>
           </div>
 
+          {shareUrl && (
+            <div className="print:hidden text-[11px] text-blue-700 bg-blue-50 border border-blue-200 rounded px-3 py-2 mb-3 break-all">
+              Read-only link (copied): {shareUrl}
+            </div>
+          )}
           <div className="text-[13px] mb-4">
             <span className="font-semibold">What was reviewed:</span> {review.entity_name || review.title} — {review.title}
           </div>
@@ -835,19 +1171,15 @@ function ReportModal({ id, onClose }) {
 
           {/* Plain-English summary */}
           <div className="text-[13px] leading-relaxed mb-4">
-            {review.scope_statement || review.business_justification ||
-              "See technical appendix for full assessment detail."}
-            {review.compensating_controls && (
-              <> Required controls: {review.compensating_controls}</>
-            )}
+            {executive_summary || review.scope_statement || "See technical appendix for full assessment detail."}
           </div>
 
           {/* Key findings */}
-          {findings.length > 0 && (
+          {visibleFindings.length > 0 && (
             <div className="mb-4">
               <div className="text-[13px] font-semibold mb-1.5">Key findings</div>
               <ul className="space-y-1">
-                {findings.slice(0, 5).map(f => (
+                {visibleFindings.slice(0, 5).map(f => (
                   <li key={f.id} className="text-[12.5px] flex items-start gap-2">
                     <span className="text-[10px] font-bold px-1.5 py-0.5 rounded mt-0.5 text-white shrink-0"
                       style={{ background: RISK_PRINT[f.severity] || "#64748b" }}>{f.severity}</span>
@@ -901,6 +1233,17 @@ function ReportModal({ id, onClose }) {
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {interviews && interviews.length > 0 && (
+            <div className="border-t border-slate-300 pt-3 mb-4">
+              <div className="text-[13px] font-semibold mb-1.5">Stakeholder input</div>
+              {interviews.map(it => (
+                <div key={it.id} className="text-[11.5px] mb-1">
+                  <span className="font-medium">{it.who}</span> ({it.role || "—"}, {it.when}): {it.summary}
+                </div>
+              ))}
             </div>
           )}
 

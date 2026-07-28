@@ -65,6 +65,7 @@ import AlbertMonitoring from "@/pages/AlbertMonitoring";
 import RiskRegister from "@/pages/RiskRegister";
 import SecurityReviews from "@/pages/SecurityReviews";
 import SecurityReviewDetail from "@/pages/SecurityReviewDetail";
+import SharedReport from "@/pages/SharedReport";
 import RiskDetail from "@/pages/RiskDetail";
 import VendorManagement from "@/pages/VendorManagement";
 import VendorDetail from "@/pages/VendorDetail";
@@ -117,6 +118,7 @@ const AppRouter = () => {
   return (
     <Routes>
       <Route path="/login" element={<Login/>}/>
+      <Route path="/shared-report/:token" element={<SharedReport/>}/>
       <Route path="/auth/callback" element={<AuthCallback/>}/>
       <Route path="/change-password" element={<Protected><ChangePassword/></Protected>}/>
       <Route path="/security" element={<Protected><Security/></Protected>}/>

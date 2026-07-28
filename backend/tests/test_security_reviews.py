@@ -53,10 +53,14 @@ qn = run(db.review_questionnaires.find_one({"key": "saas_acquisition_internal", 
 assert pb and len(pb["steps"]) == 13, "13-step SaaS playbook must be seeded as a DB record"
 assert qn and len(qn["questions"]) == 27, "27-question questionnaire must be seeded as a DB record"
 assert all(q.get("cis_mapping") for q in qn["questions"])
+# Phase 2 seeds: 6 typed playbooks + questionnaire v2 (adds the auto-answered Q28)
+qn2 = run(db.review_questionnaires.find_one({"key": "saas_acquisition_internal", "version": 2}, {"_id": 0}))
+assert qn2 and len(qn2["questions"]) == 28 and qn2["questions"][-1].get("auto_answer_hook") == "open_findings_pull"
 # idempotent
 r = client.get("/api/v1/security-reviews/meta")
-assert run(db.review_playbooks.count_documents({})) == 1
-print("PASS: meta idempotently seeds the versioned 13-step playbook + 27-question CIS-mapped questionnaire as DB records")
+assert run(db.review_playbooks.count_documents({})) == 7  # SaaS + hardware/feature/integration/config/AI/extension
+assert run(db.review_questionnaires.count_documents({})) == 2
+print("PASS: meta idempotently seeds the versioned playbooks (SaaS v1 + 6 typed) and questionnaires (v1 + v2 with auto-answer hook) as DB records")
 
 # ============ intake ============
 
@@ -75,7 +79,7 @@ year = datetime.datetime.now(datetime.timezone.utc).year
 assert review["review_number"] == f"SR-{year}-001"
 assert review["status"] == "Requested"
 assert review["entity_domain"] == "acme.com"  # normalized lowercase
-assert review["playbook_version"] == 1 and review["template_version"] == 1
+assert review["playbook_version"] == 1 and review["template_version"] == 2  # new reviews pin the latest (v2) questionnaire
 rid = review["id"]
 steps = run(db.security_review_steps.find({"review_id": rid}, {"_id": 0}).to_list(50))
 assert len(steps) == 13
@@ -225,7 +229,7 @@ assert r.status_code == 200
 rep = r.json()
 assert rep["review"]["inherent_risk"]["band"] == "Critical"
 assert rep["findings"][0]["severity"] == "High"
-assert rep["questionnaire"]["version"] == 1
+assert rep["questionnaire"]["version"] == 2  # reviews created after Phase 2 pin questionnaire v2
 assert rep["generated_at"]
 print("PASS: report-data bundles review + findings (worst-first) + responses + versioned template for the print view")
 
