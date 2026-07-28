@@ -45,7 +45,7 @@ const PAGE_SIZE = 100;
 export default function Findings() {
   const { user } = useAuth();
   const { prefs, setSection } = usePreferences();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const cweParam = searchParams.get("cwe");
   const cveParam = searchParams.get("cve");
   // Deep-link support: dashboard/operational tiles link here with filters pre-applied,
@@ -86,9 +86,11 @@ export default function Findings() {
     setLoading(true);
     if (groupBy !== "none" && !cweParam && !cveParam && !sourceToolParam) {
       const params = { group_by: groupBy, view_mode: viewMode, limit: 100 };
+      if (q) params.q = q; // search box now applies in grouped view too (title/CVE/hostname/QID)
       if (severity) params.severity = severity;
       if (status) params.status = status;
       if (myQueue && user?.team) params.owner_team = user.team;
+      else if (ownerTeamParam) params.owner_team = ownerTeamParam; // grouped view previously dropped team deep-links
       const r = await api.get("/v1/findings-groups", { params });
       setGroups(r.data.groups || []);
       setExpanded(new Set());
@@ -114,6 +116,24 @@ export default function Findings() {
   // Any filter change (other than paging itself) should reset back to page 1 --
   // otherwise you can land on an empty page 5 after narrowing a filter down.
   useEffect(() => { setPage(0); }, [view, severity, status, myQueue, sort, order, q]);
+
+  // Keep the URL in sync with the current filters (replace, not push, so we don't
+  // pollute history). This is what makes the back arrow from a Finding Detail
+  // return to the exact filtered view (e.g. a Team Dashboard drill-down's
+  // owner_team scope) instead of resetting to the default all-findings list.
+  useEffect(() => {
+    const p = new URLSearchParams();
+    if (view) p.set("view", view);
+    if (severity) p.set("severity", severity);
+    if (status) p.set("status", status);
+    if (q) p.set("q", q);
+    if (ownerTeamParam) p.set("owner_team", ownerTeamParam);
+    if (cweParam) p.set("cwe", cweParam);
+    if (cveParam) p.set("cve", cveParam);
+    if (sourceToolParam) p.set("source_tool", sourceToolParam);
+    if (p.toString() !== searchParams.toString()) setSearchParams(p, { replace: true });
+    // eslint-disable-next-line
+  }, [view, severity, status, q]);
 
   const runNlSearch = async () => {
     if (!q.trim()) return;

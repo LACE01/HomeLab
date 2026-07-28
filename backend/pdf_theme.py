@@ -119,7 +119,12 @@ def stat_cards(items: list, width: float = 460) -> Table:
         color = colors.HexColor(it.get("color", "#2F81F7"))
         cells.append([
             Paragraph(str(it["value"]), ParagraphStyle(
-                "cardval", fontName="Helvetica-Bold", fontSize=18, textColor=color, spaceAfter=1)),
+                # leading must be set explicitly: ReportLab's default is 12pt, which
+                # is LESS than this 18pt font -- without it the big number visually
+                # overlaps the label line underneath (seen on the Compliance
+                # Coverage Report's "50.0%" / "66.7%" cards).
+                "cardval", fontName="Helvetica-Bold", fontSize=18, leading=22,
+                textColor=color, spaceAfter=3)),
             Paragraph(str(it["label"]).upper(), ParagraphStyle(
                 "cardlbl", fontName="Helvetica", fontSize=7, textColor=MUTED, spaceAfter=0,
                 leading=9)),

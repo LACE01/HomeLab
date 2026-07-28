@@ -12,7 +12,7 @@ import {
 import {
   ArrowLeft, PencilSimple, Trash, HardDrive, Warning,
   ArrowsClockwise, CheckCircle, XCircle, MinusCircle, Globe, FloppyDisk, X, CalendarBlank,
-  Newspaper, ArrowSquareOut,
+  Newspaper, ArrowSquareOut, CaretDown, CaretRight,
 } from "@phosphor-icons/react";
 
 const BAND_CHIP = { Critical: "red", High: "orange", Medium: "amber", Low: "blue" };
@@ -54,6 +54,8 @@ export default function VendorDetail() {
   const [form, setForm] = useState(null);
   const [checking, setChecking] = useState(false);
   const [checkResults, setCheckResults] = useState(null);
+  const [expandedChecks, setExpandedChecks] = useState(new Set());
+  const [expandedExposure, setExpandedExposure] = useState(new Set());
   const [riskHistory, setRiskHistory] = useState([]);
 
   const load = async () => {
@@ -227,10 +229,35 @@ export default function VendorDetail() {
                   {checkResults.map(r => {
                     const meta_ = MONITOR_STATUS_META[r.status] || MONITOR_STATUS_META.error;
                     const Icon = meta_.icon;
+                    const expandable = r.status === "found" && (r.findings || []).length > 0;
+                    const isOpen = expandedChecks.has(r.module_id);
                     return (
-                      <div key={r.module_id} className={`flex items-center justify-between px-2 py-1 rounded border text-[11px] ${meta_.cls}`}>
-                        <span>{r.module_label}</span>
-                        <span className="inline-flex items-center gap-1"><Icon size={11} /> {meta_.label}</span>
+                      <div key={r.module_id} className={`rounded border text-[11px] ${meta_.cls}`}>
+                        <div
+                          className={`flex items-center justify-between px-2 py-1 ${expandable ? "cursor-pointer" : ""}`}
+                          onClick={() => expandable && setExpandedChecks(prev => {
+                            const next = new Set(prev);
+                            next.has(r.module_id) ? next.delete(r.module_id) : next.add(r.module_id);
+                            return next;
+                          })}>
+                          <span className="inline-flex items-center gap-1.5">
+                            {expandable && (isOpen ? <CaretDown size={10}/> : <CaretRight size={10}/>)}
+                            {r.module_label}
+                          </span>
+                          <span className="inline-flex items-center gap-1">
+                            <Icon size={11} /> {meta_.label}{expandable ? ` (${r.hits})` : ""}
+                          </span>
+                        </div>
+                        {expandable && isOpen && (
+                          <div className="border-t border-[#30363D] px-2 py-1.5 space-y-1.5 bg-[#0D1117]/60">
+                            {r.findings.map((f2, j) => (
+                              <div key={f2.id || j}>
+                                <div className="text-slate-200 text-[11px]">{f2.label}</div>
+                                {f2.detail && <div className="text-slate-500 text-[10.5px] mt-0.5 break-words">{f2.detail}</div>}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -326,15 +353,52 @@ export default function VendorDetail() {
       {vendor.exposure.length > 0 && (
         <Panel title="OSINT Exposure History" actions={<Warning size={13} className="text-amber-400" />}>
           <div className="space-y-1.5">
-            {vendor.exposure.map((e, i) => (
-              <div key={e.id || i} className="flex items-center justify-between px-2.5 py-1.5 rounded border border-amber-500/20 bg-amber-500/5 text-[11.5px]">
-                <div className="flex items-center gap-2">
-                  <Chip color="amber">{e.module_id || e.source}</Chip>
-                  <span className="text-slate-300">{e.summary || e.indicator || e.title || "Exposure finding"}</span>
+            {vendor.exposure.map((e, i) => {
+              const key = e.id || String(i);
+              const isOpen = expandedExposure.has(key);
+              return (
+                <div key={key} className="rounded border border-amber-500/20 bg-amber-500/5 text-[11.5px]">
+                  <div className="flex items-center justify-between px-2.5 py-1.5 cursor-pointer"
+                    onClick={() => setExpandedExposure(prev => {
+                      const next = new Set(prev);
+                      next.has(key) ? next.delete(key) : next.add(key);
+                      return next;
+                    })}>
+                    <div className="flex items-center gap-2 min-w-0">
+                      {isOpen ? <CaretDown size={11} className="text-amber-400 shrink-0"/> : <CaretRight size={11} className="text-amber-400 shrink-0"/>}
+                      <Chip color="amber">{e.module_label || e.module || e.source}</Chip>
+                      <span className="text-slate-300 truncate">{e.label || e.detail || "Exposure finding"}</span>
+                    </div>
+                    <span className="font-mono text-[10.5px] text-slate-500 shrink-0 ml-2">{e.found_at ? new Date(e.found_at).toLocaleDateString() : ""}</span>
+                  </div>
+                  {isOpen && (
+                    <div className="border-t border-amber-500/20 px-2.5 py-2 space-y-1.5">
+                      {e.detail && <div className="text-[11.5px] text-slate-300 break-words">{e.detail}</div>}
+                      {e.raw && typeof e.raw === "object" && (
+                        <div className="space-y-0.5">
+                          {Object.entries(e.raw).filter(([k2, v2]) => v2 != null && v2 !== "" && k2 !== "table").map(([k2, v2]) => (
+                            <div key={k2} className="flex items-start gap-2 text-[10.5px]">
+                              <span className="text-slate-500 w-24 shrink-0 font-mono">{k2}</span>
+                              {/^https?:\/\//.test(String(v2)) ? (
+                                <a href={String(v2)} target="_blank" rel="noopener noreferrer"
+                                  className="text-blue-400 hover:underline break-all inline-flex items-center gap-1">
+                                  {String(v2)} <ArrowSquareOut size={10}/>
+                                </a>
+                              ) : (
+                                <span className="text-slate-300 break-all">{typeof v2 === "object" ? JSON.stringify(v2) : String(v2)}</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div className="text-[10px] text-slate-600 font-mono pt-0.5">
+                        module: {e.module} &middot; target: {e.target} &middot; found {e.found_at ? new Date(e.found_at).toLocaleString() : "?"}
+                      </div>
+                    </div>
+                  )}
                 </div>
-                <span className="font-mono text-[10.5px] text-slate-500">{e.found_at ? new Date(e.found_at).toLocaleDateString() : ""}</span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </Panel>
       )}

@@ -46,6 +46,7 @@ jobs:
             tests/test_albert_ports.py \
             tests/test_asset_albert_link.py \
             tests/test_aws_cspm.py \
+            tests/test_batch_ui_fixes.py \
             tests/test_backups_offsite_and_verify.py \
             tests/test_container_scan.py \
             tests/test_secrets_scan.py \

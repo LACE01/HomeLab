@@ -120,6 +120,17 @@ async def findings_timeseries(
             last_date = first_date
         if last_date < first_date:
             last_date = first_date  # guard against bad/out-of-order data
+        # A finding in an open state is, by definition, still present TODAY -- its
+        # last_seen_at only reflects the last time a rescan happened to reconfirm
+        # it. One-shot import sources (Nmap/Nikto/web-scan uploads, manual imports)
+        # never refresh last_seen_at at all, and a host that dropped out of scan
+        # scope stops getting refreshes -- either way the open finding's window
+        # quietly ended in the past and it vanished from the chart while the
+        # findings table right below still showed it open (the per-host "chart says
+        # No findings but the table has rows" bug). Presence of an open finding
+        # extends to now, full stop; closed findings keep their historical window.
+        if f.get("status") in ("New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"):
+            last_date = now_date
         # Skip findings whose entire presence window falls outside the requested
         # range (e.g. something closed well before `since`, or -- pathological but
         # cheap to guard -- first seen after "now").

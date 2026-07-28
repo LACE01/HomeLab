@@ -135,6 +135,7 @@ async def findings_group(
     severity: Optional[str] = None,
     status: Optional[str] = None,
     owner_team: Optional[str] = None,
+    q: Optional[str] = None,
     limit: int = 100,
 ):
     flt: dict = {"status": {"$in": ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]}}
@@ -145,6 +146,16 @@ async def findings_group(
         flt["status"] = status
     if owner_team:
         flt["owner_team"] = owner_team
+    if q:
+        # Same search fields as the flat /v1/findings list -- previously the grouped
+        # (default) Findings view silently ignored the search box entirely, so
+        # searching a QID/CVE/hostname only worked with grouping turned off.
+        flt["$or"] = [
+            {"title": {"$regex": q, "$options": "i"}},
+            {"cve": {"$regex": q, "$options": "i"}},
+            {"asset_hostname": {"$regex": q, "$options": "i"}},
+            {"qid": {"$regex": q, "$options": "i"}},
+        ]
 
     field_map = {
         "cve": "$cve", "os": "$asset_os", "title": "$title",

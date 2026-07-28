@@ -379,15 +379,26 @@ async def check_vendor_compromise(db, vendor: dict) -> list:
         mod = reconng.MODULE_BY_ID.get(module_id)
         if not mod:
             continue
+        hits = 0
+        findings = []
         try:
             summary = await reconng.run_module(db, module_id, domain)
             hits = summary.get("osint_findings_created", 0) + summary.get("easm_candidates_created", 0)
             status = "found" if hits > 0 else "clean"
+            if hits > 0:
+                # Return the actual finding content alongside the status, so the
+                # "Check now" panel can show WHAT was found (pulse names, IOC
+                # detail, CT certificates, ...) instead of a bare "Hit" chip the
+                # analyst can't drill into.
+                findings = await db.osint_findings.find(
+                    {"module": module_id, "target": domain}, {"_id": 0, "raw": 0},
+                ).sort("found_at", -1).to_list(10)
         except ValueError:
             status = "not_configured"
         except Exception:
             status = "error"
-        results.append({"module_id": module_id, "module_label": mod["label"], "status": status})
+        results.append({"module_id": module_id, "module_label": mod["label"], "status": status,
+                        "hits": hits, "findings": findings})
     return results
 
 

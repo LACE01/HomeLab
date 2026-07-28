@@ -52,7 +52,7 @@ export default function Settings() {
                   className={`shrink-0 h-6 w-11 rounded-full relative transition-colors disabled:opacity-50 ${f.enabled ? "bg-emerald-500/70" : "bg-slate-700"}`}
                   title={f.enabled ? "Enabled — click to disable" : "Disabled — click to enable"}
                 >
-                  <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${f.enabled ? "translate-x-5" : "translate-x-0.5"}`} />
+                  <span className={`absolute left-0 top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${f.enabled ? "translate-x-[22px]" : "translate-x-0.5"}`} />
                 </button>
               </div>
             ))}
