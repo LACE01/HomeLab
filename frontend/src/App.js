@@ -66,6 +66,8 @@ import RiskRegister from "@/pages/RiskRegister";
 import SecurityReviews from "@/pages/SecurityReviews";
 import SecurityReviewDetail from "@/pages/SecurityReviewDetail";
 import SharedReport from "@/pages/SharedReport";
+import ThreatModeling from "@/pages/ThreatModeling";
+import ThreatModelDetail from "@/pages/ThreatModelDetail";
 import RiskDetail from "@/pages/RiskDetail";
 import VendorManagement from "@/pages/VendorManagement";
 import VendorDetail from "@/pages/VendorDetail";
@@ -161,6 +163,8 @@ const AppRouter = () => {
       <Route path="/risk-register/:id" element={<Protected module="/risk-register"><RiskDetail/></Protected>}/>
       <Route path="/security-reviews" element={<Protected module="/security-reviews"><SecurityReviews/></Protected>}/>
       <Route path="/security-reviews/:id" element={<Protected module="/security-reviews"><SecurityReviewDetail/></Protected>}/>
+      <Route path="/threat-modeling" element={<Protected module="/threat-modeling"><ThreatModeling/></Protected>}/>
+      <Route path="/threat-modeling/:id" element={<Protected module="/threat-modeling"><ThreatModelDetail/></Protected>}/>
       <Route path="/vendors" element={<Protected module="/vendors"><VendorManagement/></Protected>}/>
       <Route path="/vendors/:id" element={<Protected module="/vendors"><VendorDetail/></Protected>}/>
       <Route path="/directory" element={<Protected module="/directory"><Directory/></Protected>}/>

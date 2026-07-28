@@ -63,6 +63,7 @@ jobs:
             tests/test_security_reviews.py \
             tests/test_security_reviews_p23.py \
             tests/test_tenable_sync.py \
+            tests/test_threat_modeling.py \
             tests/test_threat_intel_watchlist.py \
             tests/test_vendor_candidates.py \
             tests/test_vendor_finding_detection.py \

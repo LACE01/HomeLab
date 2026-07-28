@@ -62,6 +62,7 @@ from routes.incident_response import router as incident_response_router
 from routes.albert import router as albert_router
 from routes.risk_register import router as risk_register_router
 from routes.security_reviews import router as security_reviews_router
+from routes.threat_modeling import router as threat_modeling_router
 from routes.vendors import router as vendors_router
 from routes.directory import router as directory_router
 from routes.settings import router as settings_router
@@ -109,6 +110,7 @@ api.include_router(yara_router)
 api.include_router(albert_router)
 api.include_router(risk_register_router)
 api.include_router(security_reviews_router)
+api.include_router(threat_modeling_router)
 api.include_router(rbac_router)
 api.include_router(scan_schedule_router)
 api.include_router(security_events_router)
