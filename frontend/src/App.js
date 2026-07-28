@@ -63,6 +63,8 @@ import TicketingSoar from "@/pages/TicketingSoar";
 import ThreatIntelWatchlist from "@/pages/ThreatIntelWatchlist";
 import AlbertMonitoring from "@/pages/AlbertMonitoring";
 import RiskRegister from "@/pages/RiskRegister";
+import SecurityReviews from "@/pages/SecurityReviews";
+import SecurityReviewDetail from "@/pages/SecurityReviewDetail";
 import RiskDetail from "@/pages/RiskDetail";
 import VendorManagement from "@/pages/VendorManagement";
 import VendorDetail from "@/pages/VendorDetail";
@@ -155,6 +157,8 @@ const AppRouter = () => {
       <Route path="/compliance" element={<Protected module="/compliance"><Compliance/></Protected>}/>
       <Route path="/risk-register" element={<Protected module="/risk-register"><RiskRegister/></Protected>}/>
       <Route path="/risk-register/:id" element={<Protected module="/risk-register"><RiskDetail/></Protected>}/>
+      <Route path="/security-reviews" element={<Protected module="/security-reviews"><SecurityReviews/></Protected>}/>
+      <Route path="/security-reviews/:id" element={<Protected module="/security-reviews"><SecurityReviewDetail/></Protected>}/>
       <Route path="/vendors" element={<Protected module="/vendors"><VendorManagement/></Protected>}/>
       <Route path="/vendors/:id" element={<Protected module="/vendors"><VendorDetail/></Protected>}/>
       <Route path="/directory" element={<Protected module="/directory"><Directory/></Protected>}/>

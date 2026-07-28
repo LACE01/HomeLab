@@ -149,6 +149,7 @@ export default function Sidebar() {
           <NavItem to="/reports" icon={FileArrowDown} label="Reports" testid="nav-reports" />
           <NavItem to="/compliance" icon={ClipboardText} label="Compliance" testid="nav-compliance" />
           <NavItem to="/risk-register" icon={Warning} label="Risk Register" testid="nav-risk-register" />
+          <NavItem to="/security-reviews" icon={ClipboardText} label="Security Reviews" testid="nav-security-reviews" />
           <NavItem to="/vendors" icon={Buildings} label="Vendor & Third-Party Risk" testid="nav-vendors" />
         </Group>
         <Group title="Administration" collapsed={!!collapsed["Administration"]} onToggle={()=>toggleGroup("Administration")}>
