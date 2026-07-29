@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from db import db
 from rbac import require_module
 from auth_utils import require_role
+from routes.common import now_iso
 
 router = APIRouter()
 
@@ -50,6 +51,90 @@ async def delete_backup_endpoint(backup_id: str, user: dict = Depends(require_ro
     from backup import delete_backup
     await delete_backup(db, backup_id)
     return {"ok": True}
+
+
+@router.get("/v1/admin/backups/db-size")
+async def backup_db_size(user: dict = Depends(require_role("admin"))):
+    """Item 34 -- live database size: document/collection counts and on-disk
+    bytes, plus the backup volume's usage/free space. Answers "how big is the
+    thing I'm backing up, and will the next backup fit" without shelling into
+    the container.
+
+    Uses Mongo's dbStats/collStats. Under mongomock (tests) those commands
+    aren't implemented, so this degrades to counting documents rather than
+    failing -- the numbers are still true, just without byte sizes."""
+    import os
+    import shutil
+
+    stats = {}
+    collections_detail = []
+    try:
+        raw = await db.command("dbStats")
+        stats = {
+            "data_size_bytes": int(raw.get("dataSize") or 0),
+            "storage_size_bytes": int(raw.get("storageSize") or 0),
+            "index_size_bytes": int(raw.get("indexSize") or 0),
+            "total_size_bytes": int(raw.get("totalSize") or (raw.get("storageSize") or 0) + (raw.get("indexSize") or 0)),
+            "collection_count": int(raw.get("collections") or 0),
+            "document_count": int(raw.get("objects") or 0),
+            "avg_object_size_bytes": int(raw.get("avgObjSize") or 0),
+            "source": "dbStats",
+        }
+    except Exception:
+        stats = {"source": "counted", "data_size_bytes": None, "storage_size_bytes": None,
+                 "index_size_bytes": None, "total_size_bytes": None,
+                 "avg_object_size_bytes": None}
+
+    try:
+        names = await db.list_collection_names()
+    except Exception:
+        names = []
+    total_docs = 0
+    for name in sorted(names):
+        try:
+            count = await db[name].count_documents({})
+        except Exception:
+            continue
+        total_docs += count
+        entry = {"name": name, "documents": count}
+        try:
+            cs = await db.command({"collStats": name})
+            entry["size_bytes"] = int(cs.get("size") or 0)
+            entry["storage_size_bytes"] = int(cs.get("storageSize") or 0)
+        except Exception:
+            pass
+        collections_detail.append(entry)
+    collections_detail.sort(key=lambda c: -(c.get("size_bytes") or c.get("documents") or 0))
+    stats.setdefault("collection_count", len(names))
+    if not stats.get("document_count"):
+        stats["document_count"] = total_docs
+    stats["collection_count"] = stats.get("collection_count") or len(names)
+
+    volume = None
+    backup_dir = os.environ.get("BACKUP_DIR", "/data/backups")
+    try:
+        if os.path.isdir(backup_dir):
+            usage = shutil.disk_usage(backup_dir)
+            backup_bytes = 0
+            backup_files = 0
+            for root, _dirs, files in os.walk(backup_dir):
+                for fn in files:
+                    try:
+                        backup_bytes += os.path.getsize(os.path.join(root, fn))
+                        backup_files += 1
+                    except OSError:
+                        pass
+            volume = {
+                "path": backup_dir,
+                "total_bytes": usage.total, "used_bytes": usage.used, "free_bytes": usage.free,
+                "used_pct": round(100 * usage.used / usage.total, 1) if usage.total else None,
+                "backup_files": backup_files, "backup_bytes": backup_bytes,
+            }
+    except Exception:
+        volume = None
+
+    return {"database": stats, "collections": collections_detail[:40],
+            "backup_volume": volume, "generated_at": now_iso()}
 
 
 @router.get("/v1/admin/backups/offsite-status")

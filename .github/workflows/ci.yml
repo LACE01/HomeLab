@@ -59,6 +59,7 @@ jobs:
             tests/test_hash_intel_and_stealer_logs.py \
             tests/test_new_connectors.py \
             tests/test_pci_dss_compliance.py \
+            tests/test_platform_fixes.py \
             tests/test_qualys_gav.py \
             tests/test_questionnaire_v3.py \
             tests/test_scheduled_reports.py \

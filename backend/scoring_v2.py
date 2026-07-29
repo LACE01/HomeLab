@@ -102,17 +102,47 @@ def critical_indicators(finding: dict) -> list:
 
 
 def empirical_percentile(kri_score: float, cohort_scores: list[float]) -> dict:
-    """What % of the cohort scores at or below this one. Returns {pct, top_pct, distribution_buckets}."""
+    """What % of the cohort scores at or below this one, plus a histogram of the
+    cohort's score distribution.
+
+    Item 32 -- the histogram used to render as a single visible bar. The cause
+    was the bucketing: indices were computed as `s * 20 / max(cohort_scores)`,
+    i.e. normalized to the cohort's own maximum. KRI scores are already on a
+    fixed 0..1 scale and in practice cluster tightly (most of a severity cohort
+    lands within a narrow band), so dividing by the max pushed nearly every
+    finding into the same high bucket and left nineteen empty ones.
+
+    Now the histogram bins over the FIXED 0..1 KRI domain, so the bars show
+    where this cohort actually sits on the scale, and each bucket carries its
+    range + count so the UI can label and tooltip it. `my_bucket` is computed
+    here too -- the frontend was deriving it with an unrelated formula."""
     if not cohort_scores:
-        return {"pct": 0, "top_pct": 100, "distribution": []}
+        return {"pct": 0, "top_pct": 100, "distribution": [], "buckets": [],
+                "cohort_size": 0, "my_bucket": None}
     below = sum(1 for s in cohort_scores if s <= kri_score)
     pct = round((below / len(cohort_scores)) * 100, 1)
-    # 20-bucket distribution
-    buckets = [0] * 20
+
+    N = 20
+    counts = [0] * N
     for s in cohort_scores:
-        idx = min(19, int(s * 20 / max(max(cohort_scores), 0.0001)))
-        buckets[idx] += 1
-    return {"pct": pct, "top_pct": round(100 - pct, 1), "distribution": buckets}
+        idx = min(N - 1, max(0, int(s * N)))   # fixed 0..1 domain
+        counts[idx] += 1
+    buckets = [{
+        "index": i,
+        "from": round(i / N, 2),
+        "to": round((i + 1) / N, 2),
+        "count": counts[i],
+    } for i in range(N)]
+    my_bucket = min(N - 1, max(0, int(kri_score * N)))
+    return {
+        "pct": pct, "top_pct": round(100 - pct, 1),
+        "distribution": counts,          # kept for any existing consumer
+        "buckets": buckets,
+        "cohort_size": len(cohort_scores),
+        "my_bucket": my_bucket,
+        "cohort_min": round(min(cohort_scores), 3),
+        "cohort_max": round(max(cohort_scores), 3),
+    }
 
 
 async def cwe_prevalence_map(db) -> dict:

@@ -28,6 +28,10 @@ function offsiteChip(b) {
 }
 
 export default function Backups() {
+  // Item 34 -- live database size, so "how big is the thing I'm backing up, and
+  // will the next one fit" is answerable without shelling into the container.
+  const [dbSize, setDbSize] = useState(null);
+  const loadDbSize = () => api.get("/v1/admin/backups/db-size").then(r => setDbSize(r.data)).catch(() => {});
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -54,7 +58,7 @@ export default function Backups() {
     } catch (e) { /* non-critical */ }
   };
 
-  useEffect(() => { load(); loadOffsiteStatus(); }, []);
+  useEffect(() => { load(); loadOffsiteStatus(); loadDbSize(); }, []);
 
   const createNow = async () => {
     setCreating(true);
@@ -135,6 +139,8 @@ export default function Backups() {
 
   return (
     <Layout title="Backups" subtitle="Manual and scheduled database backups — the container itself is disposable, this is what isn't">
+      {dbSize && <DbSizePanel data={dbSize} onRefresh={loadDbSize}/>}
+
       <div className="grid grid-cols-2 gap-5 max-w-5xl mb-5">
         <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-5">
           <div className="flex items-center gap-2 mb-3">
@@ -246,5 +252,82 @@ export default function Backups() {
         </div>
       )}
     </Layout>
+  );
+}
+
+
+function DbSizePanel({ data, onRefresh }) {
+  const [open, setOpen] = useState(false);
+  const d = data.database || {};
+  const v = data.backup_volume;
+  return (
+    <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-5 max-w-5xl mb-5">
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-[14px] text-slate-100 font-medium">Current database</div>
+        <button onClick={onRefresh} className="h-7 px-2.5 text-[11.5px] border border-[#30363D] hover:border-slate-500 text-slate-300 rounded">
+          Refresh
+        </button>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mb-3">
+        <Stat label="Documents" value={(d.document_count ?? 0).toLocaleString()}/>
+        <Stat label="Collections" value={d.collection_count ?? 0}/>
+        <Stat label="Data size" value={fmtBytes(d.data_size_bytes)}/>
+        <Stat label="Total (data + indexes)" value={fmtBytes(d.total_size_bytes)}/>
+      </div>
+      {v && (
+        <div className="border border-[#30363D] rounded p-3 mb-3">
+          <div className="flex items-center justify-between text-[11.5px] mb-1.5">
+            <span className="text-slate-400">Backup volume <code className="font-mono text-slate-500">{v.path}</code></span>
+            <span className="text-slate-300">{fmtBytes(v.free_bytes)} free of {fmtBytes(v.total_bytes)}</span>
+          </div>
+          <div className="h-2 bg-slate-800 rounded overflow-hidden">
+            <div className={`h-full ${v.used_pct > 90 ? "bg-red-500" : v.used_pct > 75 ? "bg-amber-500" : "bg-emerald-500"}`}
+              style={{ width: `${v.used_pct ?? 0}%` }}/>
+          </div>
+          <div className="text-[10.5px] text-slate-500 mt-1">
+            {v.backup_files} backup file(s) using {fmtBytes(v.backup_bytes)} · {v.used_pct}% of the volume used
+          </div>
+        </div>
+      )}
+      <button onClick={() => setOpen(!open)} className="text-[11.5px] text-blue-300 hover:underline">
+        {open ? "Hide" : "Show"} per-collection breakdown ({(data.collections || []).length})
+      </button>
+      {open && (
+        <div className="mt-2 max-h-64 overflow-y-auto border border-[#30363D] rounded">
+          <table className="w-full text-[11.5px]">
+            <thead>
+              <tr className="text-left text-slate-500 border-b border-[#30363D]">
+                <th className="px-3 py-1.5 font-medium">Collection</th>
+                <th className="px-3 py-1.5 font-medium text-right">Documents</th>
+                <th className="px-3 py-1.5 font-medium text-right">Size</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(data.collections || []).map(c => (
+                <tr key={c.name} className="border-b border-[#30363D] last:border-0">
+                  <td className="px-3 py-1 font-mono text-slate-300">{c.name}</td>
+                  <td className="px-3 py-1 text-right text-slate-400">{c.documents.toLocaleString()}</td>
+                  <td className="px-3 py-1 text-right text-slate-400">{fmtBytes(c.size_bytes)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {d.source === "counted" && (
+        <div className="text-[10.5px] text-slate-600 mt-2">
+          Byte-level sizes unavailable from this MongoDB deployment — document and collection counts are exact.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value }) {
+  return (
+    <div className="border border-[#30363D] bg-[#161B22] rounded px-3 py-2">
+      <div className="text-[10px] text-slate-500 uppercase tracking-wider">{label}</div>
+      <div className="text-[16px] text-slate-100 font-semibold mt-0.5">{value}</div>
+    </div>
   );
 }

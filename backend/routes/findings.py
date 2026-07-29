@@ -451,6 +451,42 @@ async def nl_search(q: str, user: dict = Depends(get_current_user)):
     return {**result, "interpreted": parsed["interpreted"], "query": q}
 
 
+@router.get("/v1/mitre/coverage")
+async def mitre_coverage(user: dict = Depends(get_current_user)):
+    """Item 33's mapping-coverage indicator: how much of the open backlog we can
+    actually map to ATT&CK, and which unmapped CWEs would buy the most coverage
+    if added to the table."""
+    from mitre_mapping import mapping_coverage
+    OPEN = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+    counts: dict = {}
+    async for row in db.findings.aggregate([
+        {"$match": {"status": {"$in": OPEN}}},
+        {"$group": {"_id": "$cwe", "count": {"$sum": 1}}},
+    ]):
+        counts[row["_id"]] = row["count"]
+    return mapping_coverage(counts)
+
+
+@router.post("/v1/mitre/backfill-cwe")
+async def mitre_backfill_cwe(user: dict = Depends(require_role("admin"))):
+    """One-shot repair for findings already stored with a non-canonical CWE
+    (Qualys' bare "89" etc). Rewrites them to canonical form so the ATT&CK
+    mapping resolves. Idempotent -- already-canonical values are untouched."""
+    from mitre_mapping import normalize_cwe
+    updated = 0
+    cursor = db.findings.find({"cwe": {"$nin": [None, ""]}}, {"_id": 0, "id": 1, "cwe": 1})
+    async for f in cursor:
+        canonical = normalize_cwe(f.get("cwe"))
+        if canonical and canonical != f.get("cwe"):
+            await db.findings.update_one({"id": f["id"]}, {"$set": {"cwe": canonical}})
+            updated += 1
+        elif not canonical and f.get("cwe"):
+            # placeholder values like NVD-CWE-noinfo aren't real CWEs
+            await db.findings.update_one({"id": f["id"]}, {"$set": {"cwe": None}})
+            updated += 1
+    return {"ok": True, "updated": updated}
+
+
 @router.get("/v1/attack-paths/cves")
 async def attack_path_cves(user: dict = Depends(get_current_user)):
     pipeline = [

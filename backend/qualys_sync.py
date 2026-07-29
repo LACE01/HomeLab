@@ -21,6 +21,13 @@ from asset_classify import classify_asset_type
 
 logger = logging.getLogger("vulnops.qualys")
 
+
+def _norm_cwe(raw):
+    """Canonical 'CWE-<n>' form -- see mitre_mapping.normalize_cwe for why."""
+    from mitre_mapping import normalize_cwe
+    return normalize_cwe(raw)
+
+
 # Findings in any of these states are still "open" from Qualys's perspective -- a
 # Fixed-status detection is only meaningful to act on if it's closing something that
 # was actually still tracked as unresolved. Mirrors automation.py's OPEN_STATES.
@@ -222,7 +229,10 @@ async def _fetch_knowledgebase(endpoint: str, username: str, password: str, qids
             "title": v.findtext("TITLE") or f"QID {qid}",
             "cve": cves[0] if cves else None,
             "cvss": float(v.findtext("CVSS_V3/BASE") or v.findtext("CVSS/BASE") or 0) or None,
-            "cwe": (v.findtext("CWE/CWE_ID") or None),
+            # Item 33: Qualys returns a BARE number here ("89"), while the
+            # CWE->ATT&CK table is keyed "CWE-89" -- so every mapping silently
+            # missed and the ATT&CK panel never populated. Normalize on ingest.
+            "cwe": _norm_cwe(v.findtext("CWE/CWE_ID") or v.findtext("CWE") or None),
             "category": v.findtext("CATEGORY"),
             "consequence": v.findtext("CONSEQUENCE"),
             "diagnosis": v.findtext("DIAGNOSIS"),

@@ -13,7 +13,7 @@ import {
 import {
   Broadcast, UploadSimple, Warning, ChartLine, Desktop, ShieldWarning,
   MagnifyingGlass, X, ArrowSquareOut, ArrowsClockwise, CaretRight,
-  CheckSquare, Square, ShieldStar, Flag, FirstAidKit, HardDrive, ListChecks, FileArrowDown, Terminal,
+  CheckSquare, Square, ShieldStar, Flag, FirstAidKit, HardDrive, ListChecks, FileArrowDown, Terminal, Check,
 } from "@phosphor-icons/react";
 
 const RANGE_OPTIONS = [7, 30, 90];
@@ -131,6 +131,12 @@ function IpIntelPanel({ ip, label }) {
 }
 
 export default function AlbertMonitoring() {
+  // Item 36 -- acknowledging the above-baseline banner. The key is a hash of the
+  // currently-flagged anomaly days, so a NEW anomaly re-raises the banner rather
+  // than being permanently silenced by an earlier acknowledgement.
+  const [anomalyAck, setAnomalyAck] = useState(() => {
+    try { return localStorage.getItem("albert_anomaly_ack") || ""; } catch { return ""; }
+  });
   const fileRef = useRef(null);
   const alertsRef = useRef(null);
   const [uploading, setUploading] = useState(false);
@@ -490,6 +496,13 @@ export default function AlbertMonitoring() {
   const anomalyDays = new Set((stats?.anomalies || []).map(a => a.day));
   const anyFilterActive = q || severity || category || device || alertMessage || sourcePort || destPort;
 
+  const anomalyKey = (stats?.anomalies || []).map(a => `${a.day}:${a.category}:${a.count}`).join("|");
+  const anomalyDismissed = !!anomalyKey && anomalyAck === anomalyKey;
+  const dismissAnomalies = () => {
+    setAnomalyAck(anomalyKey);
+    try { localStorage.setItem("albert_anomaly_ack", anomalyKey); } catch { /* private mode */ }
+  };
+
   return (
     <Layout title="Albert Network Monitoring" subtitle="CIS/MS-ISAC network sensor alert exports — trends, breakdowns, and plain-English signature explanations">
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4 mb-5 flex items-center justify-between gap-4 flex-wrap">
@@ -532,10 +545,18 @@ export default function AlbertMonitoring() {
             <StatCard label="Anomaly Days Flagged" value={stats?.anomalies?.length ?? 0} icon={Warning} tone={(stats?.anomalies?.length ?? 0) > 0 ? "red" : "slate"} />
           </div>
 
-          {stats?.anomalies?.length > 0 && (
+          {stats?.anomalies?.length > 0 && !anomalyDismissed && (
             <div className="border border-red-500/30 bg-red-500/5 rounded-md p-3.5 mb-4">
               <div className="flex items-center gap-1.5 text-[11.5px] text-red-300 font-medium mb-2">
                 <Warning size={14} /> Above-baseline activity detected
+                {/* Item 36: this banner used to linger forever with no way to
+                    acknowledge it. Dismissal is keyed to the exact set of
+                    anomaly days currently flagged, so acknowledging today's
+                    spike doesn't suppress tomorrow's new one. */}
+                <button onClick={dismissAnomalies} title="Acknowledge — reappears if new anomaly days are flagged"
+                  className="ml-auto text-[11px] text-slate-400 hover:text-slate-200 inline-flex items-center gap-1">
+                  <Check size={12}/> Acknowledge
+                </button>
               </div>
               <div className="text-[11.5px] text-red-200/80 mb-2 leading-relaxed">
                 These days had a category's alert volume well above its historical daily average — worth a closer look, not necessarily malicious on its own.

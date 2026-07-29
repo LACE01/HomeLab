@@ -72,6 +72,7 @@ export default function FindingDetail() {
   const [attachments, setAttachments] = useState([]);
   const [statusVal, setStatusVal] = useState("");
   const [kri, setKri] = useState(null);
+  const [mitreCoverage, setMitreCoverage] = useState(null);
   const [intel, setIntel] = useState(null);
   const [playbook, setPlaybook] = useState(undefined); // undefined = loading, null = none found
   const [playbookBasis, setPlaybookBasis] = useState(null);
@@ -134,6 +135,7 @@ export default function FindingDetail() {
     api.get(`/v1/findings/${id}/timeline`).then(r => setActivity(r.data.items));
     api.get(`/v1/findings/${id}/comments`).then(r => setComments(r.data.items));
     api.get(`/v1/findings/${id}/kri`).then(r => setKri(r.data));
+    api.get("/v1/mitre/coverage").then(r => setMitreCoverage(r.data)).catch(() => {});
     loadPlaybook();
     api.get(`/v1/playbooks`).then(r => setAllPlaybooks(r.data.items || []));
     api.get(`/v1/findings/${id}/patch-group`).then(r => setPatchGroup(r.data));
@@ -288,7 +290,34 @@ export default function FindingDetail() {
               <div className="text-[10.5px] text-slate-500 mt-1">Best-fit suggestion based on CWE class — not an authoritative source, verify for this specific finding.</div>
             )}
             {!f.mitre_tactic && !f.mitre_technique && (
-              <div className="text-[11.5px] text-slate-500">No mapping available — this finding has no CWE, or its CWE isn't in the current mapping table yet.</div>
+              <div className="text-[11.5px] text-slate-500">
+                {f.cwe
+                  ? <>No mapping for <span className="font-mono text-slate-400">{f.cwe}</span> yet — it isn&apos;t in the current CWE→ATT&amp;CK table.</>
+                  : <>This finding has no CWE recorded, so there&apos;s nothing to map from. Scanners often omit CWE on
+                     configuration/informational checks; the coverage figure below shows how much of the backlog this affects.</>}
+              </div>
+            )}
+            {mitreCoverage && (
+              <div className="mt-2.5 pt-2.5 border-t border-[#30363D]">
+                <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider mb-1">Mapping coverage</div>
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 h-2 bg-slate-800 rounded overflow-hidden">
+                    <div className={`h-full ${mitreCoverage.coverage_pct_of_all >= 60 ? "bg-emerald-500" : mitreCoverage.coverage_pct_of_all >= 30 ? "bg-amber-500" : "bg-red-500"}`}
+                      style={{ width: `${mitreCoverage.coverage_pct_of_all}%` }}/>
+                  </div>
+                  <span className="text-[11.5px] text-slate-200">{mitreCoverage.coverage_pct_of_all}%</span>
+                </div>
+                <div className="text-[10.5px] text-slate-500 mt-1">
+                  {mitreCoverage.findings_mapped.toLocaleString()} of {mitreCoverage.findings_total.toLocaleString()} open findings map to a technique
+                  ({mitreCoverage.findings_without_cwe.toLocaleString()} carry no CWE at all).
+                  Table covers {mitreCoverage.table_size} CWE classes.
+                </div>
+                {mitreCoverage.top_unmapped?.length > 0 && (
+                  <div className="text-[10.5px] text-slate-600 mt-1">
+                    Biggest gaps: {mitreCoverage.top_unmapped.slice(0, 5).map(u => `${u.cwe} (${u.count})`).join(", ")}
+                  </div>
+                )}
+              </div>
             )}
           </Section>
 
@@ -378,16 +407,43 @@ export default function FindingDetail() {
                 })}
               </div>
 
-              {kri.empirical.distribution?.length > 0 && (
+              {kri.empirical.buckets?.length > 0 && (
                 <div className="mt-4">
-                  <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider mb-1">Score Distribution (cohort: same severity)</div>
-                  <div className="flex items-end gap-0.5 h-12">
-                    {kri.empirical.distribution.map((v, i) => {
-                      const max = Math.max(...kri.empirical.distribution, 1);
-                      const h = Math.max(2, (v / max) * 100);
-                      const myBucket = Math.floor((kri.kri_score * 20) / Math.max(...kri.empirical.distribution.map((_,idx)=>idx+1), 1));
-                      return <div key={i} className={`flex-1 ${i===myBucket?"bg-red-400":"bg-slate-700"}`} style={{height:`${h}%`}}/>;
-                    })}
+                  <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider mb-1">
+                    Score Distribution (cohort: same severity)
+                  </div>
+                  <div className="text-[11px] text-slate-500 mb-1.5">
+                    Where every other open <span className="text-slate-300">{f.severity}</span> finding&apos;s KRI score
+                    falls on the 0–1 scale ({kri.empirical.cohort_size} finding{kri.empirical.cohort_size === 1 ? "" : "s"}).
+                    The red bar is this one. Hover a bar for its range and count.
+                  </div>
+                  <div className="flex items-end gap-0.5 h-14">
+                    {(() => {
+                      const max = Math.max(...kri.empirical.buckets.map(b => b.count), 1);
+                      return kri.empirical.buckets.map(b => {
+                        const isMine = b.index === kri.empirical.my_bucket;
+                        // Empty buckets keep a visible 2px stub so the axis reads as a
+                        // continuous scale rather than a few floating bars.
+                        const h = b.count === 0 ? 3 : Math.max(8, (b.count / max) * 100);
+                        return (
+                          <div key={b.index} className="flex-1 h-full flex items-end group relative"
+                            title={`KRI ${b.from}–${b.to}: ${b.count} finding${b.count === 1 ? "" : "s"}${isMine ? " (this finding)" : ""}`}>
+                            <div className={`w-full rounded-sm transition-colors ${isMine
+                              ? "bg-red-400" : b.count === 0 ? "bg-slate-800" : "bg-slate-600 group-hover:bg-slate-500"}`}
+                              style={{ height: `${h}%` }}/>
+                            <div className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1 hidden group-hover:block whitespace-nowrap
+                                            bg-[#161B22] border border-[#30363D] rounded px-2 py-1 text-[10.5px] text-slate-200 z-10">
+                              {b.from}–{b.to}: {b.count}{isMine ? " · this finding" : ""}
+                            </div>
+                          </div>
+                        );
+                      });
+                    })()}
+                  </div>
+                  <div className="flex justify-between text-[9.5px] text-slate-600 mt-0.5 font-mono">
+                    <span>0.0</span>
+                    <span>cohort {kri.empirical.cohort_min}–{kri.empirical.cohort_max}</span>
+                    <span>1.0</span>
                   </div>
                 </div>
               )}
