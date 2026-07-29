@@ -8,7 +8,7 @@ import {
   ArrowLeft, CaretDown, CaretRight, CheckCircle, Printer, ArrowRight,
   Warning, ClipboardText, Scales, ListChecks, Gavel, NotePencil, ClockCounterClockwise,
   Users, ShieldCheck, Copy, ArrowsClockwise, LinkSimple, Sparkle, PaperPlaneTilt,
-  TextB, TextItalic, TextUnderline, Code, Highlighter, FileDoc, UserSwitch, Trash, X,
+  TextB, TextItalic, TextUnderline, Code, Highlighter, FileDoc, UserSwitch, Trash, X, Plus,
 } from "@phosphor-icons/react";
 
 const RISK_COLOR = { Low: "blue", Medium: "amber", High: "orange", Critical: "red" };
@@ -54,6 +54,8 @@ export default function SecurityReviewDetail() {
 
   if (!data || !meta) return <Layout title="Security Review…"><div className="text-slate-500">Loading…</div></Layout>;
   const { review, steps, responses, findings, questionnaire } = data;
+  const applicableQuestions = data.applicable_questions;
+  const questionnaireScoring = data.questionnaire_scoring;
   const closed = review.status === "Closed";
 
   const nextStep = steps.find(s => !["Done", "N/A"].includes(s.status));
@@ -167,7 +169,9 @@ export default function SecurityReviewDetail() {
       </div>
 
       {tab === "playbook" && <PlaybookTab id={id} steps={steps} closed={closed} onChange={load}/>}
-      {tab === "questionnaire" && <QuestionnaireTab id={id} questionnaire={questionnaire} responses={responses} review={review} closed={closed} onChange={load}/>}
+      {tab === "questionnaire" && <QuestionnaireTab id={id} questionnaire={questionnaire} responses={responses}
+        review={review} closed={closed} onChange={load} meta={meta}
+        applicableQuestions={applicableQuestions} scoring={questionnaireScoring}/>}
       {tab === "risk" && <RiskTab id={id} review={review} meta={meta} closed={closed} onChange={load}/>}
       {tab === "findings" && <FindingsTab id={id} findings={findings} closed={closed} onChange={load}/>}
       {tab === "recommendation" && <RecommendationTab id={id} review={review} closed={closed} onChange={load}/>}
@@ -393,16 +397,80 @@ function AutofillPanel({ id, hook }) {
 
 /* ---------------------------- Questionnaire ---------------------------- */
 
-function QuestionnaireTab({ id, questionnaire, responses, review, closed, onChange }) {
+function CapabilityProfile({ id, review, meta, closed, onChange }) {
+  const flags = meta?.capability_flags || [];
+  const [caps, setCaps] = useState(review.capabilities || {});
+  const [saving, setSaving] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  const toggle = (key) => setCaps(prev => ({ ...prev, [key]: !prev[key] }));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const r = await api.put(`/v1/security-reviews/${id}/capabilities`, { capabilities: caps });
+      toast.success(`Profile saved — ${r.data.applicable_count} question(s) now apply`);
+      onChange();
+    } catch (e) { toast.error(e.response?.data?.detail || "Save failed"); }
+    finally { setSaving(false); }
+  };
+
+  const onCount = flags.filter(f => caps[f.key]).length;
+
+  return (
+    <div className="border border-purple-500/30 bg-purple-500/5 rounded-md mb-4">
+      <div className="px-4 py-2.5 flex items-center gap-2 cursor-pointer" onClick={() => setOpen(!open)}>
+        {open ? <CaretDown size={13} className="text-purple-300"/> : <CaretRight size={13} className="text-purple-300"/>}
+        <span className="text-[12.5px] text-purple-200 font-medium">Section 0 — Capability Profile</span>
+        <span className="text-[11px] text-slate-500">{onCount} of {flags.length} set · decides which modules apply</span>
+      </div>
+      {open && (
+        <div className="border-t border-purple-500/20 px-4 py-3">
+          <div className="text-[11.5px] text-slate-400 mb-2.5">
+            What <em>is</em> this thing? These flags gate whole questionnaire modules, so a question that
+            doesn't apply is never asked instead of being asked and N/A'd. Pre-seeded from the playbook type — override freely.
+          </div>
+          <div className="grid sm:grid-cols-2 gap-1.5">
+            {flags.map(f => (
+              <button key={f.key} disabled={closed} onClick={() => toggle(f.key)} title={f.help}
+                className={`text-left border rounded px-2.5 py-2 disabled:opacity-60 ${caps[f.key]
+                  ? "border-purple-500/50 bg-purple-500/15" : "border-[#30363D] hover:border-slate-500"}`}>
+                <div className="flex items-center gap-2">
+                  <span className={`h-3.5 w-3.5 rounded-sm border shrink-0 ${caps[f.key]
+                    ? "bg-purple-400 border-purple-400" : "border-slate-600"}`}/>
+                  <span className="text-[12px] text-slate-200">{f.label}</span>
+                </div>
+                <div className="text-[10.5px] text-slate-500 mt-0.5 ml-5.5">{f.help}</div>
+              </button>
+            ))}
+          </div>
+          {!closed && (
+            <button onClick={save} disabled={saving}
+              className="mt-3 h-8 px-3 text-[12px] bg-purple-500 hover:bg-purple-400 disabled:opacity-50 text-white rounded">
+              {saving ? "Applying…" : "Apply profile"}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function QuestionnaireTab({ id, questionnaire, responses, review, closed, onChange, meta,
+                            applicableQuestions, scoring }) {
   const respByOrder = Object.fromEntries((responses || []).map(r => [r.question_order, r]));
   const [evidenceDrafts, setEvidenceDrafts] = useState({});
   const [vendorQ, setVendorQ] = useState(null);
   const [autoAnswering, setAutoAnswering] = useState(false);
+  const [naPicker, setNaPicker] = useState(null);   // question order awaiting a reason code
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customForm, setCustomForm] = useState({ text: "", domain: "Custom", risk_weight: 3 });
   if (!questionnaire) return <div className="text-slate-500 text-[12.5px]">No questionnaire template attached.</div>;
 
+  const adaptive = questionnaire.engine === "capability_gated";
+  const naCodes = meta?.na_reason_codes || {};
   const activeClassifications = review.data_classifications || [];
-  // Cascading conditions: a question can depend on a data classification OR on a
-  // prior answer ("q13:yes" = only shown once Q13 is answered yes).
+
   const condMet = (cond) => {
     if (!cond) return true;
     if (cond.startsWith("q") && cond.includes(":")) {
@@ -411,7 +479,9 @@ function QuestionnaireTab({ id, questionnaire, responses, review, closed, onChan
     }
     return activeClassifications.includes(cond);
   };
-  const questions = questionnaire.questions.filter(q => condMet(q.conditional_on));
+  const questions = adaptive
+    ? (applicableQuestions || [])
+    : questionnaire.questions.filter(q => condMet(q.conditional_on));
 
   const autoAnswer = async () => {
     setAutoAnswering(true);
@@ -427,33 +497,62 @@ function QuestionnaireTab({ id, questionnaire, responses, review, closed, onChan
     const r = await api.get(`/v1/security-reviews/${id}/vendor-questionnaire`);
     setVendorQ(r.data);
   };
-  const skipped = questionnaire.questions.length - questions.length;
-  const domains = [...new Set(questions.map(q => q.domain))];
-  const answered = questions.filter(q => respByOrder[q.order]).length;
 
-  const save = async (q, answer, evidence_text) => {
+  const save = async (q, answer, evidence_text, na_reason_code) => {
+    if (answer === "na" && !na_reason_code) { setNaPicker(q.order); return; }
     try {
       await api.put(`/v1/security-reviews/${id}/responses`, {
-        question_order: q.order, answer,
+        question_order: q.order, answer, na_reason_code: na_reason_code || null,
         evidence_text: evidence_text !== undefined ? evidence_text : (respByOrder[q.order]?.evidence_text || ""),
       });
+      setNaPicker(null);
       onChange();
     } catch (e) { toast.error(e.response?.data?.detail || "Failed to save answer"); }
   };
 
+  const addCustom = async () => {
+    if (!customForm.text.trim()) { toast.error("Question text required"); return; }
+    try {
+      await api.post(`/v1/security-reviews/${id}/custom-questions`, customForm);
+      setCustomForm({ text: "", domain: "Custom", risk_weight: 3 });
+      setCustomOpen(false);
+      onChange();
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed"); }
+  };
+
+  const promote = async (q) => {
+    if (!window.confirm("Promote this question into the template as a new version?")) return;
+    try {
+      const r = await api.post(`/v1/security-reviews/${id}/custom-questions/${q.id}/promote`);
+      toast.success(`Added to template v${r.data.version} — existing reviews keep their version`);
+      onChange();
+    } catch (e) { toast.error(e.response?.data?.detail || "Promotion failed"); }
+  };
+
+  const domains = [...new Set(questions.map(q => q.domain))];
+  const answered = questions.filter(q => respByOrder[q.order]).length;
+
   return (
     <div>
+      {adaptive && <CapabilityProfile id={id} review={review} meta={meta} closed={closed} onChange={onChange}/>}
+
       <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
         <div className="text-[11.5px] text-slate-500">
           {answered} of {questions.length} answered
-          {skipped > 0 && <span> · {skipped} conditional question(s) hidden</span>}
+          {adaptive && <span> · adaptive: only applicable modules shown</span>}
           <span> · template v{questionnaire.version}</span>
         </div>
         <div className="flex gap-2">
           {!closed && (
+            <button onClick={() => setCustomOpen(!customOpen)}
+              className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-slate-500 text-slate-300 rounded inline-flex items-center gap-1.5">
+              <Plus size={13}/> Custom question
+            </button>
+          )}
+          {!closed && (
             <button onClick={autoAnswer} disabled={autoAnswering}
               className="h-8 px-3 text-[12px] border border-blue-500/40 text-blue-300 rounded inline-flex items-center gap-1.5 disabled:opacity-50">
-              <Sparkle size={13}/> {autoAnswering ? "Answering…" : "Auto-answer from platform data"}
+              <Sparkle size={13}/> {autoAnswering ? "Answering…" : "Auto-answer"}
             </button>
           )}
           <button onClick={loadVendorQ}
@@ -462,7 +561,41 @@ function QuestionnaireTab({ id, questionnaire, responses, review, closed, onChan
           </button>
         </div>
       </div>
+
+      {scoring && (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md px-4 py-2.5 mb-3 flex items-center gap-4 flex-wrap text-[12px]">
+          <span className="text-slate-400">Confidence</span>
+          <div className="flex-1 min-w-[120px] h-2 bg-slate-800 rounded overflow-hidden">
+            <div className={`h-full ${scoring.confidence_pct >= 80 ? "bg-emerald-500" : scoring.confidence_pct >= 50 ? "bg-amber-500" : "bg-red-500"}`}
+              style={{ width: `${scoring.confidence_pct}%` }}/>
+          </div>
+          <span className="text-slate-200 font-medium">{scoring.confidence_pct}%</span>
+          {scoring.unknown_count > 0 && <Chip color="amber">{scoring.unknown_count} unknown</Chip>}
+          {scoring.pending_vendor_count > 0 && <Chip color="blue">{scoring.pending_vendor_count} pending vendor</Chip>}
+          {scoring.unanswered_count > 0 && <Chip color="slate">{scoring.unanswered_count} unanswered</Chip>}
+        </div>
+      )}
+
+      {customOpen && (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4 mb-3 space-y-2">
+          <textarea rows={2} placeholder="Question specific to this review…" value={customForm.text}
+            onChange={e => setCustomForm({ ...customForm, text: e.target.value })}
+            className="w-full px-3 py-2 bg-[#161B22] border border-[#30363D] rounded text-[12.5px] text-slate-100"/>
+          <div className="flex gap-2 items-center">
+            <input placeholder="Module" value={customForm.domain}
+              onChange={e => setCustomForm({ ...customForm, domain: e.target.value })}
+              className="h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-200 w-48"/>
+            <select value={customForm.risk_weight} onChange={e => setCustomForm({ ...customForm, risk_weight: parseInt(e.target.value, 10) })}
+              className="h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-200">
+              {[0, 1, 2, 3, 4, 5].map(w => <option key={w} value={w}>weight {w}</option>)}
+            </select>
+            <button onClick={addCustom} className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded">Add</button>
+          </div>
+        </div>
+      )}
+
       {vendorQ && <VendorQuestionnairePanel id={id} vendorQ={vendorQ} closed={closed} onChange={() => { loadVendorQ(); onChange(); }}/>}
+
       <div className="space-y-4">
         {domains.map(domain => (
           <div key={domain} className="border border-[#30363D] bg-[#0D1117] rounded-md">
@@ -476,7 +609,19 @@ function QuestionnaireTab({ id, questionnaire, responses, review, closed, onChan
                       <div className="text-[12.5px] text-slate-200 leading-relaxed">
                         <span className="font-mono text-[11px] text-slate-500 mr-1.5">Q{q.order}.</span>
                         {q.text}
-                        <span className="text-[10.5px] text-slate-500 ml-2">[CIS {q.cis_mapping}] · weight {q.risk_weight}{q.vendor_facing ? " · vendor-facing" : ""}</span>
+                        <span className="text-[10.5px] text-slate-500 ml-2">
+                          {q.cis_mapping ? `[CIS ${q.cis_mapping}] · ` : ""}weight {q.risk_weight}
+                          {q.vendor_facing ? " · vendor-facing" : ""}
+                        </span>
+                        {q.custom && (
+                          <span className="ml-2 inline-flex items-center gap-1">
+                            <Chip color="purple">custom</Chip>
+                            {!closed && !q.promoted_to_version && (
+                              <button onClick={() => promote(q)} className="text-[10px] text-purple-300 hover:underline">promote to template</button>
+                            )}
+                            {q.promoted_to_version && <span className="text-[10px] text-slate-500">in template v{q.promoted_to_version}</span>}
+                          </span>
+                        )}
                       </div>
                       <div className="flex gap-1 shrink-0">
                         {ANSWERS.map(([val, label]) => (
@@ -492,6 +637,28 @@ function QuestionnaireTab({ id, questionnaire, responses, review, closed, onChan
                         ))}
                       </div>
                     </div>
+
+                    {naPicker === q.order && (
+                      <div className="mt-2 border border-amber-500/30 bg-amber-500/5 rounded p-2.5">
+                        <div className="text-[11px] text-amber-200 mb-1.5">Why is this N/A? "Doesn't apply" and "we don't know" are opposite signals.</div>
+                        <div className="flex gap-1.5 flex-wrap">
+                          {Object.entries(naCodes).map(([code, m]) => (
+                            <button key={code} onClick={() => save(q, "na", undefined, code)} title={m.help}
+                              className="h-7 px-2.5 text-[11.5px] border border-[#30363D] hover:border-amber-500/40 text-slate-300 rounded">
+                              {m.label}
+                            </button>
+                          ))}
+                          <button onClick={() => setNaPicker(null)} className="h-7 px-2 text-[11px] text-slate-500">cancel</button>
+                        </div>
+                      </div>
+                    )}
+
+                    {resp?.answer === "na" && resp?.na_reason_code && (
+                      <div className={`text-[10.5px] mt-1 ${naCodes[resp.na_reason_code]?.counts_against_confidence ? "text-amber-300" : "text-slate-500"}`}>
+                        {naCodes[resp.na_reason_code]?.label || resp.na_reason_code}
+                        {naCodes[resp.na_reason_code]?.counts_against_confidence ? " — counts against confidence" : " — excluded from scoring"}
+                      </div>
+                    )}
                     {resp?.auto_answered && (
                       <div className="text-[10.5px] text-blue-300 mt-1 inline-flex items-center gap-1">
                         <Sparkle size={10}/> Auto-answered — {resp.source_tag} (override by picking a different answer)
@@ -504,7 +671,7 @@ function QuestionnaireTab({ id, questionnaire, responses, review, closed, onChan
                       <input placeholder="Evidence / notes…" disabled={closed}
                         value={evidenceDrafts[q.order] !== undefined ? evidenceDrafts[q.order] : (resp.evidence_text || "")}
                         onChange={e => setEvidenceDrafts(d => ({ ...d, [q.order]: e.target.value }))}
-                        onBlur={e => save(q, resp.answer, e.target.value)}
+                        onBlur={e => save(q, resp.answer, e.target.value, resp.na_reason_code)}
                         className="w-full mt-2 h-8 px-3 bg-[#161B22] border border-[#30363D] rounded text-[11.5px] text-slate-300 disabled:opacity-60"/>
                     )}
                   </div>

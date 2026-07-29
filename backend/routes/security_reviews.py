@@ -26,6 +26,11 @@ from security_reviews_hooks import (
 )
 import auth_utils
 from auth_utils import get_current_user
+from questionnaire_v3 import (
+    CAPABILITY_FLAGS, NA_REASON_CODES, QUESTIONNAIRE_V3, default_capabilities,
+    applicable_questions, score_questionnaire, confidence_note, ensure_v3_seeded,
+    custom_questions_for,
+)
 
 router = APIRouter()
 
@@ -79,8 +84,20 @@ class StepBody(BaseModel):
 class ResponseBody(BaseModel):
     question_order: int
     answer: str                             # yes | no | partial | na
+    na_reason_code: Optional[str] = None    # na_by_design | unknown | pending_vendor
     evidence_text: str = ""
     attachments: List[dict] = []
+
+
+class CapabilityBody(BaseModel):
+    capabilities: dict                      # {flag_key: bool}
+
+
+class CustomQuestionBody(BaseModel):
+    text: str
+    domain: str = "Custom"
+    risk_weight: int = 3
+    vendor_facing: bool = False
 
 
 class RiskScoreBody(BaseModel):
@@ -173,7 +190,9 @@ def _sla_seconds(review: dict) -> Optional[int]:
 async def reviews_meta(user: dict = Depends(require_module(MODULE_KEY))):
     await ensure_seeded(db)
     await ensure_phase2_seeded(db)
+    await ensure_v3_seeded(db)
     return {
+        "capability_flags": CAPABILITY_FLAGS, "na_reason_codes": NA_REASON_CODES,
         "review_types": REVIEW_TYPES, "data_classifications": DATA_CLASSIFICATIONS,
         "statuses": REVIEW_STATUSES, "step_statuses": STEP_STATUSES,
         "decision_outcomes": DECISION_OUTCOMES, "urgencies": URGENCIES,
@@ -222,10 +241,15 @@ async def create_review(body: IntakeBody, user: dict = Depends(require_module(MO
         raise HTTPException(400, f"Unknown data classification(s): {bad}")
 
     playbook = await latest_playbook_for_type(db, body.review_type)
-    template = await latest_questionnaire(db)
+    # Item 28: new reviews use the adaptive capability-gated questionnaire.
+    template = await db.review_questionnaires.find_one(
+        {"key": QUESTIONNAIRE_V3["key"], "version": 3}, {"_id": 0})
+    if not template:
+        template = await latest_questionnaire(db)
     review = {
         "id": str(uuid.uuid4()), "review_number": await next_review_number(db),
         "title": body.title.strip(), "review_type": body.review_type, "status": "Requested",
+        "capabilities": default_capabilities(playbook["key"] if playbook else None),
         "requestor_name": body.requestor_name, "requestor_department": body.requestor_department,
         "business_justification": body.business_justification, "urgency": body.urgency,
         "target_decision_date": body.target_decision_date,
@@ -442,8 +466,20 @@ async def get_review(review_id: str, user: dict = Depends(require_module(MODULE_
     if not template:
         template = await latest_questionnaire(db)
     r["sla_elapsed_seconds"] = None if r.get("status") == "Closed" else _sla_seconds(r)
+    # Item 28: the adaptive view -- only the questions this thing's capability
+    # profile actually makes applicable, plus any per-review custom questions,
+    # plus the live confidence read.
+    customs = await custom_questions_for(db, review_id)
+    applicable = []
+    scoring = None
+    if (template or {}).get("engine") == "capability_gated":
+        applicable = applicable_questions(template, r.get("capabilities") or {},
+                                           r.get("data_classifications") or [])
+        applicable = applicable + customs
+        scoring = score_questionnaire(applicable, responses)
     return {"review": r, "steps": steps, "responses": responses, "findings": findings,
-            "questionnaire": template}
+            "questionnaire": template, "applicable_questions": applicable,
+            "custom_questions": customs, "questionnaire_scoring": scoring}
 
 
 @router.patch("/v1/security-reviews/{review_id}")
@@ -559,12 +595,20 @@ async def save_response(review_id: str, body: ResponseBody,
     await _reject_if_closed(review_id)
     if body.answer not in ("yes", "no", "partial", "na"):
         raise HTTPException(400, "answer must be yes/no/partial/na")
+    if body.answer == "na":
+        # Item 28: a bare N/A conflated "doesn't apply" with "we don't know",
+        # which are opposite signals. v3 requires which one it is.
+        if not body.na_reason_code:
+            raise HTTPException(400, f"N/A requires a reason code: {sorted(NA_REASON_CODES)}")
+        if body.na_reason_code not in NA_REASON_CODES:
+            raise HTTPException(400, f"na_reason_code must be one of {sorted(NA_REASON_CODES)}")
     existing = await db.security_review_responses.find_one(
         {"review_id": review_id, "question_order": body.question_order}, {"_id": 0})
     was_auto = bool(existing and existing.get("auto_answered"))
     doc = {
         "review_id": review_id, "question_order": body.question_order, "answer": body.answer,
         "evidence_text": body.evidence_text, "attachments": body.attachments,
+        "na_reason_code": body.na_reason_code if body.answer == "na" else None,
         # An analyst changing an auto-answered value is an OVERRIDE -- recorded, per spec.
         "auto_answered": False, "source_tag": "Analyst",
         "analyst_overridden": was_auto and existing.get("answer") != body.answer,
@@ -598,6 +642,127 @@ async def save_response(review_id: str, body: ResponseBody,
 
 
 # --------------------------- risk scoring ---------------------------
+
+@router.put("/v1/security-reviews/{review_id}/capabilities")
+async def set_capabilities(review_id: str, body: CapabilityBody,
+                            user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    """Item 28 Section 0 -- the Capability Profile. These ten flags decide which
+    questionnaire modules apply, so changing them reshapes the questionnaire.
+    Pre-seeded from the playbook type at intake; always analyst-overridable."""
+    await _get_review_or_404(review_id)
+    await _reject_if_closed(review_id)
+    valid = {f["key"] for f in CAPABILITY_FLAGS}
+    bad = [k for k in body.capabilities if k not in valid]
+    if bad:
+        raise HTTPException(400, f"Unknown capability flag(s): {bad}")
+    caps = {k: bool(v) for k, v in body.capabilities.items()}
+    await db.security_reviews.update_one({"id": review_id}, {"$set": {
+        "capabilities": caps, "updated_at": now_iso()}})
+    await audit(db, review_id, "capabilities_set", user.get("email", "?"),
+                ", ".join(sorted(k for k, v in caps.items() if v)) or "none")
+    r = await _get_review_or_404(review_id)
+    template = await db.review_questionnaires.find_one({"id": r.get("template_version_id")}, {"_id": 0})
+    if not template or template.get("engine") != "capability_gated":
+        template = await db.review_questionnaires.find_one(
+            {"key": QUESTIONNAIRE_V3["key"], "version": 3}, {"_id": 0})
+    applicable = applicable_questions(template or {}, caps, r.get("data_classifications") or [])
+    return {"capabilities": caps, "applicable_count": len(applicable),
+            "applicable_questions": applicable}
+
+
+@router.get("/v1/security-reviews/{review_id}/questionnaire-scoring")
+async def questionnaire_scoring(review_id: str, user: dict = Depends(require_module(MODULE_KEY))):
+    """Score + confidence over APPLICABLE questions only (item 28)."""
+    r = await _get_review_or_404(review_id)
+    template = await db.review_questionnaires.find_one({"id": r.get("template_version_id")}, {"_id": 0})
+    if not template or template.get("engine") != "capability_gated":
+        template = await db.review_questionnaires.find_one(
+            {"key": QUESTIONNAIRE_V3["key"], "version": 3}, {"_id": 0})
+    responses = await db.security_review_responses.find({"review_id": review_id}, {"_id": 0}).to_list(300)
+    applicable = applicable_questions(template or {}, r.get("capabilities") or {},
+                                       r.get("data_classifications") or [])
+    applicable += await custom_questions_for(db, review_id)
+    score = score_questionnaire(applicable, responses)
+    band = (r.get("residual_risk") or {}).get("band") or (r.get("inherent_risk") or {}).get("band")
+    return {**score, "summary": confidence_note(score, band)}
+
+
+@router.get("/v1/security-reviews/{review_id}/custom-questions")
+async def list_custom_questions(review_id: str, user: dict = Depends(require_module(MODULE_KEY))):
+    await _get_review_or_404(review_id)
+    return {"items": await custom_questions_for(db, review_id)}
+
+
+@router.post("/v1/security-reviews/{review_id}/custom-questions")
+async def add_custom_question(review_id: str, body: CustomQuestionBody,
+                               user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    """Per-review custom questions (item 28). Numbered from 1000 up so they can
+    never collide with template question orders."""
+    await _get_review_or_404(review_id)
+    await _reject_if_closed(review_id)
+    if not body.text.strip():
+        raise HTTPException(400, "text is required")
+    existing = await db.security_review_custom_questions.count_documents({"review_id": review_id})
+    doc = {
+        "id": str(uuid.uuid4()), "review_id": review_id, "order": 1000 + existing,
+        "domain": body.domain or "Custom", "text": body.text.strip(),
+        "cis_mapping": "", "risk_weight": max(0, min(5, body.risk_weight)),
+        "vendor_facing": body.vendor_facing, "requires_capability": None,
+        "conditional_on": None, "custom": True,
+        "created_by": user.get("email"), "created_at": now_iso(),
+    }
+    await db.security_review_custom_questions.insert_one(dict(doc))
+    return doc
+
+
+@router.delete("/v1/security-reviews/{review_id}/custom-questions/{question_id}")
+async def delete_custom_question(review_id: str, question_id: str,
+                                  user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    await _reject_if_closed(review_id)
+    result = await db.security_review_custom_questions.delete_one(
+        {"id": question_id, "review_id": review_id})
+    if result.deleted_count == 0:
+        raise HTTPException(404, "Custom question not found")
+    return {"ok": True}
+
+
+@router.post("/v1/security-reviews/{review_id}/custom-questions/{question_id}/promote")
+async def promote_custom_question(review_id: str, question_id: str,
+                                   user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    """Promote a per-review question into the template as a NEW version (item 28)
+    -- the mechanism by which the methodology learns from real reviews without
+    anyone editing code."""
+    q = await db.security_review_custom_questions.find_one(
+        {"id": question_id, "review_id": review_id}, {"_id": 0})
+    if not q:
+        raise HTTPException(404, "Custom question not found")
+    latest = await db.review_questionnaires.find(
+        {"key": QUESTIONNAIRE_V3["key"]}, {"_id": 0}).sort("version", -1).to_list(1)
+    if not latest:
+        raise HTTPException(400, "Adaptive template not seeded yet")
+    base = latest[0]
+    questions = [dict(x) for x in base.get("questions", [])]
+    max_order = max([x.get("order", 0) for x in questions if x.get("order", 0) < 99] or [0])
+    questions.append({
+        "order": max_order + 1, "domain": q.get("domain") or "Custom",
+        "requires_capability": q.get("requires_capability"),
+        "text": q["text"], "cis_mapping": q.get("cis_mapping") or "",
+        "risk_weight": q.get("risk_weight", 3), "vendor_facing": q.get("vendor_facing", False),
+        "conditional_on": None,
+    })
+    questions.sort(key=lambda x: x.get("order", 0))
+    doc = {"id": str(uuid.uuid4()), "key": base["key"], "name": base["name"],
+           "version": base["version"] + 1, "engine": "capability_gated",
+           "capability_flags": base.get("capability_flags"),
+           "na_reason_codes": base.get("na_reason_codes"),
+           "questions": questions, "created_by": user.get("email"), "created_at": now_iso()}
+    await db.review_questionnaires.insert_one(dict(doc))
+    await db.security_review_custom_questions.update_one(
+        {"id": question_id}, {"$set": {"promoted_to_version": doc["version"]}})
+    await audit(db, review_id, "question_promoted", user.get("email", "?"),
+                f"\"{q['text'][:80]}\" → template v{doc['version']}")
+    return {"ok": True, "version": doc["version"], "question_count": len(questions)}
+
 
 @router.put("/v1/security-reviews/{review_id}/risk-score")
 async def set_risk_score(review_id: str, body: RiskScoreBody,

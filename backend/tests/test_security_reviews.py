@@ -59,7 +59,9 @@ assert qn2 and len(qn2["questions"]) == 28 and qn2["questions"][-1].get("auto_an
 # idempotent
 r = client.get("/api/v1/security-reviews/meta")
 assert run(db.review_playbooks.count_documents({})) == 7  # SaaS + hardware/feature/integration/config/AI/extension
-assert run(db.review_questionnaires.count_documents({})) == 2
+assert run(db.review_questionnaires.count_documents({})) == 3  # v1 + v2 flat, + v3 adaptive (item 28)
+v3 = run(db.review_questionnaires.find_one({"key": "adaptive_internal", "version": 3}, {"_id": 0}))
+assert v3 and v3["engine"] == "capability_gated"
 print("PASS: meta idempotently seeds the versioned playbooks (SaaS v1 + 6 typed) and questionnaires (v1 + v2 with auto-answer hook) as DB records")
 
 # ============ intake ============
@@ -79,7 +81,7 @@ year = datetime.datetime.now(datetime.timezone.utc).year
 assert review["review_number"] == f"SR-{year}-001"
 assert review["status"] == "Requested"
 assert review["entity_domain"] == "acme.com"  # normalized lowercase
-assert review["playbook_version"] == 1 and review["template_version"] == 2  # new reviews pin the latest (v2) questionnaire
+assert review["playbook_version"] == 1 and review["template_version"] == 3  # new reviews pin the adaptive v3 questionnaire
 rid = review["id"]
 steps = run(db.security_review_steps.find({"review_id": rid}, {"_id": 0}).to_list(50))
 assert len(steps) == 13
@@ -229,7 +231,7 @@ assert r.status_code == 200
 rep = r.json()
 assert rep["review"]["inherent_risk"]["band"] == "Critical"
 assert rep["findings"][0]["severity"] == "High"
-assert rep["questionnaire"]["version"] == 2  # reviews created after Phase 2 pin questionnaire v2
+assert rep["questionnaire"]["version"] == 3  # reviews now pin the adaptive questionnaire v3
 assert rep["generated_at"]
 print("PASS: report-data bundles review + findings (worst-first) + responses + versioned template for the print view")
 

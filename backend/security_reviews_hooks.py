@@ -208,8 +208,14 @@ async def auto_answer_questions(db, review: dict, template: dict) -> list:
         if hook == "open_findings_pull":
             data = await open_findings_pull(db, review)
             crits = data["severity_counts"].get("Critical", 0) + data["severity_counts"].get("High", 0)
+            na_code = None
             if not review.get("linked_asset_ids"):
+                # v3 requires an N/A reason code, and this one is genuinely
+                # "doesn't apply" (no internal assets in scope) rather than
+                # "we couldn't find out" -- so it leaves the scoring pool
+                # instead of denting confidence.
                 answer, evidence = "na", "No internal assets linked to this review."
+                na_code = "na_by_design"
             elif crits > 0:
                 answer = "no"
                 evidence = (f"{crits} open Critical/High finding(s) across {data['asset_count']} linked asset(s); "
@@ -223,7 +229,7 @@ async def auto_answer_questions(db, review: dict, template: dict) -> list:
         doc = {
             "review_id": review["id"], "question_order": q["order"], "answer": answer,
             "evidence_text": evidence, "attachments": [], "auto_answered": True,
-            "source_tag": source_tag, "analyst_overridden": False,
+            "na_reason_code": na_code, "source_tag": source_tag, "analyst_overridden": False,
             "answered_by": "auto-fill", "answered_at": _now_iso(),
         }
         if existing:
@@ -315,13 +321,20 @@ def compile_vendor_questionnaire(review: dict, template: dict, responses: list) 
     auto-answer -- formatted for copy-paste into an email."""
     resp_by_order = {r["question_order"]: r for r in responses}
     classifications = review.get("data_classifications") or []
+    if template.get("engine") == "capability_gated":
+        from questionnaire_v3 import applicable_questions
+        pool = applicable_questions(template, review.get("capabilities") or {}, classifications)
+    else:
+        pool = [q for q in template.get("questions", [])
+                if not (q.get("conditional_on") and not q["conditional_on"].startswith("q")
+                        and q["conditional_on"] not in classifications)]
     questions = []
-    for q in template.get("questions", []):
-        cond = q.get("conditional_on")
-        if cond and not cond.startswith("q") and cond not in classifications:
-            continue
+    for q in pool:
         r = resp_by_order.get(q["order"])
-        include = q.get("vendor_facing") or (r and r.get("auto_answered") and r.get("answer") == "na")
+        # Vendor-facing questions, plus anything we marked "pending vendor" or
+        # couldn't determine ourselves -- exactly the set worth asking them.
+        include = q.get("vendor_facing") or (
+            r and r.get("answer") == "na" and r.get("na_reason_code") in ("pending_vendor", "unknown"))
         if include:
             questions.append({"order": q["order"], "domain": q["domain"], "text": q["text"]})
     lines = [f"Security questionnaire — {review.get('entity_name') or review.get('title')} "
@@ -345,19 +358,30 @@ async def suggest_risk(db, review: dict, template: dict, responses: list) -> dic
     """Suggested inherent risk from weighted questionnaire answers + enrichment
     signals. The analyst accepts or overrides (override requires justification --
     enforced at save when the frontend echoes back the suggestion it displayed)."""
-    resp_by_order = {r["question_order"]: r for r in responses}
-    weight_total, weight_bad = 0, 0.0
-    for q in template.get("questions", []):
-        r = resp_by_order.get(q["order"])
-        if not r or r["answer"] == "na":
-            continue
-        w = q.get("risk_weight", 1)
-        weight_total += w
-        if r["answer"] == "no":
-            weight_bad += w
-        elif r["answer"] == "partial":
-            weight_bad += w * 0.5
-    ratio = (weight_bad / weight_total) if weight_total else 0.0
+    # v3 (capability-gated) scores over APPLICABLE questions only and reports a
+    # confidence figure; older flat templates keep the v2 behaviour.
+    confidence = None
+    if template.get("engine") == "capability_gated":
+        from questionnaire_v3 import applicable_questions, score_questionnaire
+        applicable = applicable_questions(template, review.get("capabilities") or {},
+                                           review.get("data_classifications") or [])
+        scored = score_questionnaire(applicable, responses)
+        ratio = scored["weighted_bad_ratio"]
+        confidence = scored
+    else:
+        resp_by_order = {r["question_order"]: r for r in responses}
+        weight_total, weight_bad = 0, 0.0
+        for q in template.get("questions", []):
+            r = resp_by_order.get(q["order"])
+            if not r or r["answer"] == "na":
+                continue
+            w = q.get("risk_weight", 1)
+            weight_total += w
+            if r["answer"] == "no":
+                weight_bad += w
+            elif r["answer"] == "partial":
+                weight_bad += w * 0.5
+        ratio = (weight_bad / weight_total) if weight_total else 0.0
 
     rationale = []
     likelihood = 2
@@ -388,7 +412,7 @@ async def suggest_risk(db, review: dict, template: dict, responses: list) -> dic
     impacts = {"confidentiality": conf_impact, "integrity": 3, "availability": 3,
                "compliance_legal": conf_impact, "reputational": 3}
     max_impact = max(impacts.values())
-    return {
+    out = {
         "likelihood": likelihood, "impacts": impacts,
         "band": risk_band(likelihood, max_impact),
         "score": likelihood * max_impact,
@@ -396,6 +420,14 @@ async def suggest_risk(db, review: dict, template: dict, responses: list) -> dic
         "rationale": rationale,
         "source_tag": _tag("Questionnaire + Findings + OSINT"),
     }
+    if confidence:
+        out["confidence"] = confidence
+        if confidence["confidence_pct"] < 70:
+            out["rationale"].append(
+                f"confidence is only {confidence['confidence_pct']}% "
+                f"({confidence['unknown_count']} unknown, {confidence['pending_vendor_count']} pending vendor) "
+                "-- treat this suggestion as provisional")
+    return out
 
 
 # =========================================================================

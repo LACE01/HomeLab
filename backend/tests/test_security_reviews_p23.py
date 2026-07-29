@@ -89,18 +89,18 @@ print("PASS: asset_inventory_check detects shadow deployment and auto-drafts ONE
 
 r = client.post(f"/api/v1/security-reviews/{rid}/auto-answer")
 assert r.status_code == 200
-resp = run(db.security_review_responses.find_one({"review_id": rid, "question_order": 28}, {"_id": 0}))
+resp = run(db.security_review_responses.find_one({"review_id": rid, "question_order": 52}, {"_id": 0}))
 assert resp["answer"] == "na" and resp["auto_answered"] is True  # no linked assets yet
-print("PASS: auto-answer answers Q28 'na' with no linked assets, marked auto_answered")
+print("PASS: auto-answer answers Q52 'na' with no linked assets, marked auto_answered")
 
 client.patch(f"/api/v1/security-reviews/{rid}", json={"linked_asset_ids": ["a1"]})
 run(db.findings.insert_one({"id": "f1", "asset_id": "a1", "severity": "Critical", "status": "New",
                              "qid": "110123", "title": "Critical RCE", "due_at": "2020-01-01T00:00:00+00:00"}))
 r = client.post(f"/api/v1/security-reviews/{rid}/auto-answer")
-resp = run(db.security_review_responses.find_one({"review_id": rid, "question_order": 28}, {"_id": 0}))
+resp = run(db.security_review_responses.find_one({"review_id": rid, "question_order": 52}, {"_id": 0}))
 assert resp["answer"] == "no" and "110123" in resp["evidence_text"]
 assert resp["source_tag"].startswith("Pulled from Findings")
-print("PASS: auto-answer flips Q28 to 'no' once a linked asset has open Critical findings, citing the QIDs")
+print("PASS: auto-answer flips Q52 to 'no' once a linked asset has open Critical findings, citing the QIDs")
 
 r = client.get(f"/api/v1/security-reviews/{rid}/autofill/open_findings_pull")
 data = r.json()
@@ -110,14 +110,14 @@ print("PASS: open_findings_pull reports severity counts, overdue SLAs, and top Q
 
 # analyst override of an auto answer is recorded
 r = client.put(f"/api/v1/security-reviews/{rid}/responses",
-                json={"question_order": 28, "answer": "partial", "evidence_text": "Patch scheduled this week"})
-resp = run(db.security_review_responses.find_one({"review_id": rid, "question_order": 28}, {"_id": 0}))
+                json={"question_order": 52, "answer": "partial", "evidence_text": "Patch scheduled this week"})
+resp = run(db.security_review_responses.find_one({"review_id": rid, "question_order": 52}, {"_id": 0}))
 assert resp["analyst_overridden"] is True and resp["auto_answered"] is False
 audit_entries = client.get(f"/api/v1/security-reviews/{rid}/audit").json()["items"]
 assert any(a["action"] == "auto_answer_overridden" for a in audit_entries)
 # and auto-answer won't clobber the analyst's override
 client.post(f"/api/v1/security-reviews/{rid}/auto-answer")
-resp = run(db.security_review_responses.find_one({"review_id": rid, "question_order": 28}, {"_id": 0}))
+resp = run(db.security_review_responses.find_one({"review_id": rid, "question_order": 52}, {"_id": 0}))
 assert resp["answer"] == "partial"
 print("PASS: analyst override of an auto answer is recorded and never clobbered by re-running auto-answer")
 
@@ -140,9 +140,9 @@ assert draft["cis_mapping"] == "6.5"
 # no duplicate on re-answer
 client.put(f"/api/v1/security-reviews/{rid}/responses", json={"question_order": 2, "answer": "no"})
 assert run(db.security_review_findings.count_documents({"review_id": rid, "from_question_order": 2})) == 1
-# low-weight questions don't draft
-client.put(f"/api/v1/security-reviews/{rid}/responses", json={"question_order": 16, "answer": "no"})  # weight 2
-assert run(db.security_review_findings.count_documents({"review_id": rid, "from_question_order": 16})) == 0
+# low-weight questions don't draft (v3 Q33 = log retention, weight 2)
+client.put(f"/api/v1/security-reviews/{rid}/responses", json={"question_order": 33, "answer": "no"})
+assert run(db.security_review_findings.count_documents({"review_id": rid, "from_question_order": 33})) == 0
 print("PASS: No/Partial answers on weight>=4 questions pre-draft findings (weight-5 'no' = High), once, never for low weights")
 
 # ============ vendor questionnaire compile + SLA tracking ============
@@ -150,10 +150,13 @@ print("PASS: No/Partial answers on weight>=4 questions pre-draft findings (weigh
 r = client.get(f"/api/v1/security-reviews/{rid}/vendor-questionnaire")
 vq = r.json()
 orders = [q["order"] for q in vq["questions"]]
-assert 2 in orders                       # vendor-facing MFA question
-assert 23 in orders                      # CJIS conditional -- CJIS is selected
-assert 24 not in orders                  # PHI conditional -- not selected
-assert 12 not in orders                  # not vendor-facing
+# v3 numbering: 2 = MFA (vendor-facing, gated on has_user_accounts -- on for this
+# AI review), 45 = CJIS conditional (CJIS is selected), 46 = PHI (not selected),
+# 11 = network exposure (not vendor-facing, and creates_network_exposure is off).
+assert 2 in orders
+assert 45 in orders
+assert 46 not in orders
+assert 11 not in orders
 assert "## Identity & Access" in vq["text"]
 print("PASS: vendor questionnaire compiles vendor-facing + applicable-conditional questions into a copy-paste document")
 
