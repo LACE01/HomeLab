@@ -39,10 +39,125 @@ def _tag(source: str) -> str:
     return f"Pulled from {source}, {datetime.now(timezone.utc).date().isoformat()}"
 
 
+# Plain-English framing so a non-technical reader (a director signing off on a
+# purchase) can understand what each check looked at and why it matters. The
+# analyst gets the raw detail; the executive gets this.
+CHECK_MEANING = {
+    "corporate_registration": {
+        "label": "Is this a real, registered company?",
+        "means": "We searched public business registries for the vendor's legal entity.",
+        "matters": "A contract is only worth what the entity behind it is worth. No active "
+                   "registration means there may be nobody to hold accountable.",
+    },
+    "breach_reputation": {
+        "label": "Have they been breached before?",
+        "means": "We checked ransomware leak sites, breach databases, our own monitoring, and "
+                 "security news for this vendor.",
+        "matters": "Past incidents aren't automatically disqualifying — how the vendor responded "
+                   "is what tells you whether they'd handle your data well.",
+    },
+    "certification_status": {
+        "label": "Do they have current security certifications?",
+        "means": "We looked for a current SOC 2 Type II or ISO 27001 certificate on file.",
+        "matters": "An independent audit is the cheapest assurance you can get. An EXPIRED "
+                   "certificate is worse than none, because it usually means nobody re-checked.",
+    },
+    "viability_signals": {
+        "label": "What do we already know about them?",
+        "means": "Our own history with this vendor: prior reviews, how long we've tracked them, "
+                 "and their current risk rating.",
+        "matters": "A vendor we've reviewed before carries known context. A brand-new vendor "
+                   "needs a closer look at financial stability, which is a manual step.",
+    },
+    "tls_security_headers": {
+        "label": "Is their website properly secured?",
+        "means": "We loaded the vendor's site over HTTPS and checked the protective headers "
+                 "browsers rely on.",
+        "matters": "Missing headers are a reasonable proxy for engineering care. They rarely "
+                   "cause a breach alone, but they show whether basics get done.",
+    },
+    "cve_lookup": {
+        "label": "Are there known vulnerabilities in their product?",
+        "means": "We searched the U.S. National Vulnerability Database for this vendor's name.",
+        "matters": "Having CVEs is normal and often healthy — it means bugs get found and "
+                   "published. Having none can simply mean nobody has looked.",
+    },
+    "email_authentication": {
+        "label": "Can someone impersonate them in email?",
+        "means": "We checked the anti-spoofing DNS records (SPF, DKIM, DMARC) on their domain.",
+        "matters": "Weak records let an attacker send convincing email that appears to come from "
+                   "this vendor — a common way invoice-fraud and phishing reach staff.",
+    },
+    "shodan_exposure": {
+        "label": "What of theirs is exposed to the internet?",
+        "means": "We looked up their domain in an internet-wide scan index.",
+        "matters": "A large or poorly-maintained internet footprint is more surface for an "
+                   "attacker, and anything compromised there can reach data they hold for us.",
+    },
+    "certificate_transparency": {
+        "label": "What systems do they run?",
+        "means": "Public certificate logs record every TLS certificate issued, which reveals the "
+                 "hostnames a vendor operates.",
+        "matters": "It shows the real scale of their estate and can surface systems they didn't "
+                   "mention during the review.",
+    },
+    "dns_whois": {
+        "label": "Is the domain established and well configured?",
+        "means": "We checked their DNS setup and how long the domain has been registered.",
+        "matters": "A domain registered weeks ago, or with a single nameserver, is a different "
+                   "proposition from one running since 2009.",
+    },
+    "typosquat": {
+        "label": "Are there fake lookalike domains?",
+        "means": "We generated plausible misspellings of the vendor's domain and checked which "
+                 "are actually registered by someone.",
+        "matters": "Registered lookalikes are the standard setup for phishing your staff or their "
+                   "customers while wearing the vendor's name.",
+    },
+}
+
+STATUS_PLAIN = {
+    "ok": "No concerns found",
+    "attention": "Worth a look",
+    "manual": "Couldn't check automatically",
+    "not_configured": "Not set up yet",
+}
+
+
 def _result(check: str, status: str, summary: str, detail=None, source: str = "") -> dict:
     """status: ok | attention | manual | not_configured"""
+    meaning = CHECK_MEANING.get(check, {})
     return {"check": check, "status": status, "summary": summary,
-            "detail": detail, "source_tag": _tag(source or check)}
+            "detail": detail, "source_tag": _tag(source or check),
+            "label": meaning.get("label"),
+            "what_it_means": meaning.get("means"),
+            "why_it_matters": meaning.get("matters"),
+            "status_plain": STATUS_PLAIN.get(status, status)}
+
+
+def _panel_summary(panel: str, results: list) -> dict:
+    """One plain-English sentence per panel so an executive gets the verdict
+    without reading eleven cards."""
+    attention = [r for r in results if r["status"] == "attention"]
+    unchecked = [r for r in results if r["status"] in ("manual", "not_configured")]
+    ok = [r for r in results if r["status"] == "ok"]
+    subject = ("the vendor as a company" if panel == "company_posture"
+               else "the vendor's technical setup")
+    if attention:
+        headline = (f"{len(attention)} of {len(results)} checks on {subject} raised something worth "
+                    f"a look: " + "; ".join((r.get("label") or r["check"]) for r in attention[:4]) + ".")
+        verdict = "attention"
+    elif ok and not unchecked:
+        headline = f"All {len(ok)} automated checks on {subject} came back clean."
+        verdict = "ok"
+    else:
+        headline = (f"{len(ok)} check(s) on {subject} came back clean; {len(unchecked)} couldn't be "
+                    f"completed automatically and need a manual look.")
+        verdict = "partial"
+    if unchecked and attention:
+        headline += f" {len(unchecked)} check(s) couldn't be completed automatically."
+    return {"verdict": verdict, "headline": headline,
+            "counts": {"attention": len(attention), "ok": len(ok), "unchecked": len(unchecked)}}
 
 
 # =========================================================================
@@ -216,7 +331,8 @@ async def company_posture(db, entity: dict) -> dict:
             out.append(_result("unknown_check", "manual", f"Check failed: {type(c).__name__}"))
         else:
             out.append(c)
-    return {"panel": "company_posture", "ran_at": _now_iso(), "results": out}
+    return {"panel": "company_posture", "ran_at": _now_iso(), "results": out,
+            "summary": _panel_summary("company_posture", out)}
 
 
 # =========================================================================
@@ -445,7 +561,8 @@ async def technical_posture(db, entity: dict) -> dict:
             out.append(_result("unknown_check", "manual", f"Check failed: {type(c).__name__}"))
         else:
             out.append(c)
-    return {"panel": "technical_posture", "ran_at": _now_iso(), "results": out}
+    return {"panel": "technical_posture", "ran_at": _now_iso(), "results": out,
+            "summary": _panel_summary("technical_posture", out)}
 
 
 async def run_external_checks(db, review: dict, panel: Optional[str] = None) -> dict:
@@ -461,8 +578,13 @@ async def run_external_checks(db, review: dict, panel: Optional[str] = None) -> 
               "name": entity.get("name") or review.get("entity_name"),
               "domain": entity.get("domain") or review.get("entity_domain")}
 
-    payload = {"ran_at": _now_iso(), "entity": {k: entity.get(k) for k in
-               ("name", "legal_name", "domain", "jurisdiction")}}
+    # Running a single panel used to REPLACE the whole external_checks document,
+    # wiping whichever panel wasn't run. Start from what's already stored so a
+    # single-panel run only refreshes its own half.
+    existing = (review.get("external_checks") or {}) if isinstance(review.get("external_checks"), dict) else {}
+    payload = dict(existing)
+    payload.update({"ran_at": _now_iso(), "entity": {k: entity.get(k) for k in
+                    ("name", "legal_name", "domain", "jurisdiction")}})
     prereqs = []
     if not entity.get("domain"):
         prereqs.append("Set the vendor's domain on the entity to enable the technical checks.")
@@ -475,5 +597,6 @@ async def run_external_checks(db, review: dict, panel: Optional[str] = None) -> 
     if panel in (None, "technical"):
         payload["technical_posture"] = await technical_posture(db, entity)
 
+    payload["panels_present"] = [k for k in ("company_posture", "technical_posture") if payload.get(k)]
     await db.security_reviews.update_one({"id": review["id"]}, {"$set": {"external_checks": payload}})
     return payload

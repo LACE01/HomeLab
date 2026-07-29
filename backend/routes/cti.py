@@ -128,6 +128,19 @@ async def sync_feeds(user: dict = Depends(require_module(MODULE_KEY, level="edit
         raise HTTPException(502, f"Feed sync failed: {e}")
 
 
+@router.post("/v1/cti/opencti/sync")
+async def sync_opencti(user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    """Pull OpenCTI Reports into the Threat News stream -- usually the richest
+    source an org already has, since it aggregates every feed OpenCTI is
+    connected to plus analyst-written intel."""
+    try:
+        return await cti.sync_opencti_reports(db)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"OpenCTI sync failed: {e}")
+
+
 @router.get("/v1/cti/articles")
 async def list_articles(matched_only: bool = False, limit: int = 100,
                          user: dict = Depends(require_module(MODULE_KEY))):

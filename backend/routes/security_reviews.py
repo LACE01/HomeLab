@@ -81,6 +81,27 @@ class StepBody(BaseModel):
     evidence: Optional[List[dict]] = None   # [{name, mime, data_url}] -- same shape FindingDetail attachments use
 
 
+class LinkAssetsBody(BaseModel):
+    """Flexible in-scope asset linking: pick individually, or pull in a whole
+    team's or tag's worth at once. All three can be combined in one call."""
+    asset_ids: List[str] = []
+    teams: List[str] = []
+    tags: List[str] = []
+    replace: bool = False        # False = add to what's already linked
+
+
+class UnlinkAssetsBody(BaseModel):
+    asset_ids: List[str]
+
+
+class AttachmentBody(BaseModel):
+    name: str
+    mime: str = ""
+    data_url: str                # base64 data URL, same shape step evidence uses
+    description: str = ""
+    category: str = "supporting"  # supporting | contract | certificate | questionnaire | screenshot
+
+
 class ResponseBody(BaseModel):
     question_order: int
     answer: str                             # yes | no | partial | na
@@ -279,6 +300,28 @@ async def create_review(body: IntakeBody, user: dict = Depends(require_module(MO
     await audit(db, review["id"], "created", user.get("email", "?"),
                 f"Intake: {review['review_number']} — {review['title']} ({review['review_type']})")
     return {k: v for k, v in review.items() if k != "_id"}
+
+
+@router.get("/v1/security-reviews/asset-picker")
+async def asset_picker(q: Optional[str] = None, team: Optional[str] = None,
+                        tag: Optional[str] = None, limit: int = 200,
+                        user: dict = Depends(require_module(MODULE_KEY))):
+    """Candidates for linking, plus the distinct teams and tags available so the
+    UI can offer bulk-by-team / bulk-by-tag without a second round trip."""
+    flt: dict = {}
+    if q:
+        flt["$or"] = [{"hostname": {"$regex": q, "$options": "i"}},
+                      {"ip": {"$regex": q, "$options": "i"}}]
+    if team:
+        flt["owner_team"] = team
+    if tag:
+        flt["tags"] = tag
+    items = await db.assets.find(
+        flt, {"_id": 0, "id": 1, "hostname": 1, "ip": 1, "owner_team": 1,
+              "criticality": 1, "tags": 1, "os": 1, "internet_facing": 1}).sort("hostname", 1).to_list(min(limit, 1000))
+    teams = sorted({t for t in await db.assets.distinct("owner_team") if t})
+    tags = sorted({t for t in await db.assets.distinct("tags") if t})
+    return {"items": items, "total": len(items), "teams": teams, "tags": tags}
 
 
 @router.get("/v1/security-reviews/assignable-users")
@@ -764,6 +807,120 @@ async def promote_custom_question(review_id: str, question_id: str,
     return {"ok": True, "version": doc["version"], "question_count": len(questions)}
 
 
+@router.get("/v1/security-reviews/{review_id}/assets")
+async def list_review_assets(review_id: str, user: dict = Depends(require_module(MODULE_KEY))):
+    """In-scope assets for this review, with their open-finding counts -- the
+    same list the asset_inventory_check / open_findings_pull hooks read."""
+    r = await _get_review_or_404(review_id)
+    ids = r.get("linked_asset_ids") or []
+    if not ids:
+        return {"items": [], "total": 0}
+    assets = await db.assets.find({"id": {"$in": ids}}, {"_id": 0}).to_list(2000)
+    OPEN = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+    for a in assets:
+        a["open_findings"] = await db.findings.count_documents(
+            {"asset_id": a["id"], "status": {"$in": OPEN}})
+        a["critical_high_findings"] = await db.findings.count_documents(
+            {"asset_id": a["id"], "status": {"$in": OPEN}, "severity": {"$in": ["Critical", "High"]}})
+    assets.sort(key=lambda a: -a.get("critical_high_findings", 0))
+    return {"items": assets, "total": len(assets)}
+
+
+@router.post("/v1/security-reviews/{review_id}/assets")
+async def link_assets(review_id: str, body: LinkAssetsBody,
+                       user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    """Link in-scope assets individually, by team, by tag, or any combination.
+    Bulk selectors resolve to concrete asset ids at link time -- a review's scope
+    is a fixed list of assets, not a live query, so it stays reproducible when
+    someone re-tags a host six months later."""
+    await _get_review_or_404(review_id)
+    await _reject_if_closed(review_id)
+    resolved: set = set(body.asset_ids or [])
+    matched_by = {"explicit": len(body.asset_ids or []), "teams": {}, "tags": {}}
+    for team in body.teams or []:
+        ids = [a["id"] for a in await db.assets.find({"owner_team": team}, {"_id": 0, "id": 1}).to_list(5000)]
+        matched_by["teams"][team] = len(ids)
+        resolved.update(ids)
+    for tag in body.tags or []:
+        ids = [a["id"] for a in await db.assets.find({"tags": tag}, {"_id": 0, "id": 1}).to_list(5000)]
+        matched_by["tags"][tag] = len(ids)
+        resolved.update(ids)
+    if not resolved:
+        raise HTTPException(400, "Nothing matched -- provide asset_ids, teams, or tags that exist")
+
+    r = await _get_review_or_404(review_id)
+    current = set() if body.replace else set(r.get("linked_asset_ids") or [])
+    added = resolved - current
+    final = sorted(current | resolved)
+    await db.security_reviews.update_one({"id": review_id}, {"$set": {
+        "linked_asset_ids": final, "updated_at": now_iso()}})
+    detail = f"{len(added)} asset(s) added"
+    if body.teams:
+        detail += f" (teams: {', '.join(body.teams)})"
+    if body.tags:
+        detail += f" (tags: {', '.join(body.tags)})"
+    await audit(db, review_id, "assets_linked", user.get("email", "?"), detail)
+    return {"ok": True, "linked_total": len(final), "added": len(added), "matched_by": matched_by}
+
+
+@router.post("/v1/security-reviews/{review_id}/assets/unlink")
+async def unlink_assets(review_id: str, body: UnlinkAssetsBody,
+                         user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    r = await _get_review_or_404(review_id)
+    await _reject_if_closed(review_id)
+    # POST rather than DELETE: a DELETE carrying a request body is inconsistently
+    # supported across HTTP clients and proxies, and this needs a list of ids.
+    remaining = [a for a in (r.get("linked_asset_ids") or []) if a not in set(body.asset_ids)]
+    await db.security_reviews.update_one({"id": review_id}, {"$set": {
+        "linked_asset_ids": remaining, "updated_at": now_iso()}})
+    await audit(db, review_id, "assets_unlinked", user.get("email", "?"),
+                f"{len(body.asset_ids)} asset(s) removed")
+    return {"ok": True, "linked_total": len(remaining)}
+
+
+@router.get("/v1/security-reviews/{review_id}/attachments")
+async def list_attachments(review_id: str, user: dict = Depends(require_module(MODULE_KEY))):
+    """Review-level supporting documents. Step evidence stays attached to its
+    step; this is for everything that belongs to the review as a whole --
+    contracts, SOC 2 reports, vendor questionnaire responses, screenshots."""
+    await _get_review_or_404(review_id)
+    items = await db.security_review_attachments.find(
+        {"review_id": review_id}, {"_id": 0}).sort("uploaded_at", -1).to_list(200)
+    return {"items": items}
+
+
+@router.post("/v1/security-reviews/{review_id}/attachments")
+async def add_attachment(review_id: str, body: AttachmentBody,
+                          user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    await _get_review_or_404(review_id)
+    await _reject_if_closed(review_id)
+    if not body.data_url.startswith("data:"):
+        raise HTTPException(400, "data_url must be a base64 data URL")
+    # Rough size guard -- base64 inflates ~33%; keep a single doc under ~10MB.
+    if len(body.data_url) > 14_000_000:
+        raise HTTPException(413, "Attachment is too large (10MB limit per file)")
+    doc = {"id": str(uuid.uuid4()), "review_id": review_id, "name": body.name,
+           "mime": body.mime, "data_url": body.data_url, "description": body.description,
+           "category": body.category, "size_bytes": int(len(body.data_url) * 0.75),
+           "uploaded_by": user.get("email"), "uploaded_at": now_iso()}
+    await db.security_review_attachments.insert_one(dict(doc))
+    await audit(db, review_id, "attachment_added", user.get("email", "?"),
+                f"{body.name} ({body.category})")
+    return {k: v for k, v in doc.items() if k != "data_url"}
+
+
+@router.delete("/v1/security-reviews/{review_id}/attachments/{attachment_id}")
+async def delete_attachment(review_id: str, attachment_id: str,
+                             user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    await _reject_if_closed(review_id)
+    result = await db.security_review_attachments.delete_one(
+        {"id": attachment_id, "review_id": review_id})
+    if result.deleted_count == 0:
+        raise HTTPException(404, "Attachment not found")
+    await audit(db, review_id, "attachment_deleted", user.get("email", "?"), attachment_id)
+    return {"ok": True}
+
+
 @router.put("/v1/security-reviews/{review_id}/risk-score")
 async def set_risk_score(review_id: str, body: RiskScoreBody,
                           user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
@@ -1013,6 +1170,16 @@ async def report_data(review_id: str, user: dict = Depends(require_module(MODULE
         # whole reason residual < inherent -- they belong next to the verdict.
         "compensating_controls": r.get("compensating_controls") or "",
         "recommendation": r.get("recommendation"),
+        # Everything else that belongs in a complete report: the work that was
+        # done (notes), what was in scope (assets), what we verified externally,
+        # and the supporting paperwork.
+        "notes": await db.security_review_notes.find(
+            {"review_id": review_id}, {"_id": 0}).sort("at", 1).to_list(500),
+        "external_checks": r.get("external_checks"),
+        "attachments": await db.security_review_attachments.find(
+            {"review_id": review_id}, {"_id": 0, "data_url": 0}).sort("uploaded_at", 1).to_list(200),
+        "linked_assets": await _linked_asset_summary(db, r),
+        "questionnaire_scoring": await _report_questionnaire_scoring(db, r),
         "generated_at": now_iso(),
     }
 
@@ -1085,6 +1252,8 @@ class ShareGrantBody(BaseModel):
 
 class ShareVerifyBody(BaseModel):
     code: str
+
+
 
 
 class PlaybookVersionBody(BaseModel):
@@ -1302,6 +1471,40 @@ async def _resolve_grant(token: str) -> dict:
     return grant
 
 
+async def _linked_asset_summary(db, r: dict) -> list:
+    ids = r.get("linked_asset_ids") or []
+    if not ids:
+        return []
+    OPEN = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+    assets = await db.assets.find(
+        {"id": {"$in": ids}},
+        {"_id": 0, "id": 1, "hostname": 1, "ip": 1, "owner_team": 1, "criticality": 1,
+         "tags": 1, "internet_facing": 1}).to_list(2000)
+    for a in assets:
+        a["open_findings"] = await db.findings.count_documents(
+            {"asset_id": a["id"], "status": {"$in": OPEN}})
+        a["critical_high_findings"] = await db.findings.count_documents(
+            {"asset_id": a["id"], "status": {"$in": OPEN}, "severity": {"$in": ["Critical", "High"]}})
+    assets.sort(key=lambda a: -a.get("critical_high_findings", 0))
+    return assets
+
+
+async def _report_questionnaire_scoring(db, r: dict) -> Optional[dict]:
+    """Confidence read for the report, so a rating never appears more precise
+    than the evidence behind it."""
+    template = await db.review_questionnaires.find_one({"id": r.get("template_version_id")}, {"_id": 0})
+    if not template or template.get("engine") != "capability_gated":
+        return None
+    responses = await db.security_review_responses.find(
+        {"review_id": r["id"]}, {"_id": 0}).to_list(300)
+    applicable = applicable_questions(template, r.get("capabilities") or {},
+                                       r.get("data_classifications") or [])
+    applicable += await custom_questions_for(db, r["id"])
+    score = score_questionnaire(applicable, responses)
+    band = (r.get("residual_risk") or {}).get("band") or (r.get("inherent_risk") or {}).get("band")
+    return {**score, "summary": confidence_note(score, band)}
+
+
 def _matrix_points(r: dict) -> list:
     """The inherent/residual/not-adopting positions for the report's 5x5 grid."""
     out = []
@@ -1333,6 +1536,15 @@ async def _build_shared_payload(review_id: str) -> dict:
             "matrix_points": _matrix_points(r),
             "compensating_controls": r.get("compensating_controls") or "",
             "recommendation": r.get("recommendation"),
+            "external_checks": r.get("external_checks"),
+            "linked_assets": await _linked_asset_summary(db, r),
+            "attachments": await db.security_review_attachments.find(
+                {"review_id": review_id}, {"_id": 0, "data_url": 0}).sort("uploaded_at", 1).to_list(200),
+            "questionnaire_scoring": await _report_questionnaire_scoring(db, r),
+            # Internal working notes are deliberately EXCLUDED from shared
+            # reports -- that promise is part of what makes analysts write
+            # candidly in them.
+            "notes": [],
             "generated_at": now_iso(), "shared": True}
 
 
@@ -1511,6 +1723,8 @@ async def external_checks(review_id: str, panel: Optional[str] = None,
     if panel not in (None, "company", "technical"):
         raise HTTPException(400, "panel must be 'company' or 'technical' (omit for both)")
     from external_checks import run_external_checks as run_two_panel_checks
+    # r is the freshly-read review, so previously-stored panels come along and a
+    # single-panel run merges instead of replacing.
     result = await run_two_panel_checks(db, r, panel=panel)
     ran = []
     for key in ("company_posture", "technical_posture"):

@@ -9,6 +9,7 @@ import {
   Warning, ClipboardText, Scales, ListChecks, Gavel, NotePencil, ClockCounterClockwise,
   Users, ShieldCheck, Copy, ArrowsClockwise, LinkSimple, Sparkle, PaperPlaneTilt,
   TextB, TextItalic, TextUnderline, Code, Highlighter, FileDoc, UserSwitch, Trash, X, Plus,
+  HardDrives, Paperclip, PencilSimple, FloppyDisk, DownloadSimple,
 } from "@phosphor-icons/react";
 
 const RISK_COLOR = { Low: "blue", Medium: "amber", High: "orange", Critical: "red" };
@@ -19,6 +20,10 @@ const RISK_BG = { Low: "bg-blue-500/15 border-blue-500/40 text-blue-300",
 const SEV_COLOR = { Critical: "red", High: "orange", Medium: "amber", Low: "blue" };
 const STEP_STATUS_COLOR = { "Not started": "slate", "In progress": "blue", "Blocked": "amber", "Done": "emerald", "N/A": "slate" };
 const ANSWERS = [["yes", "Yes"], ["no", "No"], ["partial", "Partial"], ["na", "N/A"]];
+// Highlight swatches. Deliberately light tones: highlighted text is forced to a
+// dark colour (see .sr-richtext in index.css) so it stays readable, which only
+// works against a light background.
+const HIGHLIGHTS = ["#fde68a", "#bbf7d0", "#bfdbfe", "#fecaca", "#e9d5ff"];
 
 const TABS = [
   { id: "playbook", label: "Playbook", icon: ListChecks },
@@ -27,6 +32,8 @@ const TABS = [
   { id: "findings", label: "Findings", icon: Warning },
   { id: "recommendation", label: "Recommendation", icon: NotePencil },
   { id: "decision", label: "Decision", icon: Gavel },
+  { id: "assets", label: "In-Scope Assets", icon: HardDrives },
+  { id: "attachments", label: "Documents", icon: Paperclip },
   { id: "interviews", label: "Interviews", icon: Users },
   { id: "checks", label: "External Checks", icon: ShieldCheck },
   { id: "notes", label: "Notes", icon: NotePencil },
@@ -176,6 +183,8 @@ export default function SecurityReviewDetail() {
       {tab === "findings" && <FindingsTab id={id} findings={findings} closed={closed} onChange={load}/>}
       {tab === "recommendation" && <RecommendationTab id={id} review={review} closed={closed} onChange={load}/>}
       {tab === "decision" && <DecisionTab id={id} review={review} meta={meta} closed={closed} onChange={load}/>}
+      {tab === "assets" && <AssetsTab id={id} closed={closed} onChange={load}/>}
+      {tab === "attachments" && <AttachmentsTab id={id} closed={closed}/>}
       {tab === "interviews" && <InterviewsTab id={id} closed={closed}/>}
       {tab === "checks" && <ExternalChecksTab id={id} review={review} closed={closed} onChange={load}/>}
       {tab === "notes" && <NotesTab id={id} closed={closed}/>}
@@ -722,6 +731,276 @@ function VendorQuestionnairePanel({ id, vendorQ, closed, onChange }) {
   );
 }
 
+function AssetsTab({ id, closed, onChange }) {
+  const [linked, setLinked] = useState([]);
+  const [picker, setPicker] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState("individual");   // individual | team | tag
+  const [q, setQ] = useState("");
+  const [selected, setSelected] = useState(new Set());
+  const [bulkTeams, setBulkTeams] = useState(new Set());
+  const [bulkTags, setBulkTags] = useState(new Set());
+  const [busy, setBusy] = useState(false);
+
+  const load = () => api.get(`/v1/security-reviews/${id}/assets`).then(r => setLinked(r.data.items || []));
+  const loadPicker = (search) => api.get("/v1/security-reviews/asset-picker",
+    { params: search ? { q: search } : {} }).then(r => setPicker(r.data));
+  useEffect(() => { load(); loadPicker(); /* eslint-disable-next-line */ }, [id]);
+
+  const toggle = (set, setter, v) => {
+    const n = new Set(set);
+    n.has(v) ? n.delete(v) : n.add(v);
+    setter(n);
+  };
+
+  const link = async () => {
+    const body = {
+      asset_ids: mode === "individual" ? Array.from(selected) : [],
+      teams: mode === "team" ? Array.from(bulkTeams) : [],
+      tags: mode === "tag" ? Array.from(bulkTags) : [],
+    };
+    if (!body.asset_ids.length && !body.teams.length && !body.tags.length) {
+      toast.error("Nothing selected"); return;
+    }
+    setBusy(true);
+    try {
+      const r = await api.post(`/v1/security-reviews/${id}/assets`, body);
+      toast.success(`${r.data.added} asset(s) added — ${r.data.linked_total} in scope`);
+      setSelected(new Set()); setBulkTeams(new Set()); setBulkTags(new Set());
+      setOpen(false); load(); onChange();
+    } catch (e) { toast.error(e.response?.data?.detail || "Link failed"); }
+    finally { setBusy(false); }
+  };
+
+  const unlink = async (a) => {
+    await api.post(`/v1/security-reviews/${id}/assets/unlink`, { asset_ids: [a.id] });
+    load(); onChange();
+  };
+
+  const totalCritHigh = linked.reduce((n, a) => n + (a.critical_high_findings || 0), 0);
+
+  return (
+    <div className="space-y-3">
+      <div className="border border-blue-500/30 bg-blue-500/5 rounded-md px-3.5 py-2.5 text-[12px] text-blue-200">
+        Assets this review touches. Add them individually, or pull in a whole team&apos;s or tag&apos;s worth at once —
+        bulk selections resolve to a fixed list at link time, so the scope stays reproducible even if someone
+        re-tags a host later. This list is what the auto-fill hooks read for environment health.
+      </div>
+
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="text-[12px] text-slate-400">
+          {linked.length} asset(s) in scope
+          {totalCritHigh > 0 && <span className="text-red-300"> · {totalCritHigh} open Critical/High finding(s) across them</span>}
+        </div>
+        {!closed && (
+          <button onClick={() => setOpen(!open)}
+            className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded inline-flex items-center gap-1.5">
+            <Plus size={13}/> Add assets
+          </button>
+        )}
+      </div>
+
+      {open && picker && (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4 space-y-3">
+          <div className="inline-flex rounded border border-[#30363D] overflow-hidden">
+            {[["individual", "Individual"], ["team", "By team"], ["tag", "By tag"]].map(([m, label], i) => (
+              <button key={m} onClick={() => setMode(m)}
+                className={`h-7 px-3 text-[11.5px] ${i > 0 ? "border-l border-[#30363D]" : ""} ${
+                  mode === m ? "bg-blue-500/15 text-blue-300" : "text-slate-400 hover:text-slate-200"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {mode === "individual" && (
+            <>
+              <input value={q} onChange={e => { setQ(e.target.value); loadPicker(e.target.value); }}
+                placeholder="Search hostname or IP…"
+                className="w-full h-8 px-3 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"/>
+              <div className="max-h-64 overflow-y-auto border border-[#30363D] rounded divide-y divide-[#30363D]">
+                {picker.items.map(a => (
+                  <label key={a.id} className="flex items-center gap-2 px-3 py-1.5 text-[12px] cursor-pointer hover:bg-slate-800/30">
+                    <input type="checkbox" checked={selected.has(a.id)}
+                      onChange={() => toggle(selected, setSelected, a.id)}/>
+                    <span className="text-slate-200 font-mono">{a.hostname}</span>
+                    <span className="text-slate-500">{a.ip}</span>
+                    {a.owner_team && <Chip color="slate">{a.owner_team}</Chip>}
+                    {a.criticality && <Chip color="blue">{a.criticality}</Chip>}
+                    {a.internet_facing && <Chip color="amber">internet-facing</Chip>}
+                  </label>
+                ))}
+                {picker.items.length === 0 && <div className="px-3 py-3 text-[12px] text-slate-500">No matches.</div>}
+              </div>
+              <div className="text-[11px] text-slate-500">{selected.size} selected</div>
+            </>
+          )}
+
+          {mode === "team" && (
+            <div className="flex gap-1.5 flex-wrap">
+              {picker.teams.map(t => (
+                <button key={t} onClick={() => toggle(bulkTeams, setBulkTeams, t)}
+                  className={`h-7 px-2.5 text-[11.5px] rounded border ${bulkTeams.has(t)
+                    ? "bg-blue-500/15 border-blue-500/40 text-blue-300" : "border-[#30363D] text-slate-400"}`}>
+                  {t}
+                </button>
+              ))}
+              {picker.teams.length === 0 && <div className="text-[12px] text-slate-500">No teams on any asset yet.</div>}
+            </div>
+          )}
+
+          {mode === "tag" && (
+            <div className="flex gap-1.5 flex-wrap">
+              {picker.tags.map(t => (
+                <button key={t} onClick={() => toggle(bulkTags, setBulkTags, t)}
+                  className={`h-7 px-2.5 text-[11.5px] rounded border ${bulkTags.has(t)
+                    ? "bg-blue-500/15 border-blue-500/40 text-blue-300" : "border-[#30363D] text-slate-400"}`}>
+                  {t}
+                </button>
+              ))}
+              {picker.tags.length === 0 && <div className="text-[12px] text-slate-500">No tags on any asset yet.</div>}
+            </div>
+          )}
+
+          <button onClick={link} disabled={busy}
+            className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-white rounded">
+            {busy ? "Adding…" : "Add to scope"}
+          </button>
+        </div>
+      )}
+
+      {linked.length === 0 ? (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md py-8 text-center text-[12.5px] text-slate-500">
+          No assets linked yet.
+        </div>
+      ) : (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden">
+          <table className="w-full text-[12.5px]">
+            <thead>
+              <tr className="border-b border-[#30363D] text-left text-slate-500 text-[11px] uppercase tracking-wider">
+                <th className="px-4 py-2 font-medium">Asset</th>
+                <th className="px-4 py-2 font-medium">Team</th>
+                <th className="px-4 py-2 font-medium">Criticality</th>
+                <th className="px-4 py-2 font-medium">Open findings</th>
+                <th className="px-4 py-2 font-medium"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {linked.map(a => (
+                <tr key={a.id} className="border-b border-[#30363D] last:border-0">
+                  <td className="px-4 py-2">
+                    <Link to={`/assets/${a.id}`} className="text-blue-300 hover:underline font-mono">{a.hostname}</Link>
+                    <span className="text-slate-500 ml-2">{a.ip}</span>
+                  </td>
+                  <td className="px-4 py-2 text-slate-400">{a.owner_team || "—"}</td>
+                  <td className="px-4 py-2 text-slate-400">{a.criticality || "—"}</td>
+                  <td className="px-4 py-2">
+                    <span className="text-slate-300">{a.open_findings}</span>
+                    {a.critical_high_findings > 0 && <Chip color="red">{a.critical_high_findings} crit/high</Chip>}
+                  </td>
+                  <td className="px-4 py-2 text-right">
+                    {!closed && <button onClick={() => unlink(a)} className="text-slate-600 hover:text-red-400"><Trash size={13}/></button>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const ATTACHMENT_CATEGORIES = ["supporting", "contract", "certificate", "questionnaire", "screenshot"];
+
+function AttachmentsTab({ id, closed }) {
+  const [items, setItems] = useState([]);
+  const [category, setCategory] = useState("supporting");
+  const [description, setDescription] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = () => api.get(`/v1/security-reviews/${id}/attachments`).then(r => setItems(r.data.items || []));
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [id]);
+
+  const upload = async (files) => {
+    setBusy(true);
+    try {
+      for (const file of files) {
+        const reader = new FileReader();
+        const data_url = await new Promise(res => { reader.onload = () => res(reader.result); reader.readAsDataURL(file); });
+        await api.post(`/v1/security-reviews/${id}/attachments`, {
+          name: file.name, mime: file.type, data_url, description, category });
+      }
+      setDescription("");
+      toast.success(`${files.length} document(s) attached`);
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Upload failed"); }
+    finally { setBusy(false); }
+  };
+
+  const remove = async (a) => {
+    if (!window.confirm(`Delete "${a.name}"?`)) return;
+    await api.delete(`/v1/security-reviews/${id}/attachments/${a.id}`);
+    load();
+  };
+
+  const download = async (a) => {
+    // data_url is stripped from the list payload to keep it light; fetch on demand
+    const r = await api.get(`/v1/security-reviews/${id}/attachments`);
+    const full = (r.data.items || []).find(x => x.id === a.id);
+    const url = full?.data_url || a.data_url;
+    if (!url) { toast.error("File content unavailable"); return; }
+    const link = document.createElement("a");
+    link.href = url; link.download = a.name;
+    document.body.appendChild(link); link.click(); link.remove();
+  };
+
+  return (
+    <div className="space-y-3 max-w-3xl">
+      <div className="text-[11.5px] text-slate-500">
+        Supporting documents for the review as a whole — contracts, SOC 2 reports, vendor questionnaire responses,
+        screenshots. (Evidence tied to one playbook step still lives on that step.) These are listed in the report&apos;s
+        technical appendix.
+      </div>
+      {!closed && (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4 space-y-2">
+          <div className="flex gap-2 flex-wrap">
+            <select value={category} onChange={e => setCategory(e.target.value)}
+              className="h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-200 capitalize">
+              {ATTACHMENT_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <input placeholder="Description (optional)" value={description}
+              onChange={e => setDescription(e.target.value)}
+              className="flex-1 h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-200"/>
+          </div>
+          <input type="file" multiple disabled={busy}
+            onChange={e => upload(Array.from(e.target.files || []))}
+            className="block text-[11.5px] text-slate-500"/>
+          <div className="text-[10.5px] text-slate-600">10 MB per file.</div>
+        </div>
+      )}
+      {items.length === 0 ? (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md py-8 text-center text-[12.5px] text-slate-500">
+          No documents attached yet.
+        </div>
+      ) : items.map(a => (
+        <div key={a.id} className="border border-[#30363D] bg-[#0D1117] rounded-md px-4 py-2.5 flex items-center gap-3">
+          <Paperclip size={14} className="text-slate-500 shrink-0"/>
+          <div className="min-w-0 flex-1">
+            <div className="text-[12.5px] text-slate-200 truncate">{a.name}</div>
+            <div className="text-[10.5px] text-slate-500">
+              <span className="capitalize">{a.category}</span>
+              {a.description ? ` · ${a.description}` : ""} · {Math.round((a.size_bytes || 0) / 1024)} KB ·
+              {" "}{a.uploaded_by} · {new Date(a.uploaded_at).toLocaleDateString()}
+            </div>
+          </div>
+          <button onClick={() => download(a)} className="text-slate-500 hover:text-blue-300"><DownloadSimple size={14}/></button>
+          {!closed && <button onClick={() => remove(a)} className="text-slate-600 hover:text-red-400"><Trash size={13}/></button>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function InterviewsTab({ id, closed }) {
   const [items, setItems] = useState([]);
   const [form, setForm] = useState({ who: "", role: "", when: "", summary: "" });
@@ -790,24 +1069,42 @@ function CheckRow({ c }) {
   const [open, setOpen] = useState(false);
   const meta_ = CHECK_STATUS_META[c.status] || CHECK_STATUS_META.manual;
   const hasDetail = c.detail && (typeof c.detail !== "object" || Object.keys(c.detail).length > 0);
+  // Executives read the question and the plain-English status; analysts expand
+  // for the raw evidence.
+  const title = c.label || CHECK_LABELS[c.check] || c.check;
   return (
     <div className="border border-[#30363D] bg-[#0D1117] rounded-md">
-      <div className={`px-4 py-2.5 ${hasDetail ? "cursor-pointer" : ""}`} onClick={() => hasDetail && setOpen(!open)}>
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[12.5px] text-slate-200 inline-flex items-center gap-1.5">
-            {hasDetail && (open ? <CaretDown size={11} className="text-slate-500"/> : <CaretRight size={11} className="text-slate-500"/>)}
-            {CHECK_LABELS[c.check] || c.check}
+      <div className="px-4 py-2.5 cursor-pointer" onClick={() => setOpen(!open)}>
+        <div className="flex items-start justify-between gap-2">
+          <span className="text-[12.5px] text-slate-200 inline-flex items-start gap-1.5">
+            {open ? <CaretDown size={11} className="text-slate-500 mt-1"/> : <CaretRight size={11} className="text-slate-500 mt-1"/>}
+            {title}
           </span>
-          <Chip color={meta_.color}>{meta_.label}</Chip>
+          <Chip color={meta_.color}>{c.status_plain || meta_.label}</Chip>
         </div>
-        <div className="text-[12px] text-slate-400 mt-1">{c.summary}</div>
-        <div className="text-[10px] text-slate-600 font-mono mt-1">{c.source_tag}</div>
+        <div className="text-[12px] text-slate-400 mt-1 ml-4">{c.summary}</div>
       </div>
-      {open && hasDetail && (
-        <div className="border-t border-[#30363D] px-4 py-2.5">
-          <pre className="text-[10.5px] text-slate-400 whitespace-pre-wrap break-all max-h-64 overflow-y-auto">
-            {JSON.stringify(c.detail, null, 2)}
-          </pre>
+      {open && (
+        <div className="border-t border-[#30363D] px-4 py-2.5 space-y-2">
+          {c.what_it_means && (
+            <div className="text-[11.5px] text-slate-400">
+              <span className="text-slate-500">What we checked: </span>{c.what_it_means}
+            </div>
+          )}
+          {c.why_it_matters && (
+            <div className="text-[11.5px] text-slate-400">
+              <span className="text-slate-500">Why it matters: </span>{c.why_it_matters}
+            </div>
+          )}
+          <div className="text-[10px] text-slate-600 font-mono">{c.source_tag}</div>
+          {hasDetail && (
+            <details>
+              <summary className="text-[11px] text-blue-300 cursor-pointer">Raw evidence</summary>
+              <pre className="mt-1 text-[10.5px] text-slate-400 whitespace-pre-wrap break-all max-h-64 overflow-y-auto">
+                {JSON.stringify(c.detail, null, 2)}
+              </pre>
+            </details>
+          )}
         </div>
       )}
     </div>
@@ -882,6 +1179,14 @@ function ExternalChecksTab({ id, review, closed, onChange }) {
       </div>
       {data ? (
         <>
+          {data.summary && (
+            <div className={`rounded-md px-3 py-2.5 text-[12px] border ${
+              data.summary.verdict === "attention" ? "border-amber-500/30 bg-amber-500/5 text-amber-100"
+              : data.summary.verdict === "ok" ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-100"
+              : "border-[#30363D] bg-[#161B22] text-slate-300"}`}>
+              {data.summary.headline}
+            </div>
+          )}
           <div className="text-[10px] text-slate-600 font-mono">Last run {new Date(data.ran_at).toLocaleString()}</div>
           {data.results.map((c, i) => <CheckRow key={i} c={c}/>)}
         </>
@@ -1117,6 +1422,7 @@ function RiskTab({ id, review, meta, closed, onChange }) {
 
 function FindingsTab({ id, findings, closed, onChange }) {
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ description: "", severity: "Medium", category: "General",
     recommendation: "", owner: "", due_date: "", is_condition_of_approval: false, condition_deadline: "" });
 
@@ -1195,7 +1501,11 @@ function FindingsTab({ id, findings, closed, onChange }) {
       {findings.length === 0 && !adding && (
         <div className="text-[12.5px] text-slate-500 border border-[#30363D] bg-[#0D1117] rounded-md px-4 py-6 text-center">No findings recorded yet.</div>
       )}
-      {findings.map(f => (
+      {findings.map(f => (editing === f.id ? (
+        <FindingEditor key={f.id} id={id} finding={f}
+          onCancel={() => setEditing(null)}
+          onSaved={() => { setEditing(null); onChange(); }}/>
+      ) : (
         <div key={f.id} className="border border-[#30363D] bg-[#0D1117] rounded-md px-4 py-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
@@ -1236,12 +1546,93 @@ function FindingsTab({ id, findings, closed, onChange }) {
                   <button onClick={() => patch(f, { status: "resolved" })}
                     className="h-7 px-2 text-[11px] border border-[#30363D] text-slate-400 rounded">Resolve</button>
                 )}
+                <button onClick={() => setEditing(f.id)}
+                  className="h-7 px-2 text-[11px] border border-[#30363D] text-slate-300 rounded inline-flex items-center gap-1">
+                  <PencilSimple size={11}/> Edit
+                </button>
                 <button onClick={() => remove(f)} className="h-7 px-2 text-[11px] border border-[#30363D] text-slate-500 hover:text-red-400 rounded">Delete</button>
               </div>
             )}
           </div>
         </div>
-      ))}
+      )))}
+    </div>
+  );
+}
+
+function FindingEditor({ id, finding, onCancel, onSaved }) {
+  const [form, setForm] = useState({
+    description: finding.description || "",
+    severity: finding.severity || "Medium",
+    category: finding.category || "General",
+    affected_component: finding.affected_component || "",
+    cis_mapping: finding.cis_mapping || "",
+    recommendation: finding.recommendation || "",
+    owner: finding.owner || "",
+    due_date: finding.due_date || "",
+    is_condition_of_approval: !!finding.is_condition_of_approval,
+    condition_deadline: finding.condition_deadline || "",
+  });
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    if (!form.description.trim()) { toast.error("Description required"); return; }
+    setSaving(true);
+    try {
+      await api.patch(`/v1/security-reviews/${id}/findings/${finding.id}`, {
+        ...form,
+        due_date: form.due_date || null,
+        condition_deadline: form.condition_deadline || null,
+      });
+      toast.success("Finding updated");
+      onSaved();
+    } catch (e) { toast.error(e.response?.data?.detail || "Save failed"); }
+    finally { setSaving(false); }
+  };
+
+  const inp = "h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-200";
+  return (
+    <div className="border border-blue-500/40 bg-[#0D1117] rounded-md px-4 py-3 space-y-2.5">
+      <div className="text-[11px] uppercase tracking-wider font-mono text-blue-300">Editing finding</div>
+      <textarea rows={2} value={form.description}
+        onChange={e => setForm({ ...form, description: e.target.value })}
+        className="w-full px-3 py-2 bg-[#161B22] border border-[#30363D] rounded text-[12.5px] text-slate-100"/>
+      <div className="flex gap-2 flex-wrap items-center">
+        <select value={form.severity} onChange={e => setForm({ ...form, severity: e.target.value })} className={inp}>
+          {["Critical", "High", "Medium", "Low"].map(x => <option key={x}>{x}</option>)}
+        </select>
+        <input placeholder="Category" value={form.category}
+          onChange={e => setForm({ ...form, category: e.target.value })} className={`${inp} w-36`}/>
+        <input placeholder="Affected component" value={form.affected_component}
+          onChange={e => setForm({ ...form, affected_component: e.target.value })} className={`${inp} w-44`}/>
+        <input placeholder="CIS mapping" value={form.cis_mapping}
+          onChange={e => setForm({ ...form, cis_mapping: e.target.value })} className={`${inp} w-28`}/>
+      </div>
+      <textarea rows={2} placeholder="Recommendation" value={form.recommendation}
+        onChange={e => setForm({ ...form, recommendation: e.target.value })}
+        className="w-full px-3 py-2 bg-[#161B22] border border-[#30363D] rounded text-[12.5px] text-slate-100"/>
+      <div className="flex gap-2 flex-wrap items-center">
+        <input placeholder="Owner" value={form.owner}
+          onChange={e => setForm({ ...form, owner: e.target.value })} className={`${inp} w-40`}/>
+        <input type="date" title="Due date" value={form.due_date}
+          onChange={e => setForm({ ...form, due_date: e.target.value })} className={inp}/>
+        <label className="text-[12px] text-slate-300 inline-flex items-center gap-1.5">
+          <input type="checkbox" checked={form.is_condition_of_approval}
+            onChange={e => setForm({ ...form, is_condition_of_approval: e.target.checked })}/>
+          Condition of approval
+        </label>
+        {form.is_condition_of_approval && (
+          <input type="date" title="Condition deadline" value={form.condition_deadline}
+            onChange={e => setForm({ ...form, condition_deadline: e.target.value })} className={inp}/>
+        )}
+      </div>
+      <div className="flex gap-2">
+        <button onClick={save} disabled={saving}
+          className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-white rounded inline-flex items-center gap-1.5">
+          <FloppyDisk size={13}/> {saving ? "Saving…" : "Save changes"}
+        </button>
+        <button onClick={onCancel} className="h-8 px-3 text-[12px] border border-[#30363D] rounded text-slate-300">Cancel</button>
+      </div>
     </div>
   );
 }
@@ -1454,6 +1845,7 @@ function RichTextEditor({ value, onChange, placeholder, minHeight = 90 }) {
   // contentEditable + execCommand, which every browser we target still
   // supports. Emits HTML; the caller also keeps a plain-text copy for search.
   const ref = useRef(null);
+  const [swatches, setSwatches] = useState(false);
 
   useEffect(() => {
     if (ref.current && value !== undefined && ref.current.innerHTML !== value) {
@@ -1490,7 +1882,23 @@ function RichTextEditor({ value, onChange, placeholder, minHeight = 90 }) {
         <Btn onClick={() => exec("bold")} title="Bold (Ctrl+B)"><TextB size={13}/></Btn>
         <Btn onClick={() => exec("italic")} title="Italic (Ctrl+I)"><TextItalic size={13}/></Btn>
         <Btn onClick={() => exec("underline")} title="Underline (Ctrl+U)"><TextUnderline size={13}/></Btn>
-        <Btn onClick={() => exec("hiliteColor", "#facc15")} title="Highlight"><Highlighter size={13}/></Btn>
+        <span className="relative inline-flex">
+          <Btn onClick={() => setSwatches(v => !v)} title="Highlight"><Highlighter size={13}/></Btn>
+          {swatches && (
+            <span className="absolute top-8 left-0 z-20 flex gap-1 bg-[#0D1117] border border-[#30363D] rounded p-1">
+              {HIGHLIGHTS.map(c => (
+                <button key={c} type="button" onMouseDown={e => e.preventDefault()}
+                  onClick={() => { exec("hiliteColor", c); setSwatches(false); }}
+                  title={`Highlight ${c}`} style={{ background: c }}
+                  className="h-5 w-5 rounded border border-black/30"/>
+              ))}
+              <button type="button" onMouseDown={e => e.preventDefault()}
+                onClick={() => { exec("hiliteColor", "transparent"); setSwatches(false); }}
+                title="Remove highlight"
+                className="h-5 w-5 rounded border border-[#30363D] text-slate-400 text-[10px] leading-none">✕</button>
+            </span>
+          )}
+        </span>
         <Btn onClick={codeBlock} title="Code block"><Code size={13}/></Btn>
         <span className="w-px h-5 bg-[#30363D] mx-1"/>
         <select onChange={e => { exec("fontSize", e.target.value); e.target.value = ""; }} defaultValue=""
@@ -1613,10 +2021,13 @@ export function PrintMatrix({ points }) {
                   const here = points.filter(p => p.likelihood === l && p.impact === i);
                   return (
                     <td key={i} style={{ background: cellFill(l, i) }}
-                      className="w-14 h-9 border border-slate-300 text-center align-middle">
+                      className="w-16 h-11 border border-slate-300 text-center align-middle p-0.5">
                       {here.map((p, j) => (
-                        <span key={j} className="text-[8px] font-bold px-0.5"
-                          style={{ color: COLORS[p.band] || "#334155" }}>{p.label}</span>
+                        // Was 8px coloured text on a pale tinted cell -- unreadable.
+                        // Now a solid chip in the band colour with white text.
+                        <span key={j}
+                          className="block text-[9px] font-bold leading-tight rounded px-1 py-0.5 mb-0.5 text-white"
+                          style={{ background: COLORS[p.band] || "#334155" }}>{p.label}</span>
                       ))}
                     </td>
                   );
@@ -1629,8 +2040,18 @@ export function PrintMatrix({ points }) {
             </tr>
           </tbody>
         </table>
-        <div className="text-[9px] text-slate-500 mt-0.5">Impact →, likelihood ↑ ·{" "}
-          {points.map(p => `${p.label} L${p.likelihood}×I${p.impact} (${p.band})`).join(" · ")}
+        <div className="text-[10px] text-slate-600 mt-1 leading-relaxed">
+          <span className="font-medium">How to read this:</span> impact increases left → right, likelihood
+          increases bottom → top. Each chip is one of this review&apos;s ratings.
+          <div className="mt-0.5">
+            {points.map(p => (
+              <span key={p.label} className="inline-flex items-center gap-1 mr-3">
+                <span className="inline-block h-2 w-2 rounded-sm" style={{ background: COLORS[p.band] || "#334155" }}/>
+                <span className="font-medium">{p.label}</span>
+                <span>likelihood {p.likelihood} × impact {p.impact} = {p.band}</span>
+              </span>
+            ))}
+          </div>
         </div>
       </div>
     </div>
@@ -1756,7 +2177,8 @@ function ReportModal({ id, onClose }) {
   const [shareOpen, setShareOpen] = useState(false);
   if (!data) return null;
   const { review, findings, responses, questionnaire, generated_at, interviews, executive_summary,
-          matrix_points, compensating_controls, recommendation } = data;
+          matrix_points, compensating_controls, recommendation, notes, external_checks,
+          attachments, linked_assets, questionnaire_scoring } = data;
   const visibleFindings = findings.filter(f => f.status !== "draft");
 
   const downloadDocx = async () => {
@@ -1800,6 +2222,13 @@ function ReportModal({ id, onClose }) {
           </div>
 
           {/* Risk verdict panel */}
+          <div className="border-b-2 border-slate-300 pb-1.5 mb-3 mt-4">
+            <div className="text-[16px] font-bold">Part 1 — Executive summary</div>
+            <div className="text-[11.5px] text-slate-600">
+              What was reviewed, what the risk is, and what we recommend. No technical background required.
+            </div>
+          </div>
+
           <div className="flex items-center justify-center gap-4 my-5">
             <PrintRiskBadge label="Risk if adopted as-is" band={review.inherent_risk?.band} colors={RISK_PRINT}/>
             <div className="text-[26px] text-slate-400">→</div>
@@ -1816,6 +2245,16 @@ function ReportModal({ id, onClose }) {
             <div className="border border-slate-300 rounded p-3 mb-4 bg-slate-50">
               <div className="text-[12px] font-semibold mb-1">Compensating controls (what moves inherent → residual)</div>
               <div className="text-[12px] text-slate-700 whitespace-pre-wrap">{compensating_controls}</div>
+            </div>
+          )}
+
+          {questionnaire_scoring && (
+            <div className="text-[11.5px] text-slate-700 mb-3">
+              <span className="font-medium">Assessment confidence:</span> {questionnaire_scoring.confidence_pct}% —
+              based on {questionnaire_scoring.applicable_questions} applicable question(s)
+              {questionnaire_scoring.unknown_count > 0 && `, ${questionnaire_scoring.unknown_count} unknown`}
+              {questionnaire_scoring.pending_vendor_count > 0 && `, ${questionnaire_scoring.pending_vendor_count} awaiting vendor`}.
+              {questionnaire_scoring.confidence_pct < 70 && " Treat the ratings above as provisional until the gaps are closed."}
             </div>
           )}
 
@@ -1905,6 +2344,71 @@ function ReportModal({ id, onClose }) {
             </div>
           )}
 
+          {/* ---------- PART TWO: TECHNICAL ---------- */}
+          <div className="break-before-page border-t-4 border-slate-800 pt-4 mt-6 mb-3">
+            <div className="text-[16px] font-bold">Part 2 — Technical detail</div>
+            <div className="text-[11.5px] text-slate-600">
+              The evidence behind Part 1: scope, verification results, full questionnaire, working notes,
+              and supporting documents.
+            </div>
+          </div>
+
+          {linked_assets?.length > 0 && (
+            <div className="mb-4">
+              <div className="text-[13px] font-semibold mb-1.5">In-scope assets ({linked_assets.length})</div>
+              <table className="w-full text-[11.5px] border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-300 text-left">
+                    <th className="py-1 pr-2">Host</th><th className="py-1 pr-2">Team</th>
+                    <th className="py-1 pr-2">Criticality</th><th className="py-1">Open findings</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {linked_assets.map(a => (
+                    <tr key={a.id} className="border-b border-slate-200">
+                      <td className="py-1 pr-2 font-mono">{a.hostname}</td>
+                      <td className="py-1 pr-2">{a.owner_team || "—"}</td>
+                      <td className="py-1 pr-2">{a.criticality || "—"}</td>
+                      <td className="py-1">
+                        {a.open_findings}
+                        {a.critical_high_findings > 0 && <span className="text-red-600 font-medium"> ({a.critical_high_findings} crit/high)</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {external_checks && (external_checks.company_posture || external_checks.technical_posture) && (
+            <div className="mb-4">
+              <div className="text-[13px] font-semibold mb-1.5">External verification checks</div>
+              {["company_posture", "technical_posture"].map(key => {
+                const panel = external_checks[key];
+                if (!panel) return null;
+                return (
+                  <div key={key} className="mb-2.5">
+                    <div className="text-[12px] font-medium">
+                      {key === "company_posture" ? "Company posture" : "Technical posture"}
+                    </div>
+                    {panel.summary && <div className="text-[11.5px] text-slate-700 mb-1">{panel.summary.headline}</div>}
+                    <ul className="text-[11.5px] space-y-0.5">
+                      {panel.results.map((c, i) => (
+                        <li key={i}>
+                          <span className="font-medium">{c.label || c.check}:</span>{" "}
+                          <span style={{ color: c.status === "attention" ? "#b45309" : c.status === "ok" ? "#15803d" : "#64748b" }}>
+                            {c.status_plain || c.status}
+                          </span>{" "}
+                          — {c.summary}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           {interviews && interviews.length > 0 && (
             <div className="border-t border-slate-300 pt-3 mb-4">
               <div className="text-[13px] font-semibold mb-1.5">Stakeholder input</div>
@@ -1913,6 +2417,39 @@ function ReportModal({ id, onClose }) {
                   <span className="font-medium">{it.who}</span> ({it.role || "—"}, {it.when}): {it.summary}
                 </div>
               ))}
+            </div>
+          )}
+
+          {notes?.length > 0 && (
+            <div className="border-t border-slate-300 pt-3 mb-4">
+              <div className="text-[13px] font-semibold mb-1.5">Analyst working notes</div>
+              <div className="text-[10.5px] text-slate-500 mb-1.5">
+                Included here because this copy is the internal audit package. Notes are never included in a
+                shared/external report.
+              </div>
+              {notes.map(n => (
+                <div key={n.id} className="text-[11.5px] mb-1.5">
+                  <div className="text-slate-500">{n.author} · {new Date(n.at).toLocaleString()}</div>
+                  {n.html
+                    ? <div className="sr-richtext-print" dangerouslySetInnerHTML={{ __html: n.html }}/>
+                    : <div className="whitespace-pre-wrap">{n.text}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {attachments?.length > 0 && (
+            <div className="border-t border-slate-300 pt-3 mb-4">
+              <div className="text-[13px] font-semibold mb-1.5">Supporting documents ({attachments.length})</div>
+              <ul className="text-[11.5px] list-disc ml-5">
+                {attachments.map(a => (
+                  <li key={a.id}>
+                    <span className="font-medium">{a.name}</span>
+                    <span className="text-slate-600"> — {a.category}{a.description ? `, ${a.description}` : ""}
+                      {" "}({Math.round((a.size_bytes || 0) / 1024)} KB, uploaded {new Date(a.uploaded_at).toLocaleDateString()} by {a.uploaded_by})</span>
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
 

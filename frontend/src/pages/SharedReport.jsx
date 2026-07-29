@@ -42,10 +42,11 @@ function Matrix({ points }) {
                 const here = points.filter(p => p.likelihood === l && p.impact === i);
                 return (
                   <td key={i} style={{ background: cellFill(l, i) }}
-                    className="w-14 h-9 border border-slate-300 text-center align-middle">
+                    className="w-16 h-11 border border-slate-300 text-center align-middle p-0.5">
                     {here.map((p, j) => (
-                      <span key={j} className="text-[8px] font-bold px-0.5"
-                        style={{ color: RISK_PRINT[p.band] || "#334155" }}>{p.label}</span>
+                      <span key={j}
+                        className="block text-[9px] font-bold leading-tight rounded px-1 py-0.5 mb-0.5 text-white"
+                        style={{ background: RISK_PRINT[p.band] || "#334155" }}>{p.label}</span>
                     ))}
                   </td>
                 );
@@ -55,7 +56,10 @@ function Matrix({ points }) {
           <tr><td/>{[1, 2, 3, 4, 5].map(i => <td key={i} className="text-[9px] text-slate-500 text-center">{i}</td>)}</tr>
         </tbody>
       </table>
-      <div className="text-[9px] text-slate-500 mt-0.5">Impact →, likelihood ↑</div>
+      <div className="text-[10px] text-slate-600 mt-1">
+        Impact increases left → right, likelihood increases bottom → top.{" "}
+        {points.map(p => `${p.label}: likelihood ${p.likelihood} × impact ${p.impact} = ${p.band}`).join(" · ")}
+      </div>
     </div>
   );
 }

@@ -6,7 +6,7 @@ import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import {
   MagnifyingGlass, Rss, Skull, Fire, Certificate, Globe, Broadcast, Plus, Trash,
-  ArrowsClockwise, ArrowSquareOut, CaretDown, CaretRight, Warning,
+  ArrowsClockwise, ArrowSquareOut, CaretDown, CaretRight, Warning, Database,
 } from "@phosphor-icons/react";
 
 const SEV_COLOR = { Critical: "red", High: "orange", Medium: "amber", Low: "blue", Info: "slate" };
@@ -181,6 +181,17 @@ function NewsTab({ onChange }) {
   const [newFeed, setNewFeed] = useState({ name: "", url: "" });
   const [newKeyword, setNewKeyword] = useState("");
   const [syncing, setSyncing] = useState(false);
+  const [octi, setOcti] = useState(false);
+
+  const syncOpenCti = async () => {
+    setOcti(true);
+    try {
+      const r = await api.post("/v1/cti/opencti/sync");
+      toast.success(`OpenCTI: ${r.data.articles_created} new report(s) from ${r.data.reports_seen} pulled, ${r.data.articles_matched} matched your watchlist`);
+      load(); onChange();
+    } catch (e) { toast.error(e.response?.data?.detail || "OpenCTI sync failed"); }
+    finally { setOcti(false); }
+  };
 
   const load = async () => {
     const [f, a] = await Promise.all([
@@ -221,10 +232,17 @@ function NewsTab({ onChange }) {
             <input type="checkbox" checked={matchedOnly} onChange={e => setMatchedOnly(e.target.checked)}/>
             Only articles mentioning something we own or watch
           </label>
-          <button onClick={sync} disabled={syncing}
-            className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-slate-500 text-slate-300 rounded inline-flex items-center gap-1.5 disabled:opacity-50">
-            <ArrowsClockwise size={13} className={syncing ? "animate-spin" : ""}/> Sync feeds
-          </button>
+          <div className="flex gap-2">
+            <button onClick={syncOpenCti} disabled={syncing || octi}
+              title="Pull OpenCTI's own Reports into this stream"
+              className="h-8 px-3 text-[12px] border border-purple-500/40 text-purple-300 hover:border-purple-400 rounded inline-flex items-center gap-1.5 disabled:opacity-50">
+              <Database size={13} className={octi ? "animate-spin" : ""}/> Sync OpenCTI
+            </button>
+            <button onClick={sync} disabled={syncing}
+              className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-slate-500 text-slate-300 rounded inline-flex items-center gap-1.5 disabled:opacity-50">
+              <ArrowsClockwise size={13} className={syncing ? "animate-spin" : ""}/> Sync RSS feeds
+            </button>
+          </div>
         </div>
         {articles.length === 0 ? (
           <div className="border border-[#30363D] bg-[#0D1117] rounded-md py-10 text-center text-[12.5px] text-slate-500">
@@ -256,7 +274,7 @@ function NewsTab({ onChange }) {
                 className="text-slate-600 hover:text-red-400"><Trash size={12}/></button>
             </div>
           ))}
-          {data.feeds.length === 0 && <div className="text-[11.5px] text-slate-500">None yet — the five built-in outlets still feed vendor pages.</div>}
+          {data.feeds.length === 0 && <div className="text-[11.5px] text-slate-500">None yet — the five built-in outlets still feed vendor pages, and OpenCTI can be pulled with the button above.</div>}
           <div className="mt-2 space-y-1.5">
             <input placeholder="Feed name" value={newFeed.name} onChange={e => setNewFeed({ ...newFeed, name: e.target.value })}
               className="w-full h-7 px-2 bg-[#161B22] border border-[#30363D] rounded text-[11.5px] text-slate-200"/>

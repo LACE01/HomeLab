@@ -152,6 +152,97 @@ async def sync_cti_feeds(db) -> dict:
 # ransomware.live
 # =========================================================================
 
+async def sync_opencti_reports(db, limit: int = 100) -> dict:
+    """Pull OpenCTI's own Reports (its analyst-written and feed-ingested
+    intelligence articles) into the same Threat News stream as the RSS feeds.
+
+    An OpenCTI instance is usually the richest source an org already has -- it
+    aggregates the feeds it's connected to plus whatever its analysts write --
+    so treating it as one more "feed" here means the keyword/domain/vendor
+    matching, alerting and drill-down all work identically to the RSS path
+    instead of living in a separate silo. Reuses the endpoint/api_key (+ optional
+    CF-Access tokens) already configured under Integrations -> OpenCTI."""
+    import httpx
+    integration = await db.integrations.find_one({"name": "OpenCTI"}, {"_id": 0})
+    cfg = (integration or {}).get("config") or {}
+    endpoint, api_key = cfg.get("endpoint"), cfg.get("api_key")
+    if not endpoint or not api_key:
+        raise ValueError("OpenCTI isn't configured yet -- add endpoint + api_key under "
+                          "Integrations -> OpenCTI first.")
+
+    query = (
+        "query($first: Int) { reports(first: $first, orderBy: published, orderMode: desc) { "
+        "edges { node { id name description published createdBy { ... on Identity { name } } "
+        "objectLabel { value } externalReferences { edges { node { url source_name } } } } } } }"
+    )
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    if cfg.get("cf_access_client_id"):
+        headers["CF-Access-Client-Id"] = cfg["cf_access_client_id"]
+    if cfg.get("cf_access_client_secret"):
+        headers["CF-Access-Client-Secret"] = cfg["cf_access_client_secret"]
+
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=False) as c:
+            r = await c.post(endpoint.rstrip("/") + "/graphql", headers=headers,
+                              json={"query": query, "variables": {"first": limit}})
+    except httpx.HTTPError as e:
+        raise RuntimeError(f"Could not reach OpenCTI: {e}")
+    if r.status_code in (301, 302, 303, 307, 308):
+        raise RuntimeError("OpenCTI redirected (likely Cloudflare Access) -- check the connection "
+                            "under Integrations -> OpenCTI.")
+    if r.status_code != 200:
+        raise RuntimeError(f"OpenCTI HTTP {r.status_code}: {r.text[:300]}")
+    data = r.json()
+    if data.get("errors"):
+        raise RuntimeError(f"OpenCTI GraphQL error: {data['errors'][0].get('message', data['errors'])}")
+
+    edges = ((data.get("data") or {}).get("reports") or {}).get("edges") or []
+    domains = await owned_domains(db)
+    vendors = await db.vendors.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(500)
+    keywords = await db.cti_keywords.find({}, {"_id": 0, "keyword": 1}).to_list(200)
+    terms = [(k["keyword"].lower(), "keyword", k["keyword"]) for k in keywords]
+    terms += [(d.lower(), "owned_domain", d) for d in domains]
+    terms += [(v["name"].lower(), "vendor", v["name"]) for v in vendors if len(v.get("name", "")) >= 4]
+
+    created, matched = 0, 0
+    for e in edges:
+        node = e.get("node") or {}
+        title = node.get("name")
+        if not title:
+            continue
+        refs = [(x.get("node") or {}) for x in ((node.get("externalReferences") or {}).get("edges") or [])]
+        link = next((x.get("url") for x in refs if x.get("url")),
+                    f"{endpoint.rstrip('/')}/dashboard/analyses/reports/{node.get('id')}")
+        if await db.cti_articles.find_one({"link": link}, {"_id": 0, "id": 1}):
+            continue
+        summary_text = (node.get("description") or "")[:2000]
+        haystack = f"{title} {summary_text}".lower()
+        hits = [{"term": label, "kind": kind} for needle, kind, label in terms if needle in haystack]
+        author = ((node.get("createdBy") or {}) or {}).get("name")
+        labels = [l.get("value") for l in (node.get("objectLabel") or []) if l.get("value")]
+        doc = {
+            "id": str(uuid.uuid4()), "feed_id": "opencti", "source": "OpenCTI"
+            + (f" · {author}" if author else ""),
+            "title": title, "link": link, "summary": summary_text,
+            "published_at": node.get("published"), "fetched_at": _now_iso(),
+            "matches": hits, "labels": labels, "opencti_report_id": node.get("id"),
+        }
+        await db.cti_articles.insert_one(doc)
+        created += 1
+        if hits:
+            matched += 1
+            from security_events import emit_event
+            await emit_event(
+                db, source="cti", event_type="threat_news_match", severity="Medium",
+                title=f"OpenCTI report mentions {hits[0]['term']}: {title[:90]}",
+                entity_type="feed_article", entity_id=doc["id"], entity_label="OpenCTI",
+                description=f"An OpenCTI report matched {', '.join(h['term'] for h in hits)}. {link}",
+                raw={"link": link, "matches": hits, "opencti_report_id": node.get("id")},
+            )
+    return {"ok": True, "reports_seen": len(edges), "articles_created": created,
+            "articles_matched": matched}
+
+
 async def sync_ransomware_live(db, limit: int = 200) -> dict:
     """Pull recent ransomware victim postings and match them against tracked
     vendors and owned domains. Public API, no key required. A match is a real
@@ -598,6 +689,7 @@ async def cti_loop(db, interval_hours: float = 12):
     await asyncio.sleep(150)  # stagger past the other startup loops
     while True:
         for label, fn in (("custom CTI feeds", sync_cti_feeds),
+                           ("OpenCTI reports", sync_opencti_reports),
                            ("ransomware.live", sync_ransomware_live),
                            ("certificate transparency", sync_ct_logs)):
             try:

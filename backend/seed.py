@@ -91,6 +91,11 @@ ENRICHMENT_CONNECTORS = [
     # API token with Analytics:Read on the zone; zone_id identifies the zone.
     # Works on Free/Pro: both firewallEventsAdaptive and httpRequestsAdaptive are
     # available to every plan through the GraphQL Analytics API (Logpush is not).
+    # OpenCorporates -- corporate-registration lookups for the Security Reviews
+    # Company Posture panel. The free tier works unauthenticated at low volume;
+    # an api_key raises the rate limit.
+    {"name": "OpenCorporates", "type": "threat_intel", "logo": "opencorporates",
+     "docs_url": "https://api.opencorporates.com/documentation/API-Reference"},
     {"name": "Cloudflare", "type": "telemetry", "logo": "cloudflare",
      "docs_url": "https://developers.cloudflare.com/analytics/graphql-api/"},
     {"name": "VirusTotal", "type": "threat_intel", "logo": "virustotal",
