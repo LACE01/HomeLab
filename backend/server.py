@@ -65,6 +65,7 @@ from routes.security_reviews import router as security_reviews_router
 from routes.threat_modeling import router as threat_modeling_router
 from routes.cti import router as cti_router
 from routes.attack_telemetry import router as attack_telemetry_router
+from routes.attack_paths import router as attack_paths_router
 from routes.vendors import router as vendors_router
 from routes.directory import router as directory_router
 from routes.settings import router as settings_router
@@ -115,6 +116,7 @@ api.include_router(security_reviews_router)
 api.include_router(threat_modeling_router)
 api.include_router(cti_router)
 api.include_router(attack_telemetry_router)
+api.include_router(attack_paths_router)
 api.include_router(rbac_router)
 api.include_router(scan_schedule_router)
 api.include_router(security_events_router)

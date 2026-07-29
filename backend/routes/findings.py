@@ -511,10 +511,18 @@ async def attack_path_cves(user: dict = Depends(get_current_user)):
     return {"items": items}
 
 
-@router.get("/v1/attack-paths/graph")
-async def attack_path_graph(cve: Optional[str] = None, finding_id: Optional[str] = None,
-                             user: dict = Depends(get_current_user),
-                             _rbac: dict = Depends(require_module("/attack-paths"))):
+@router.get("/v1/attack-paths/cve-graph")
+async def attack_path_cve_graph(cve: Optional[str] = None, finding_id: Optional[str] = None,
+                                 user: dict = Depends(get_current_user),
+                                 _rbac: dict = Depends(require_module("/attack-paths"))):
+    """LEGACY blast-radius view: given one CVE, fan out across every affected host.
+
+    Superseded by the path-enumeration engine (routes/attack_paths.py), which
+    answers the more useful question -- "what are the routes from the internet to
+    something valuable, and which single fix breaks the most of them" -- rather
+    than "who else has this bug". Kept and RENAMED (it used to squat on
+    /v1/attack-paths/graph and shadow the new full-graph endpoint) because the
+    per-CVE blast radius is still a legitimate thing to want to look at."""
     from attack_path import build_attack_path
     return await build_attack_path(db, cve=cve, finding_id=finding_id)
 
