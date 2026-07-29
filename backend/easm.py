@@ -28,47 +28,27 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def query_crtsh(domain: str, timeout: float = 30.0, retries: int = 3) -> list:
-    """Returns a deduped, cleaned list of hostnames found in CT log certs for domain
-    (including domain itself and any subdomains). Filters out wildcards, emails
-    embedded in some cert fields, and anything that isn't actually under `domain`.
+async def query_crtsh(domain: str, timeout: float = 45.0, retries: int = 3) -> list:
+    """Hostnames found in CT logs for `domain` (itself plus subdomains).
 
-    crt.sh is a free, single-operator service that returns 502/503 under load fairly
-    often -- a second or third attempt a couple seconds later frequently succeeds where
-    the first didn't, so this retries with a short backoff before giving up rather than
-    surfacing a transient blip as a hard failure on the first try."""
+    Item 35: this used to be a bespoke crt.sh client here, a second one in cti.py,
+    and a third about to appear in External Checks. It now delegates to the shared
+    ct_service, which adds exponential backoff with jitter, a certspotter fallback
+    when crt.sh is down, recognition of crt.sh's HTML-with-a-200 maintenance page,
+    and -- importantly -- treats an empty result as CLEAN rather than an error.
+    Errors carry the FULL upstream message instead of a truncated one.
+
+    Also fixes a latent crash: the old loop could fall through without ever
+    assigning `rows`, raising UnboundLocalError instead of a useful message."""
+    from ct_service import fetch_certificates, CTError
     domain = domain.strip().lower().lstrip(".")
-    last_error: Exception | None = None
-    for attempt in range(retries):
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as c:
-                r = await c.get(CRTSH_URL, params={"q": f"%.{domain}", "output": "json"})
-                if r.status_code in (502, 503, 504):
-                    last_error = ValueError(f"crt.sh returned HTTP {r.status_code} (temporary upstream issue)")
-                    if attempt < retries - 1:
-                        await asyncio.sleep(2 * (attempt + 1))
-                        continue
-                    raise ValueError(
-                        f"crt.sh returned HTTP {r.status_code} after {retries} attempts. This is crt.sh's own "
-                        f"service having trouble (it's a free, single-operator service that's often overloaded), "
-                        f"not something wrong with VulnOps -- wait a few minutes and try again."
-                    )
-                if r.status_code != 200:
-                    raise ValueError(f"crt.sh returned HTTP {r.status_code}")
-                try:
-                    rows = r.json()
-                except Exception:
-                    raise ValueError("crt.sh returned a non-JSON response (it can rate-limit under load -- try again shortly)")
-                break
-        except (httpx.TimeoutException, httpx.ConnectError) as e:
-            last_error = ValueError(f"Couldn't reach crt.sh: {e}")
-            if attempt < retries - 1:
-                await asyncio.sleep(2 * (attempt + 1))
-                continue
-            raise last_error
+    try:
+        certs = await fetch_certificates(domain, attempts=retries, timeout=timeout)
+    except CTError as e:
+        raise ValueError(str(e))
 
     names = set()
-    for row in rows or []:
+    for row in certs or []:
         raw = row.get("name_value") or ""
         for line in raw.split("\n"):
             name = line.strip().lower().lstrip("*.")
@@ -224,7 +204,7 @@ async def easm_scan_loop(db, interval_hours: int = 24):
     logger = logging.getLogger("vulnops")
     await asyncio.sleep(60)  # let other startup tasks settle first
     while True:
-        ok, detail = True, {"domains_scanned": 0, "domains_failed": 0, "failures": []}
+        ok, detail = True, {"domains_scanned": 0, "domains_failed": 0, "domains_clean": 0, "failures": []}
         try:
             domains = await db.easm_domains.find({"enabled": True}, {"_id": 0}).to_list(200)
             for d in domains:
@@ -232,13 +212,20 @@ async def easm_scan_loop(db, interval_hours: int = 24):
                     result = await run_easm_scan(db, d["domain"])
                     logger.info(f"EASM scan: {result}")
                     detail["domains_scanned"] += 1
+                    # Item 35: a domain whose CT search legitimately returns
+                    # nothing is HEALTHY (zero results), not a failure. This used
+                    # to be indistinguishable from a real error on Ops Health.
+                    if not result.get("hostnames_found"):
+                        detail["domains_clean"] += 1
                 except Exception as e:
                     logger.exception(f"EASM scan failed for {d['domain']}: {e}")
                     ok = False
                     detail["domains_failed"] += 1
                     # Keep the actual reason on the heartbeat itself -- not just in
                     # stdout -- so the Ops Health page can show WHY a domain failed
-                    # without needing container log access.
+                    # without needing container log access. Item 35: the message is
+                    # no longer truncated, so a crt.sh outage reads as a crt.sh
+                    # outage rather than a mystery.
                     detail["failures"].append({"domain": d["domain"], "error": str(e)})
         except Exception as e:
             logger.exception(f"EASM loop error: {e}")

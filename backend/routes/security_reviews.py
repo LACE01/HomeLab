@@ -1500,13 +1500,51 @@ async def revalidate(review_id: str, user: dict = Depends(require_module(MODULE_
 
 
 @router.post("/v1/security-reviews/{review_id}/external-checks")
-async def external_checks(review_id: str, user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+async def external_checks(review_id: str, panel: Optional[str] = None,
+                           user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    """Item 30 -- two panels keyed off the reviewed entity: company posture
+    (registration, breach reputation, certifications, viability) and technical
+    posture (TLS/headers, CVEs, SPF/DKIM/DMARC, Shodan, CT logs, DNS/WHOIS,
+    typosquats). Pass ?panel=company or ?panel=technical to run one."""
     r = await _get_review_or_404(review_id)
     await _reject_if_closed(review_id)
-    result = await run_external_checks(db, r)
-    await audit(db, review_id, "external_checks_run", user.get("email", "?"),
-                ", ".join(f"{c['check']}={c['status']}" for c in result["results"]))
+    if panel not in (None, "company", "technical"):
+        raise HTTPException(400, "panel must be 'company' or 'technical' (omit for both)")
+    from external_checks import run_external_checks as run_two_panel_checks
+    result = await run_two_panel_checks(db, r, panel=panel)
+    ran = []
+    for key in ("company_posture", "technical_posture"):
+        for c in (result.get(key) or {}).get("results", []):
+            ran.append(f"{c['check']}={c['status']}")
+    await audit(db, review_id, "external_checks_run", user.get("email", "?"), ", ".join(ran))
     return result
+
+
+@router.patch("/v1/security-reviews/{review_id}/entity")
+async def update_review_entity(review_id: str, body: dict,
+                                user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    """Item 30 prerequisite -- the entity needs a domain and a legal company name
+    before the two posture panels can do much. This edits them in place from the
+    review workspace instead of sending the analyst off to another page."""
+    r = await _get_review_or_404(review_id)
+    await _reject_if_closed(review_id)
+    allowed = {"legal_name", "domain", "jurisdiction", "certifications"}
+    changes = {k: v for k, v in (body or {}).items() if k in allowed and v is not None}
+    if not changes:
+        raise HTTPException(400, f"Provide at least one of {sorted(allowed)}")
+    if "domain" in changes:
+        changes["domain"] = str(changes["domain"]).strip().lower()
+        await db.security_reviews.update_one({"id": review_id},
+                                              {"$set": {"entity_domain": changes["domain"]}})
+    entity_id = r.get("entity_id")
+    if not entity_id:
+        entity = await upsert_reviewed_entity(db, name=r.get("entity_name") or r.get("title"),
+                                               domain=changes.get("domain"))
+        entity_id = entity["id"]
+        await db.security_reviews.update_one({"id": review_id}, {"$set": {"entity_id": entity_id}})
+    await db.reviewed_entities.update_one({"id": entity_id}, {"$set": changes})
+    await audit(db, review_id, "entity_updated", user.get("email", "?"), ", ".join(sorted(changes)))
+    return await db.reviewed_entities.find_one({"id": entity_id}, {"_id": 0})
 
 
 @router.post("/v1/security-reviews/{review_id}/acknowledge")

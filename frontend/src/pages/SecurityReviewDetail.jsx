@@ -769,53 +769,161 @@ const CHECK_STATUS_META = {
   ok: { color: "emerald", label: "OK" },
   attention: { color: "amber", label: "Needs attention" },
   manual: { color: "slate", label: "Check manually" },
+  not_configured: { color: "blue", label: "Not configured" },
 };
 
+const CHECK_LABELS = {
+  corporate_registration: "Corporate registration",
+  breach_reputation: "Breach & incident reputation",
+  certification_status: "Certification status (SOC 2 / ISO)",
+  viability_signals: "Viability signals",
+  tls_security_headers: "TLS & security headers",
+  cve_lookup: "Known CVEs (NVD)",
+  email_authentication: "Email authentication (SPF/DKIM/DMARC)",
+  shodan_exposure: "Internet exposure (Shodan)",
+  certificate_transparency: "Certificate transparency",
+  dns_whois: "DNS & WHOIS hygiene",
+  typosquat: "Lookalike domains",
+};
+
+function CheckRow({ c }) {
+  const [open, setOpen] = useState(false);
+  const meta_ = CHECK_STATUS_META[c.status] || CHECK_STATUS_META.manual;
+  const hasDetail = c.detail && (typeof c.detail !== "object" || Object.keys(c.detail).length > 0);
+  return (
+    <div className="border border-[#30363D] bg-[#0D1117] rounded-md">
+      <div className={`px-4 py-2.5 ${hasDetail ? "cursor-pointer" : ""}`} onClick={() => hasDetail && setOpen(!open)}>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[12.5px] text-slate-200 inline-flex items-center gap-1.5">
+            {hasDetail && (open ? <CaretDown size={11} className="text-slate-500"/> : <CaretRight size={11} className="text-slate-500"/>)}
+            {CHECK_LABELS[c.check] || c.check}
+          </span>
+          <Chip color={meta_.color}>{meta_.label}</Chip>
+        </div>
+        <div className="text-[12px] text-slate-400 mt-1">{c.summary}</div>
+        <div className="text-[10px] text-slate-600 font-mono mt-1">{c.source_tag}</div>
+      </div>
+      {open && hasDetail && (
+        <div className="border-t border-[#30363D] px-4 py-2.5">
+          <pre className="text-[10.5px] text-slate-400 whitespace-pre-wrap break-all max-h-64 overflow-y-auto">
+            {JSON.stringify(c.detail, null, 2)}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EntityPrereqEditor({ id, review, onChange }) {
+  const [form, setForm] = useState({ legal_name: "", domain: review.entity_domain || "", jurisdiction: "" });
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    setSaving(true);
+    try {
+      const body = Object.fromEntries(Object.entries(form).filter(([, v]) => v));
+      await api.patch(`/v1/security-reviews/${id}/entity`, body);
+      toast.success("Entity updated");
+      onChange();
+    } catch (e) { toast.error(e.response?.data?.detail || "Update failed"); }
+    finally { setSaving(false); }
+  };
+  return (
+    <div className="border border-amber-500/30 bg-amber-500/5 rounded-md p-3.5 space-y-2">
+      <div className="text-[12px] text-amber-200">
+        These checks key off the reviewed entity. Fill in what's missing to unlock them.
+      </div>
+      <div className="grid sm:grid-cols-3 gap-2">
+        <input placeholder="Legal company name" value={form.legal_name}
+          onChange={e => setForm({ ...form, legal_name: e.target.value })}
+          className="h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-200"/>
+        <input placeholder="Primary domain" value={form.domain}
+          onChange={e => setForm({ ...form, domain: e.target.value })}
+          className="h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-200 font-mono"/>
+        <input placeholder="Jurisdiction (e.g. us_co)" value={form.jurisdiction}
+          onChange={e => setForm({ ...form, jurisdiction: e.target.value })}
+          className="h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-200"/>
+      </div>
+      <button onClick={save} disabled={saving}
+        className="h-7 px-2.5 text-[11.5px] border border-amber-500/40 text-amber-200 rounded">
+        {saving ? "Saving…" : "Save entity details"}
+      </button>
+    </div>
+  );
+}
+
 function ExternalChecksTab({ id, review, closed, onChange }) {
-  const [running, setRunning] = useState(false);
+  const [running, setRunning] = useState(null);
   const checks = review.external_checks;
 
-  const runChecks = async () => {
-    setRunning(true);
+  const runChecks = async (panel) => {
+    setRunning(panel || "both");
     try {
-      await api.post(`/v1/security-reviews/${id}/external-checks`);
+      await api.post(`/v1/security-reviews/${id}/external-checks`, null,
+        { params: panel ? { panel } : {} });
       toast.success("External checks complete");
       onChange();
     } catch (e) { toast.error(e.response?.data?.detail || "Checks failed"); }
-    finally { setRunning(false); }
+    finally { setRunning(null); }
   };
 
-  return (
-    <div className="max-w-2xl space-y-3">
-      <div className="text-[11px] text-slate-500">
-        Best-effort automated checks against the vendor: TLS/security headers, breach-history signal, NVD CVE lookup.
-        Failed checks degrade to manual steps — they never block the review.
-      </div>
-      {!closed && (
-        <button onClick={runChecks} disabled={running}
-          className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-white rounded inline-flex items-center gap-1.5">
-          <ShieldCheck size={13}/> {running ? "Running…" : checks ? "Re-run checks" : "Run external checks"}
-        </button>
-      )}
-      {checks && (
-        <div className="space-y-2">
-          <div className="text-[10.5px] text-slate-500 font-mono">Last run {new Date(checks.ran_at).toLocaleString()}</div>
-          {checks.results.map((c, i) => {
-            const meta_ = CHECK_STATUS_META[c.status] || CHECK_STATUS_META.manual;
-            return (
-              <div key={i} className="border border-[#30363D] bg-[#0D1117] rounded-md px-4 py-3">
-                <div className="flex items-center justify-between">
-                  <div className="text-[12px] text-slate-200 font-mono">{c.check}</div>
-                  <Chip color={meta_.color}>{meta_.label}</Chip>
-                </div>
-                <div className="text-[12px] text-slate-400 mt-1">{c.summary}</div>
-                <div className="text-[10px] text-slate-600 font-mono mt-1">{c.source_tag}</div>
-              </div>
-            );
-          })}
+  const Panel = ({ title, blurb, data, panelKey }) => (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <div className="text-[12.5px] text-slate-200 font-medium">{title}</div>
+          <div className="text-[11px] text-slate-500">{blurb}</div>
         </div>
+        {!closed && (
+          <button onClick={() => runChecks(panelKey)} disabled={!!running}
+            className="h-7 px-2.5 text-[11.5px] border border-[#30363D] hover:border-blue-500/40 hover:text-blue-300 text-slate-300 rounded inline-flex items-center gap-1 disabled:opacity-50 shrink-0">
+            <ArrowsClockwise size={12} className={running === panelKey ? "animate-spin" : ""}/> Run
+          </button>
+        )}
+      </div>
+      {data ? (
+        <>
+          <div className="text-[10px] text-slate-600 font-mono">Last run {new Date(data.ran_at).toLocaleString()}</div>
+          {data.results.map((c, i) => <CheckRow key={i} c={c}/>)}
+        </>
+      ) : (
+        <div className="text-[12px] text-slate-500 border border-[#30363D] bg-[#0D1117] rounded-md px-4 py-4">Not run yet.</div>
       )}
-      {!checks && <div className="text-[12px] text-slate-500">Not run yet.</div>}
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="text-[11px] text-slate-500 max-w-2xl">
+          Best-effort automated checks against the reviewed entity. Every check reports its own status, so one
+          failure degrades that check alone and never blocks the review. Sources are shared with the CTI hub
+          rather than duplicated here.
+        </div>
+        {!closed && (
+          <button onClick={() => runChecks(null)} disabled={!!running}
+            className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-white rounded inline-flex items-center gap-1.5">
+            <ShieldCheck size={13}/> {running === "both" ? "Running…" : "Run all checks"}
+          </button>
+        )}
+      </div>
+
+      {checks?.prerequisites?.length > 0 && !closed && (
+        <EntityPrereqEditor id={id} review={review} onChange={onChange}/>
+      )}
+      {checks?.prerequisites?.length > 0 && (
+        <ul className="text-[11.5px] text-amber-300 list-disc ml-5">
+          {checks.prerequisites.map((p, i) => <li key={i}>{p}</li>)}
+        </ul>
+      )}
+
+      <div className="grid lg:grid-cols-2 gap-4">
+        <Panel title="Company Posture" panelKey="company"
+          blurb="Is this a real, stable company we can hold to a contract?"
+          data={checks?.company_posture}/>
+        <Panel title="Technical Posture" panelKey="technical"
+          blurb="Is what they actually run secure?"
+          data={checks?.technical_posture}/>
+      </div>
     </div>
   );
 }

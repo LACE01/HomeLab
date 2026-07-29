@@ -245,21 +245,29 @@ class FakeAsyncClient:
         if "nvd.nist.gov" in url:
             return FakeResp(json_data={"totalResults": 2, "vulnerabilities": [
                 {"cve": {"id": "CVE-2026-0001"}}, {"cve": {"id": "CVE-2026-0002"}}]})
+        if "crt.sh" in url or "certspotter" in url:
+            return FakeResp(json_data=[])
+        if "opencorporates" in url:
+            return FakeResp(json_data={"results": {"companies": []}})
         return FakeResp(headers={"Strict-Transport-Security": "max-age=63072000"})
 
 import httpx
 _real = httpx.AsyncClient
 httpx.AsyncClient = FakeAsyncClient
+# Item 30 split external checks into two entity-keyed panels.
 r = client.post(f"/api/v1/security-reviews/{rid}/external-checks")
 httpx.AsyncClient = _real
 assert r.status_code == 200
-checks = {c["check"]: c for c in r.json()["results"]}
-assert checks["tls_security_headers"]["status"] == "attention"  # 3 of 4 headers missing
+payload = r.json()
+checks = {c["check"]: c for c in payload["technical_posture"]["results"]}
+company = {c["check"]: c for c in payload["company_posture"]["results"]}
+assert checks["tls_security_headers"]["status"] == "attention"  # most headers missing
 assert "content-security-policy" in checks["tls_security_headers"]["detail"]["missing"]
-assert checks["breach_history"]["status"] == "attention"  # OSINT hit on file
+assert company["breach_reputation"]["status"] == "attention"  # OSINT hit on file
 assert checks["cve_lookup"]["status"] == "attention" and "CVE-2026-0001" in checks["cve_lookup"]["summary"]
-assert all(c.get("source_tag") for c in r.json()["results"])
-print("PASS: external checks run TLS-header scan, breach-history signal, and NVD CVE lookup with source tags")
+assert all(c.get("source_tag") for c in payload["technical_posture"]["results"])
+assert all(c.get("source_tag") for c in payload["company_posture"]["results"])
+print("PASS: external checks run as two entity-keyed panels (company + technical) with per-check source tags")
 
 # ============ comparison mode ============
 

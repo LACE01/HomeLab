@@ -61,14 +61,19 @@ export default function SecurityReviews() {
       subtitle='Guided investigations for "we want to buy/enable/change X — is it secure, what&apos;s the risk?" — intake to decision, with a shareable executive report'
       actions={
         <div className="flex items-center gap-2">
-          <button onClick={() => setView(view === "dashboard" ? "list" : "dashboard")}
-            className={`h-8 px-3 text-[12px] border rounded inline-flex items-center gap-1.5 ${view === "dashboard" ? "border-blue-500/40 text-blue-300 bg-blue-500/10" : "border-[#30363D] text-slate-300 hover:border-slate-500"}`}>
-            <ChartBar size={14}/> Dashboard
-          </button>
-          <button onClick={() => setView(view === "admin" ? "list" : "admin")}
-            className={`h-8 px-3 text-[12px] border rounded inline-flex items-center gap-1.5 ${view === "admin" ? "border-blue-500/40 text-blue-300 bg-blue-500/10" : "border-[#30363D] text-slate-300 hover:border-slate-500"}`}>
-            <Wrench size={14}/> Templates
-          </button>
+          {/* Item 29: was two independent toggle buttons that each needed a
+              second click to get back to the list and gave no clear "you are
+              here" -- now one segmented control where exactly one segment is
+              always active. */}
+          <div className="inline-flex rounded border border-[#30363D] overflow-hidden" role="tablist">
+            {[["list", "Reviews", ClipboardText], ["dashboard", "Dashboard", ChartBar], ["admin", "Templates", Wrench]].map(([id, label, Icon], i) => (
+              <button key={id} role="tab" aria-selected={view === id} onClick={() => setView(id)}
+                className={`h-8 px-3 text-[12px] inline-flex items-center gap-1.5 ${i > 0 ? "border-l border-[#30363D]" : ""} ${
+                  view === id ? "bg-blue-500/15 text-blue-300" : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/40"}`}>
+                <Icon size={14}/> {label}
+              </button>
+            ))}
+          </div>
           <button onClick={() => setIntakeOpen(true)}
             className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded inline-flex items-center gap-1.5">
             <Plus size={14}/> New review

@@ -281,16 +281,11 @@ async def kev_report(db) -> dict:
 # =========================================================================
 
 async def _crtsh_certs(domain: str) -> list:
-    import httpx
-    async with httpx.AsyncClient(timeout=45, follow_redirects=True,
-                                  headers={"User-Agent": "Nightwatch-CTI/1.0"}) as c:
-        r = await c.get(CRTSH_URL, params={"q": f"%.{domain}", "output": "json"})
-    if r.status_code != 200:
-        raise RuntimeError(f"crt.sh HTTP {r.status_code}")
-    try:
-        return r.json()
-    except Exception:
-        raise RuntimeError("crt.sh returned non-JSON (rate limited or maintenance)")
+    """Item 35: delegates to the shared ct_service (retry/backoff, certspotter
+    fallback, empty-is-clean, full error text) instead of a second bespoke
+    crt.sh client."""
+    from ct_service import fetch_certificates
+    return await fetch_certificates(domain)
 
 
 async def sync_ct_logs(db, domain: Optional[str] = None) -> dict:
