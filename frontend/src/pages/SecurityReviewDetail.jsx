@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
+import { renderBlocks, ReportLayoutEditor } from "@/components/ReportBlocks";
 import {
   ArrowLeft, CaretDown, CaretRight, CheckCircle, Printer, ArrowRight,
   Warning, ClipboardText, Scales, ListChecks, Gavel, NotePencil, ClockCounterClockwise,
@@ -1997,67 +1998,6 @@ function AuditTab({ id }) {
 
 /* ------------------------------ Report ------------------------------ */
 
-export function PrintMatrix({ points }) {
-  // Item 23 -- the same 5x5 the Risk Scoring tab draws, rendered into the report
-  // so a reader doesn't have to open the app to see where the ratings landed.
-  const COLORS = { Low: "#3b82f6", Medium: "#f59e0b", High: "#f97316", Critical: "#ef4444" };
-  const cellFill = (l, i) => {
-    const s = l * i;
-    if (s <= 4) return "#dbeafe";
-    if (s <= 9) return "#fef3c7";
-    if (s <= 16) return "#ffedd5";
-    return "#fee2e2";
-  };
-  return (
-    <div className="mb-4">
-      <div className="text-[13px] font-semibold mb-1.5">Risk matrix (likelihood × impact)</div>
-      <div className="inline-block">
-        <table className="border-collapse">
-          <tbody>
-            {[5, 4, 3, 2, 1].map(l => (
-              <tr key={l}>
-                <td className="text-[9px] text-slate-500 pr-1 text-right">{l}</td>
-                {[1, 2, 3, 4, 5].map(i => {
-                  const here = points.filter(p => p.likelihood === l && p.impact === i);
-                  return (
-                    <td key={i} style={{ background: cellFill(l, i) }}
-                      className="w-16 h-11 border border-slate-300 text-center align-middle p-0.5">
-                      {here.map((p, j) => (
-                        // Was 8px coloured text on a pale tinted cell -- unreadable.
-                        // Now a solid chip in the band colour with white text.
-                        <span key={j}
-                          className="block text-[9px] font-bold leading-tight rounded px-1 py-0.5 mb-0.5 text-white"
-                          style={{ background: COLORS[p.band] || "#334155" }}>{p.label}</span>
-                      ))}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-            <tr>
-              <td/>
-              {[1, 2, 3, 4, 5].map(i => <td key={i} className="text-[9px] text-slate-500 text-center">{i}</td>)}
-            </tr>
-          </tbody>
-        </table>
-        <div className="text-[10px] text-slate-600 mt-1 leading-relaxed">
-          <span className="font-medium">How to read this:</span> impact increases left → right, likelihood
-          increases bottom → top. Each chip is one of this review&apos;s ratings.
-          <div className="mt-0.5">
-            {points.map(p => (
-              <span key={p.label} className="inline-flex items-center gap-1 mr-3">
-                <span className="inline-block h-2 w-2 rounded-sm" style={{ background: COLORS[p.band] || "#334155" }}/>
-                <span className="font-medium">{p.label}</span>
-                <span>likelihood {p.likelihood} × impact {p.impact} = {p.band}</span>
-              </span>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function ShareDialog({ id, review, onClose }) {
   const [mode, setMode] = useState("email");
   const [email, setEmail] = useState("");
@@ -2161,25 +2101,16 @@ function ShareDialog({ id, review, onClose }) {
   );
 }
 
-function PrintRiskBadge({ label, band, colors }) {
-  return (
-    <div className="text-center px-7 py-4 rounded-lg border-2"
-      style={{ borderColor: colors[band] || "#94a3b8", background: (colors[band] || "#94a3b8") + "18" }}>
-      <div className="text-[10px] uppercase tracking-wide text-slate-600">{label}</div>
-      <div className="text-[26px] font-extrabold" style={{ color: colors[band] || "#64748b" }}>{band || "Not scored"}</div>
-    </div>
-  );
-}
 
 function ReportModal({ id, onClose }) {
   const [data, setData] = useState(null);
-  useEffect(() => { api.get(`/v1/security-reviews/${id}/report-data`).then(r => setData(r.data)); }, [id]);
   const [shareOpen, setShareOpen] = useState(false);
+  const [layoutOpen, setLayoutOpen] = useState(false);
+
+  const load = () => api.get(`/v1/security-reviews/${id}/report-data`).then(r => setData(r.data));
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [id]);
   if (!data) return null;
-  const { review, findings, responses, questionnaire, generated_at, interviews, executive_summary,
-          matrix_points, compensating_controls, recommendation, notes, external_checks,
-          attachments, linked_assets, questionnaire_scoring } = data;
-  const visibleFindings = findings.filter(f => f.status !== "draft");
+  const { review, generated_at, template } = data;
 
   const downloadDocx = async () => {
     try {
@@ -2192,272 +2123,42 @@ function ReportModal({ id, onClose }) {
       window.URL.revokeObjectURL(url);
     } catch (e) { toast.error("Word export failed"); }
   };
-  const d = review.decision;
-  const conditions = findings.filter(f => f.is_condition_of_approval && f.status !== "draft");
-  const respByOrder = Object.fromEntries((responses || []).map(r => [r.question_order, r]));
-  const RISK_PRINT = { Low: "#3b82f6", Medium: "#f59e0b", High: "#f97316", Critical: "#ef4444" };
 
   return (
     <div className="fixed inset-0 bg-black/70 z-50 overflow-y-auto p-6 print:p-0 print:bg-white" onClick={onClose}>
-      <div className="bg-white text-slate-900 max-w-3xl mx-auto rounded print:rounded-none print:max-w-none" onClick={e => e.stopPropagation()}>
+      <div className="bg-white text-slate-900 max-w-3xl mx-auto rounded print:rounded-none print:max-w-none"
+        onClick={e => e.stopPropagation()}>
         <div className="px-8 py-6 print:px-10" id="sr-report">
-          {/* Header */}
-          <div className="border-b-2 border-slate-800 pb-3 mb-4 flex items-end justify-between">
-            <div>
-              <div className="text-[20px] font-bold">Security Review Report</div>
-              <div className="text-[12px] text-slate-600">
-                {review.review_number} · {new Date(generated_at).toLocaleDateString()} · Reviewer: {review.assignee}
-                {review.requestor_name && <> · Requestor: {review.requestor_name} ({review.requestor_department})</>}
-              </div>
-            </div>
-            <div className="print:hidden flex gap-2">
-              <button onClick={() => setShareOpen(true)} className="h-8 px-3 text-[12px] border border-slate-400 text-slate-700 rounded inline-flex items-center gap-1"><LinkSimple size={13}/> Share</button>
-              <button onClick={downloadDocx} className="h-8 px-3 text-[12px] border border-slate-400 text-slate-700 rounded inline-flex items-center gap-1"><FileDoc size={13}/> Word</button>
-              <button onClick={() => window.print()} className="h-8 px-3 text-[12px] bg-slate-800 text-white rounded">Print / PDF</button>
-            </div>
+          <div className="print:hidden flex justify-end gap-2 mb-3">
+            <button onClick={() => setLayoutOpen(true)}
+              className="h-8 px-3 text-[12px] border border-slate-400 text-slate-700 rounded inline-flex items-center gap-1">
+              <NotePencil size={13}/> Edit layout
+            </button>
+            <button onClick={() => setShareOpen(true)}
+              className="h-8 px-3 text-[12px] border border-slate-400 text-slate-700 rounded inline-flex items-center gap-1">
+              <LinkSimple size={13}/> Share
+            </button>
+            <button onClick={downloadDocx}
+              className="h-8 px-3 text-[12px] border border-slate-400 text-slate-700 rounded inline-flex items-center gap-1">
+              <FileDoc size={13}/> Word
+            </button>
+            <button onClick={() => window.print()}
+              className="h-8 px-3 text-[12px] bg-slate-800 text-white rounded">Print / PDF</button>
           </div>
 
-          <div className="text-[13px] mb-4">
-            <span className="font-semibold">What was reviewed:</span> {review.entity_name || review.title} — {review.title}
+          {/* The whole report body renders from the saved layout, so the
+              on-screen view, the shared copy and the Word export can't drift. */}
+          {renderBlocks(data)}
+
+          <div className="border-t border-slate-300 pt-2 mt-4 text-[10.5px] text-slate-500">
+            {review.review_number} · Playbook {review.playbook_key} v{review.playbook_version} ·
+            Template {review.template_key} v{review.template_version}
+            {template && <> · Layout {template.name} v{template.version}</>} ·
+            Generated {new Date(generated_at).toLocaleString()}
           </div>
 
-          {/* Risk verdict panel */}
-          <div className="border-b-2 border-slate-300 pb-1.5 mb-3 mt-4">
-            <div className="text-[16px] font-bold">Part 1 — Executive summary</div>
-            <div className="text-[11.5px] text-slate-600">
-              What was reviewed, what the risk is, and what we recommend. No technical background required.
-            </div>
-          </div>
-
-          <div className="flex items-center justify-center gap-4 my-5">
-            <PrintRiskBadge label="Risk if adopted as-is" band={review.inherent_risk?.band} colors={RISK_PRINT}/>
-            <div className="text-[26px] text-slate-400">→</div>
-            <PrintRiskBadge label="Risk with required controls" band={review.residual_risk?.band} colors={RISK_PRINT}/>
-            {review.risk_of_not_adopting?.band && (
-              <div className="text-center px-4 py-2.5 rounded-lg border" style={{ borderColor: RISK_PRINT[review.risk_of_not_adopting.band] }}>
-                <div className="text-[9px] uppercase tracking-wide text-slate-600">Risk of not adopting</div>
-                <div className="text-[16px] font-bold" style={{ color: RISK_PRINT[review.risk_of_not_adopting.band] }}>{review.risk_of_not_adopting.band}</div>
-              </div>
-            )}
-          </div>
-
-          {compensating_controls && (
-            <div className="border border-slate-300 rounded p-3 mb-4 bg-slate-50">
-              <div className="text-[12px] font-semibold mb-1">Compensating controls (what moves inherent → residual)</div>
-              <div className="text-[12px] text-slate-700 whitespace-pre-wrap">{compensating_controls}</div>
-            </div>
-          )}
-
-          {questionnaire_scoring && (
-            <div className="text-[11.5px] text-slate-700 mb-3">
-              <span className="font-medium">Assessment confidence:</span> {questionnaire_scoring.confidence_pct}% —
-              based on {questionnaire_scoring.applicable_questions} applicable question(s)
-              {questionnaire_scoring.unknown_count > 0 && `, ${questionnaire_scoring.unknown_count} unknown`}
-              {questionnaire_scoring.pending_vendor_count > 0 && `, ${questionnaire_scoring.pending_vendor_count} awaiting vendor`}.
-              {questionnaire_scoring.confidence_pct < 70 && " Treat the ratings above as provisional until the gaps are closed."}
-            </div>
-          )}
-
-          {matrix_points?.length > 0 && <PrintMatrix points={matrix_points}/>}
-
-          {/* Plain-English summary */}
-          <div className="text-[13px] leading-relaxed mb-4">
-            {executive_summary || review.scope_statement || "See technical appendix for full assessment detail."}
-          </div>
-
-          {/* Key findings */}
-          {visibleFindings.length > 0 && (
-            <div className="mb-4">
-              <div className="text-[13px] font-semibold mb-1.5">Key findings</div>
-              <ul className="space-y-1">
-                {visibleFindings.slice(0, 5).map(f => (
-                  <li key={f.id} className="text-[12.5px] flex items-start gap-2">
-                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded mt-0.5 text-white shrink-0"
-                      style={{ background: RISK_PRINT[f.severity] || "#64748b" }}>{f.severity}</span>
-                    <span>{f.description}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {recommendation && (recommendation.recommendation || recommendation.why || recommendation.what_was_reviewed) && (
-            <div className="border border-blue-300 bg-blue-50/60 rounded p-3.5 mb-3">
-              <div className="text-[13px] font-semibold text-blue-900">Reviewer recommendation</div>
-              {recommendation.what_was_reviewed && (
-                <div className="text-[12px] text-slate-700 mt-1"><span className="font-medium">What was reviewed:</span> {recommendation.what_was_reviewed}</div>
-              )}
-              {recommendation.why && (
-                <div className="text-[12px] text-slate-700"><span className="font-medium">Why:</span> {recommendation.why}</div>
-              )}
-              {recommendation.recommendation && (
-                <div className="text-[12.5px] text-blue-900 font-semibold mt-1.5">{recommendation.recommendation}</div>
-              )}
-              {recommendation.rationale && <div className="text-[12px] text-slate-700 mt-1">{recommendation.rationale}</div>}
-              {recommendation.authored_by && <div className="text-[10.5px] text-slate-500 mt-1">— {recommendation.authored_by}</div>}
-            </div>
-          )}
-
-          {/* Decision box */}
-          <div className="border-2 border-slate-800 rounded p-3.5 mb-4">
-            <div className="text-[13px] font-semibold">Decision: {d?.outcome || "Pending"}</div>
-            {d?.rationale && <div className="text-[12px] text-slate-700 mt-1">{d.rationale}</div>}
-            {conditions.length > 0 && (
-              <div className="mt-2">
-                <div className="text-[12px] font-medium">Conditions of approval:</div>
-                <ul className="list-disc ml-5 text-[12px] text-slate-700">
-                  {conditions.map(c => (
-                    <li key={c.id}>{c.description}{c.condition_deadline && <> — due {c.condition_deadline}</>}{c.owner && <> (owner: {c.owner})</>}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {d?.expiration_date && <div className="text-[11.5px] text-slate-600 mt-1.5">Approval expires: {d.expiration_date.slice(0, 10)}</div>}
-          </div>
-
-          {/* Data & systems touched */}
-          <div className="mb-5">
-            <div className="text-[13px] font-semibold mb-1">Data &amp; systems touched</div>
-            <div className="flex gap-1.5 flex-wrap">
-              {(review.data_classifications || []).map(c => (
-                <span key={c} className="text-[11px] px-2 py-0.5 rounded-full bg-slate-200 text-slate-800">{c}</span>
-              ))}
-              {review.entity_domain && <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{review.entity_domain}</span>}
-            </div>
-          </div>
-
-          {/* Technical appendix */}
-          {questionnaire && responses.length > 0 && (
-            <div className="border-t border-slate-300 pt-4 mb-4 break-before-page">
-              <div className="text-[14px] font-bold mb-2">Technical appendix — questionnaire responses</div>
-              {questionnaire.questions.filter(q => respByOrder[q.order]).map(q => {
-                const r = respByOrder[q.order];
-                return (
-                  <div key={q.order} className="text-[11.5px] mb-1.5">
-                    <span className="font-medium">Q{q.order}.</span> {q.text}
-                    <span className="ml-2 font-semibold uppercase" style={{ color: r.answer === "no" ? "#ef4444" : r.answer === "partial" ? "#f59e0b" : "#16a34a" }}>{r.answer}</span>
-                    <span className="text-slate-500 ml-2">[CIS {q.cis_mapping}]</span>
-                    {r.evidence_text && <div className="text-slate-600 ml-4">{r.evidence_text}</div>}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* ---------- PART TWO: TECHNICAL ---------- */}
-          <div className="break-before-page border-t-4 border-slate-800 pt-4 mt-6 mb-3">
-            <div className="text-[16px] font-bold">Part 2 — Technical detail</div>
-            <div className="text-[11.5px] text-slate-600">
-              The evidence behind Part 1: scope, verification results, full questionnaire, working notes,
-              and supporting documents.
-            </div>
-          </div>
-
-          {linked_assets?.length > 0 && (
-            <div className="mb-4">
-              <div className="text-[13px] font-semibold mb-1.5">In-scope assets ({linked_assets.length})</div>
-              <table className="w-full text-[11.5px] border-collapse">
-                <thead>
-                  <tr className="border-b border-slate-300 text-left">
-                    <th className="py-1 pr-2">Host</th><th className="py-1 pr-2">Team</th>
-                    <th className="py-1 pr-2">Criticality</th><th className="py-1">Open findings</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {linked_assets.map(a => (
-                    <tr key={a.id} className="border-b border-slate-200">
-                      <td className="py-1 pr-2 font-mono">{a.hostname}</td>
-                      <td className="py-1 pr-2">{a.owner_team || "—"}</td>
-                      <td className="py-1 pr-2">{a.criticality || "—"}</td>
-                      <td className="py-1">
-                        {a.open_findings}
-                        {a.critical_high_findings > 0 && <span className="text-red-600 font-medium"> ({a.critical_high_findings} crit/high)</span>}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {external_checks && (external_checks.company_posture || external_checks.technical_posture) && (
-            <div className="mb-4">
-              <div className="text-[13px] font-semibold mb-1.5">External verification checks</div>
-              {["company_posture", "technical_posture"].map(key => {
-                const panel = external_checks[key];
-                if (!panel) return null;
-                return (
-                  <div key={key} className="mb-2.5">
-                    <div className="text-[12px] font-medium">
-                      {key === "company_posture" ? "Company posture" : "Technical posture"}
-                    </div>
-                    {panel.summary && <div className="text-[11.5px] text-slate-700 mb-1">{panel.summary.headline}</div>}
-                    <ul className="text-[11.5px] space-y-0.5">
-                      {panel.results.map((c, i) => (
-                        <li key={i}>
-                          <span className="font-medium">{c.label || c.check}:</span>{" "}
-                          <span style={{ color: c.status === "attention" ? "#b45309" : c.status === "ok" ? "#15803d" : "#64748b" }}>
-                            {c.status_plain || c.status}
-                          </span>{" "}
-                          — {c.summary}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {interviews && interviews.length > 0 && (
-            <div className="border-t border-slate-300 pt-3 mb-4">
-              <div className="text-[13px] font-semibold mb-1.5">Stakeholder input</div>
-              {interviews.map(it => (
-                <div key={it.id} className="text-[11.5px] mb-1">
-                  <span className="font-medium">{it.who}</span> ({it.role || "—"}, {it.when}): {it.summary}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {notes?.length > 0 && (
-            <div className="border-t border-slate-300 pt-3 mb-4">
-              <div className="text-[13px] font-semibold mb-1.5">Analyst working notes</div>
-              <div className="text-[10.5px] text-slate-500 mb-1.5">
-                Included here because this copy is the internal audit package. Notes are never included in a
-                shared/external report.
-              </div>
-              {notes.map(n => (
-                <div key={n.id} className="text-[11.5px] mb-1.5">
-                  <div className="text-slate-500">{n.author} · {new Date(n.at).toLocaleString()}</div>
-                  {n.html
-                    ? <div className="sr-richtext-print" dangerouslySetInnerHTML={{ __html: n.html }}/>
-                    : <div className="whitespace-pre-wrap">{n.text}</div>}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {attachments?.length > 0 && (
-            <div className="border-t border-slate-300 pt-3 mb-4">
-              <div className="text-[13px] font-semibold mb-1.5">Supporting documents ({attachments.length})</div>
-              <ul className="text-[11.5px] list-disc ml-5">
-                {attachments.map(a => (
-                  <li key={a.id}>
-                    <span className="font-medium">{a.name}</span>
-                    <span className="text-slate-600"> — {a.category}{a.description ? `, ${a.description}` : ""}
-                      {" "}({Math.round((a.size_bytes || 0) / 1024)} KB, uploaded {new Date(a.uploaded_at).toLocaleDateString()} by {a.uploaded_by})</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {/* Footer */}
-          <div className="border-t border-slate-300 pt-2 text-[10.5px] text-slate-500">
-            {review.review_number} · Playbook {review.playbook_key} v{review.playbook_version} · Template {review.template_key} v{review.template_version} · Generated {new Date(generated_at).toLocaleString()} · Technical appendix included above
-          </div>
           {shareOpen && <ShareDialog id={id} review={review} onClose={() => setShareOpen(false)}/>}
+          {layoutOpen && <ReportLayoutEditor onClose={() => setLayoutOpen(false)} onSaved={load}/>}
         </div>
       </div>
     </div>

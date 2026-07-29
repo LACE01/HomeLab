@@ -26,6 +26,10 @@ from security_reviews_hooks import (
 )
 import auth_utils
 from auth_utils import get_current_user
+from report_templates import (
+    BLOCK_CATALOG, DEFAULT_KEY, active_template, default_layout, ensure_seeded as ensure_template_seeded,
+    resolve_layout, validate_blocks,
+)
 from questionnaire_v3 import (
     CAPABILITY_FLAGS, NA_REASON_CODES, QUESTIONNAIRE_V3, default_capabilities,
     applicable_questions, score_questionnaire, confidence_note, ensure_v3_seeded,
@@ -112,6 +116,14 @@ class ResponseBody(BaseModel):
 
 class CapabilityBody(BaseModel):
     capabilities: dict                      # {flag_key: bool}
+
+
+class TemplateBody(BaseModel):
+    """A report layout is a versioned record, not code. Saving always creates a
+    NEW version so a report rendered last quarter can still be explained."""
+    name: str
+    blocks: List[dict]
+    key: str = DEFAULT_KEY
 
 
 class CustomQuestionBody(BaseModel):
@@ -322,6 +334,55 @@ async def asset_picker(q: Optional[str] = None, team: Optional[str] = None,
     teams = sorted({t for t in await db.assets.distinct("owner_team") if t})
     tags = sorted({t for t in await db.assets.distinct("tags") if t})
     return {"items": items, "total": len(items), "teams": teams, "tags": tags}
+
+
+@router.get("/v1/report-templates/blocks")
+async def report_template_blocks(user: dict = Depends(require_module(MODULE_KEY))):
+    """Every block the renderers know how to draw, with its description, default
+    title, configurable options, and whether it's internal-only."""
+    return {"blocks": BLOCK_CATALOG, "default_layout": default_layout()}
+
+
+@router.get("/v1/report-templates")
+async def list_report_templates(user: dict = Depends(require_module(MODULE_KEY))):
+    await ensure_template_seeded(db)
+    items = await db.report_templates.find({}, {"_id": 0}).sort(
+        [("key", 1), ("version", -1)]).to_list(200)
+    return {"items": items, "active": await active_template(db)}
+
+
+@router.post("/v1/report-templates")
+async def save_report_template(body: TemplateBody,
+                                user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    """Save as the next version. Existing reports keep rendering under whatever
+    version they were produced with."""
+    try:
+        blocks = validate_blocks(body.blocks)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    latest = await db.report_templates.find(
+        {"key": body.key}, {"_id": 0, "version": 1}).sort("version", -1).to_list(1)
+    version = (latest[0]["version"] + 1) if latest else 1
+    doc = {"id": str(uuid.uuid4()), "key": body.key, "name": body.name,
+           "version": version, "is_default": body.key == DEFAULT_KEY, "blocks": blocks,
+           "created_by": user.get("email"), "created_at": now_iso()}
+    await db.report_templates.insert_one(dict(doc))
+    return doc
+
+
+@router.post("/v1/report-templates/reset")
+async def reset_report_template(user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    """Save the stock layout as a new version -- an undo that doesn't destroy
+    history."""
+    latest = await db.report_templates.find(
+        {"key": DEFAULT_KEY}, {"_id": 0, "version": 1}).sort("version", -1).to_list(1)
+    version = (latest[0]["version"] + 1) if latest else 1
+    doc = {"id": str(uuid.uuid4()), "key": DEFAULT_KEY,
+           "name": "Security Review Report (reset to default)", "version": version,
+           "is_default": True, "blocks": default_layout(),
+           "created_by": user.get("email"), "created_at": now_iso()}
+    await db.report_templates.insert_one(dict(doc))
+    return doc
 
 
 @router.get("/v1/security-reviews/assignable-users")
@@ -1180,6 +1241,12 @@ async def report_data(review_id: str, user: dict = Depends(require_module(MODULE
             {"review_id": review_id}, {"_id": 0, "data_url": 0}).sort("uploaded_at", 1).to_list(200),
         "linked_assets": await _linked_asset_summary(db, r),
         "questionnaire_scoring": await _report_questionnaire_scoring(db, r),
+        "audit_trail": await db.security_review_audit.find(
+            {"review_id": review_id}, {"_id": 0}).sort("at", -1).to_list(200),
+        # The layout is configuration: the print view, the shared copy and the
+        # Word export all render from this same resolved block list.
+        "layout": resolve_layout(await active_template(db), shared=False),
+        "template": {k: v for k, v in (await active_template(db)).items() if k != "blocks"},
         "generated_at": now_iso(),
     }
 
@@ -1545,6 +1612,10 @@ async def _build_shared_payload(review_id: str) -> dict:
             # reports -- that promise is part of what makes analysts write
             # candidly in them.
             "notes": [],
+            "audit_trail": [],
+            # shared=True drops internal-only blocks centrally, so no template
+            # edit can leak working notes or the audit trail to a vendor
+            "layout": resolve_layout(await active_template(db), shared=True),
             "generated_at": now_iso(), "shared": True}
 
 

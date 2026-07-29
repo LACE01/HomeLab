@@ -331,9 +331,11 @@ doc = Document(io.BytesIO(r.content))
 heads = [p.text for p in doc.paragraphs if p.style.name.startswith("Heading") or p.style.name == "Title"]
 assert any("Part 1 — Executive summary" in h for h in heads)
 assert any("Part 2 — Technical detail" in h for h in heads)
+# section titles now come from the report LAYOUT template, so match on the
+# stock titles it ships with
 for expected in ("In-scope assets", "External verification checks", "Analyst working notes",
-                  "Supporting documents", "Questionnaire responses"):
-    assert any(expected in h for h in heads), f"missing {expected}: {heads}"
+                  "Supporting documents", "questionnaire responses"):
+    assert any(expected.lower() in h.lower() for h in heads), f"missing {expected}: {heads}"
 body = "\n".join(p.text for p in doc.paragraphs)
 # assets render as a real Word TABLE (editable), so check table cells too
 table_text = "\n".join(c.text for t in doc.tables for row in t.rows for c in row.cells)

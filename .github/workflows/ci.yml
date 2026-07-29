@@ -63,6 +63,7 @@ jobs:
             tests/test_pci_dss_compliance.py \
             tests/test_platform_fixes.py \
             tests/test_qualys_gav.py \
+            tests/test_report_templates.py \
             tests/test_questionnaire_v3.py \
             tests/test_scheduled_reports.py \
             tests/test_security_news.py \

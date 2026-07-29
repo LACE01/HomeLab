@@ -83,6 +83,407 @@ def _band_cell(table, row, col, label, band):
 
 
 def build_review_docx(data: dict) -> bytes:
+    """Layout-driven: renders whatever block list `data["layout"]` specifies, in
+    that order, with the titles the template chose. Falls back to the legacy
+    fixed order when no layout is supplied so older callers keep working."""
+    layout = data.get("layout")
+    if layout:
+        return _build_from_layout(data, layout)
+    return _build_legacy(data)
+
+
+def _build_from_layout(data: dict, layout: list) -> bytes:
+    review = data["review"]
+    doc = Document()
+    for section in doc.sections:
+        section.left_margin = section.right_margin = Inches(1)
+
+    renderers = {
+        "header": _blk_header, "section_heading": _blk_section_heading,
+        "page_break": _blk_page_break, "what_reviewed": _blk_what_reviewed,
+        "risk_verdict": _blk_risk_verdict, "confidence": _blk_confidence,
+        "compensating_controls": _blk_controls, "risk_matrix": _blk_matrix,
+        "executive_summary": _blk_exec_summary, "recommendation": _blk_recommendation,
+        "decision": _blk_decision, "key_findings": _blk_findings,
+        "data_touched": _blk_data_touched, "linked_assets": _blk_assets,
+        "external_checks": _blk_external_checks, "interviews": _blk_interviews,
+        "attachments": _blk_attachments, "questionnaire": _blk_questionnaire,
+        "notes": _blk_notes, "audit_trail": _blk_audit,
+    }
+    for block in layout:
+        fn = renderers.get(block.get("type"))
+        if fn:
+            fn(doc, data, block)
+
+    doc.add_paragraph()
+    stamp = doc.add_paragraph()
+    tmpl = data.get("template") or {}
+    _run(stamp, f"{review.get('review_number')} · Playbook {review.get('playbook_key')} "
+                f"v{review.get('playbook_version')} · Template {review.get('template_key')} "
+                f"v{review.get('template_version')}"
+                + (f" · Layout {tmpl.get('name')} v{tmpl.get('version')}" if tmpl else "")
+                + f" · Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+         size=8, color="888888")
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def _title(block: dict, fallback: str) -> str:
+    t = (block or {}).get("title")
+    return t if t not in (None, "") else fallback
+
+
+def _blk_header(doc, data, block):
+    review = data["review"]
+    h = doc.add_heading(_title(block, "Security Review Report"), level=0)
+    for r in h.runs:
+        r.font.color.rgb = RGBColor.from_string("111827")
+    meta = doc.add_paragraph()
+    _run(meta, f"{review.get('review_number', '')}", bold=True, size=10)
+    bits = [datetime.now().strftime("%Y-%m-%d"), f"Reviewer: {review.get('assignee') or '—'}"]
+    if review.get("requestor_name"):
+        bits.append(f"Requestor: {review['requestor_name']}"
+                    + (f" ({review['requestor_department']})" if review.get("requestor_department") else ""))
+    _run(meta, "  ·  " + "  ·  ".join(bits), size=9, color="666666")
+
+
+def _blk_section_heading(doc, data, block):
+    doc.add_heading(_title(block, "Section"), level=1)
+    sub = (block.get("options") or {}).get("subtitle")
+    if sub:
+        p = doc.add_paragraph()
+        _run(p, sub, size=9, italic=True, color="666666")
+
+
+def _blk_page_break(doc, data, block):
+    doc.add_page_break()
+
+
+def _blk_what_reviewed(doc, data, block):
+    review = data["review"]
+    p = doc.add_paragraph()
+    _run(p, f"{_title(block, 'What was reviewed')}: ", bold=True, size=10)
+    _run(p, f"{review.get('entity_name') or review.get('title')} — {review.get('title')}", size=10)
+
+
+def _blk_risk_verdict(doc, data, block):
+    review = data["review"]
+    doc.add_heading(_title(block, "Risk verdict"), level=2)
+    inherent = (review.get("inherent_risk") or {}).get("band")
+    residual = (review.get("residual_risk") or {}).get("band")
+    not_adopting = (review.get("risk_of_not_adopting") or {}).get("band")
+    show_na = (block.get("options") or {}).get("show_not_adopting", True) and not_adopting
+    cols = 3 if show_na else 2
+    vt = doc.add_table(rows=1, cols=cols)
+    vt.alignment = WD_TABLE_ALIGNMENT.CENTER
+    vt.style = "Table Grid"
+    _band_cell(vt, 0, 0, "Risk if adopted as-is", inherent)
+    _band_cell(vt, 0, 1, "Risk with required controls", residual)
+    if show_na:
+        _band_cell(vt, 0, 2, "Risk of NOT adopting", not_adopting)
+    if review.get("analyst_override_justification"):
+        p = doc.add_paragraph()
+        _run(p, "Rating override justification: ", bold=True, size=9)
+        _run(p, review["analyst_override_justification"], size=9, italic=True)
+
+
+def _blk_confidence(doc, data, block):
+    qs = data.get("questionnaire_scoring")
+    if not qs:
+        return
+    p = doc.add_paragraph()
+    _run(p, f"{_title(block, 'Assessment confidence')}: ", bold=True, size=10)
+    bits = [f"{qs['confidence_pct']}%", f"based on {qs['applicable_questions']} applicable question(s)"]
+    if qs.get("unknown_count"):
+        bits.append(f"{qs['unknown_count']} unknown")
+    if qs.get("pending_vendor_count"):
+        bits.append(f"{qs['pending_vendor_count']} awaiting vendor")
+    _run(p, " — ".join([bits[0], ", ".join(bits[1:])]), size=10)
+    if qs["confidence_pct"] < 70:
+        _run(p, " Treat the ratings above as provisional until the gaps are closed.",
+             size=10, italic=True, color="B45309")
+
+
+def _blk_controls(doc, data, block):
+    if not data.get("compensating_controls"):
+        return
+    doc.add_heading(_title(block, "Compensating controls"), level=2)
+    doc.add_paragraph(data["compensating_controls"])
+
+
+def _blk_matrix(doc, data, block):
+    points = data.get("matrix_points") or []
+    if not points:
+        return
+    doc.add_heading(_title(block, "Risk matrix"), level=2)
+    mt = doc.add_table(rows=6, cols=6)
+    mt.style = "Table Grid"
+    hdr = mt.cell(0, 0)
+    hdr.text = ""
+    _run(hdr.paragraphs[0], "L \\ I", size=8, bold=True)
+    for i in range(1, 6):
+        c = mt.cell(0, i)
+        c.text = ""
+        pp = c.paragraphs[0]
+        pp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _run(pp, str(i), size=8, bold=True)
+        _shade(c, "F1F5F9")
+    for row_idx, likelihood in enumerate([5, 4, 3, 2, 1], start=1):
+        c0 = mt.cell(row_idx, 0)
+        c0.text = ""
+        _run(c0.paragraphs[0], str(likelihood), size=8, bold=True)
+        _shade(c0, "F1F5F9")
+        for col_idx, impact in enumerate(range(1, 6), start=1):
+            cell = mt.cell(row_idx, col_idx)
+            cell.text = ""
+            score = likelihood * impact
+            fill = ("DBEAFE" if score <= 4 else "FEF3C7" if score <= 9
+                    else "FFEDD5" if score <= 16 else "FEE2E2")
+            _shade(cell, fill)
+            here = [pt for pt in points if pt["likelihood"] == likelihood and pt["impact"] == impact]
+            if here:
+                pp = cell.paragraphs[0]
+                pp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                _run(pp, ", ".join(pt["label"] for pt in here), size=7, bold=True)
+    if (block.get("options") or {}).get("show_legend", True):
+        legend = doc.add_paragraph()
+        _run(legend, "Impact increases left → right; likelihood increases bottom → top. "
+             + "; ".join(f"{pt['label']}: L{pt['likelihood']}×I{pt['impact']} ({pt['band']})"
+                          for pt in points), size=8, color="666666")
+
+
+def _blk_exec_summary(doc, data, block):
+    doc.add_heading(_title(block, "Executive summary"), level=2)
+    doc.add_paragraph(data.get("executive_summary") or "—")
+
+
+def _blk_recommendation(doc, data, block):
+    rec = data.get("recommendation") or {}
+    if not (rec.get("recommendation") or rec.get("why") or rec.get("what_was_reviewed")):
+        return
+    doc.add_heading(_title(block, "Reviewer recommendation"), level=2)
+    if rec.get("what_was_reviewed"):
+        _kv_paragraph(doc, "What was reviewed", rec["what_was_reviewed"])
+    if rec.get("why"):
+        _kv_paragraph(doc, "Why", rec["why"])
+    p = doc.add_paragraph()
+    _run(p, "Recommendation: ", bold=True, size=11)
+    _run(p, rec.get("recommendation") or "—", bold=True, size=11, color="2563EB")
+    if rec.get("rationale"):
+        doc.add_paragraph(rec["rationale"])
+
+
+def _blk_decision(doc, data, block):
+    review = data["review"]
+    decision = review.get("decision") or {}
+    findings = [f for f in data.get("findings", []) if f.get("status") != "draft"]
+    conditions = [f for f in findings if f.get("is_condition_of_approval")]
+    doc.add_heading(_title(block, "Decision"), level=2)
+    p = doc.add_paragraph()
+    _run(p, decision.get("outcome") or "Pending", bold=True, size=12,
+         color="16A34A" if str(decision.get("outcome", "")).startswith("Approved") else "111827")
+    if decision.get("decision_maker"):
+        _kv_paragraph(doc, "Decision maker", decision["decision_maker"])
+    if decision.get("expiration_date"):
+        _kv_paragraph(doc, "Approval expires", str(decision["expiration_date"])[:10])
+    if decision.get("rationale"):
+        doc.add_paragraph(decision["rationale"])
+    rec = data.get("recommendation") or {}
+    if rec.get("recommendation") and decision.get("outcome") and \
+            rec["recommendation"].strip().lower() not in decision["outcome"].strip().lower():
+        p = doc.add_paragraph()
+        _run(p, "Note: the decision differs from the reviewer's recommendation.",
+             size=9, italic=True, color="B45309")
+    if conditions and (block.get("options") or {}).get("show_conditions", True):
+        doc.add_heading("Conditions of approval", level=3)
+        ct = doc.add_table(rows=1, cols=4)
+        ct.style = "Table Grid"
+        for i, head in enumerate(["Condition", "Owner", "Deadline", "Status"]):
+            c = ct.cell(0, i)
+            c.text = ""
+            _run(c.paragraphs[0], head, bold=True, size=9)
+            _shade(c, "1F2937")
+            c.paragraphs[0].runs[0].font.color.rgb = RGBColor.from_string("FFFFFF")
+        for cond in conditions:
+            row = ct.add_row()
+            row.cells[0].text = cond.get("description") or ""
+            row.cells[1].text = cond.get("owner") or "—"
+            row.cells[2].text = cond.get("condition_deadline") or "—"
+            row.cells[3].text = (cond.get("condition_met") or "pending").replace("_", " ")
+
+
+def _blk_findings(doc, data, block):
+    findings = [f for f in data.get("findings", []) if f.get("status") != "draft"]
+    if not findings:
+        return
+    opts = block.get("options") or {}
+    doc.add_heading(_title(block, "Key findings"), level=2)
+    for f in findings[:int(opts.get("limit") or 10)]:
+        p = doc.add_paragraph(style="List Bullet")
+        _run(p, f"[{f.get('severity')}] ", bold=True, size=10,
+             color=SEV_COLOR.get(f.get("severity"), "64748B"))
+        _run(p, f.get("description") or "", size=10)
+        if opts.get("show_recommendations", True) and f.get("recommendation"):
+            sub = doc.add_paragraph()
+            sub.paragraph_format.left_indent = Inches(0.5)
+            _run(sub, f"Recommendation: {f['recommendation']}", size=9, color="555555")
+
+
+def _blk_data_touched(doc, data, block):
+    review = data["review"]
+    doc.add_heading(_title(block, "Data & systems touched"), level=2)
+    classifications = review.get("data_classifications") or []
+    _kv_paragraph(doc, "Data classifications",
+                  ", ".join(classifications) if classifications else "None selected")
+    if review.get("entity_domain"):
+        _kv_paragraph(doc, "Vendor domain", review["entity_domain"])
+    if review.get("scope_statement"):
+        _kv_paragraph(doc, "Scope", review["scope_statement"])
+
+
+def _blk_assets(doc, data, block):
+    assets = data.get("linked_assets") or []
+    if not assets:
+        return
+    doc.add_heading(_title(block, f"In-scope assets ({len(assets)})"), level=2)
+    at = doc.add_table(rows=1, cols=4)
+    at.style = "Table Grid"
+    for i, head in enumerate(["Host", "Team", "Criticality", "Open findings"]):
+        c = at.cell(0, i)
+        c.text = ""
+        _run(c.paragraphs[0], head, bold=True, size=9)
+        _shade(c, "1F2937")
+        c.paragraphs[0].runs[0].font.color.rgb = RGBColor.from_string("FFFFFF")
+    for a in assets:
+        row = at.add_row()
+        row.cells[0].text = a.get("hostname") or ""
+        row.cells[1].text = a.get("owner_team") or "—"
+        row.cells[2].text = a.get("criticality") or "—"
+        crit = a.get("critical_high_findings") or 0
+        row.cells[3].text = f"{a.get('open_findings', 0)}" + (f" ({crit} crit/high)" if crit else "")
+
+
+def _blk_external_checks(doc, data, block):
+    checks = data.get("external_checks") or {}
+    if not (checks.get("company_posture") or checks.get("technical_posture")):
+        return
+    opts = block.get("options") or {}
+    which = opts.get("panels", "both")
+    doc.add_heading(_title(block, "External verification checks"), level=2)
+    for key, title in (("company_posture", "Company posture"), ("technical_posture", "Technical posture")):
+        if which != "both" and which not in key:
+            continue
+        panel = checks.get(key)
+        if not panel:
+            continue
+        doc.add_heading(title, level=3)
+        if panel.get("summary"):
+            p = doc.add_paragraph()
+            _run(p, panel["summary"].get("headline") or "", size=10)
+        for c in panel.get("results", []):
+            p = doc.add_paragraph(style="List Bullet")
+            _run(p, f"{c.get('label') or c.get('check')}: ", bold=True, size=9.5)
+            colour = ("B45309" if c.get("status") == "attention"
+                      else "15803D" if c.get("status") == "ok" else "64748B")
+            _run(p, f"{c.get('status_plain') or c.get('status')} — ", size=9.5, color=colour)
+            _run(p, c.get("summary") or "", size=9.5)
+            if opts.get("show_why_it_matters", True) and c.get("why_it_matters"):
+                sub = doc.add_paragraph()
+                sub.paragraph_format.left_indent = Inches(0.5)
+                _run(sub, f"Why it matters: {c['why_it_matters']}", size=8.5, color="666666")
+
+
+def _blk_interviews(doc, data, block):
+    interviews = data.get("interviews") or []
+    if not interviews:
+        return
+    doc.add_heading(_title(block, "Stakeholder input"), level=2)
+    for it in interviews:
+        p = doc.add_paragraph()
+        _run(p, f"{it.get('who')} ", bold=True, size=10)
+        _run(p, f"({it.get('role') or '—'}, {it.get('when') or '—'}): ", size=9, color="666666")
+        _run(p, it.get("summary") or "", size=10)
+
+
+def _blk_attachments(doc, data, block):
+    attachments = data.get("attachments") or []
+    if not attachments:
+        return
+    doc.add_heading(_title(block, f"Supporting documents ({len(attachments)})"), level=2)
+    for a in attachments:
+        p = doc.add_paragraph(style="List Bullet")
+        _run(p, a.get("name") or "", bold=True, size=9.5)
+        meta_bits = [a.get("category") or ""]
+        if a.get("description"):
+            meta_bits.append(a["description"])
+        meta_bits.append(f"{round((a.get('size_bytes') or 0) / 1024)} KB")
+        _run(p, " — " + ", ".join(x for x in meta_bits if x), size=9, color="666666")
+
+
+def _blk_questionnaire(doc, data, block):
+    questionnaire = data.get("questionnaire") or {}
+    responses = data.get("responses") or []
+    if not (questionnaire and responses):
+        return
+    opts = block.get("options") or {}
+    doc.add_heading(_title(block, "Technical appendix — questionnaire responses"), level=2)
+    by_order = {r["question_order"]: r for r in responses}
+    current_domain = None
+    for q in questionnaire.get("questions", []):
+        r = by_order.get(q["order"])
+        if not r and opts.get("answered_only", True):
+            continue
+        if q.get("domain") != current_domain:
+            current_domain = q.get("domain")
+            doc.add_heading(current_domain or "General", level=3)
+        p = doc.add_paragraph()
+        _run(p, f"Q{q['order']}. ", bold=True, size=9)
+        _run(p, q.get("text") or "", size=9)
+        if r:
+            _run(p, f"  {str(r.get('answer', '')).upper()}", bold=True, size=9,
+                 color=ANSWER_COLOR.get(r.get("answer"), "64748B"))
+            if r.get("na_reason_code"):
+                _run(p, f" ({r['na_reason_code'].replace('_', ' ')})", size=8, color="666666")
+        if q.get("cis_mapping"):
+            _run(p, f"  [CIS {q['cis_mapping']}]", size=8, color="888888")
+        if opts.get("show_evidence", True) and r and r.get("evidence_text"):
+            sub = doc.add_paragraph()
+            sub.paragraph_format.left_indent = Inches(0.4)
+            _run(sub, r["evidence_text"], size=9, color="555555")
+
+
+def _blk_notes(doc, data, block):
+    notes = data.get("notes") or []
+    if not notes:
+        return
+    doc.add_heading(_title(block, "Analyst working notes"), level=2)
+    p = doc.add_paragraph()
+    _run(p, "Internal audit package only — never included in a shared report.",
+         size=8.5, italic=True, color="666666")
+    for n in notes:
+        p = doc.add_paragraph()
+        _run(p, f"{n.get('author')} · {str(n.get('at'))[:19].replace('T', ' ')}",
+             size=8.5, color="666666")
+        body = _html_to_text(n.get("html")) if n.get("html") else (n.get("text") or "")
+        doc.add_paragraph(body)
+
+
+def _blk_audit(doc, data, block):
+    trail = data.get("audit_trail") or []
+    if not trail:
+        return
+    limit = int((block.get("options") or {}).get("limit") or 50)
+    doc.add_heading(_title(block, "Audit trail"), level=2)
+    for a in trail[:limit]:
+        p = doc.add_paragraph()
+        _run(p, f"{str(a.get('at'))[:19].replace('T', ' ')} · {a.get('action')} · {a.get('actor')}",
+             size=8.5, color="666666")
+        if a.get("details"):
+            _run(p, f" — {a['details']}", size=8.5)
+
+
+def _build_legacy(data: dict) -> bytes:
     """data == the /report-data payload (review, findings, responses,
     questionnaire, interviews, executive_summary, matrix_points,
     compensating_controls, recommendation)."""
