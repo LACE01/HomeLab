@@ -87,6 +87,12 @@ ENRICHMENT_CONNECTORS = [
     # abuse.ch above (see reconng.py's run_virustotal_lookup), surfaced in the Recon &
     # OSINT hub. api_key is a VirusTotal API key (free tier works, rate-limited to
     # 4 req/min).
+    # Cloudflare -- Attack Surface Telemetry (items 37/38). api_key is a scoped
+    # API token with Analytics:Read on the zone; zone_id identifies the zone.
+    # Works on Free/Pro: both firewallEventsAdaptive and httpRequestsAdaptive are
+    # available to every plan through the GraphQL Analytics API (Logpush is not).
+    {"name": "Cloudflare", "type": "telemetry", "logo": "cloudflare",
+     "docs_url": "https://developers.cloudflare.com/analytics/graphql-api/"},
     {"name": "VirusTotal", "type": "threat_intel", "logo": "virustotal",
      "default_config": {"endpoint": "https://www.virustotal.com/api/v3"}},
     # Domain-wide breach monitoring for the org's OWN domain (which employee accounts

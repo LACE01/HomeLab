@@ -123,6 +123,7 @@ MODULE_REGISTRY = [
     {"key": "/risk-register", "label": "Risk Register", "group": "Reports & Compliance"},
     {"key": "/security-reviews", "label": "Security Reviews", "group": "Reports & Compliance"},
     {"key": "/threat-modeling", "label": "Threat Modeling", "group": "Reports & Compliance"},
+    {"key": "/attack-telemetry", "label": "Attack Surface Telemetry", "group": "Detection & Response"},
     {"key": "/vendors", "label": "Vendor & Third-Party Risk", "group": "Reports & Compliance"},
     # --- Administration ---
     {"key": "/admin", "label": "Admin", "group": "Administration"},

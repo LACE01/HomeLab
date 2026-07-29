@@ -69,6 +69,7 @@ import SharedReport from "@/pages/SharedReport";
 import ThreatModeling from "@/pages/ThreatModeling";
 import ThreatModelDetail from "@/pages/ThreatModelDetail";
 import CtiHub from "@/pages/CtiHub";
+import AttackTelemetry from "@/pages/AttackTelemetry";
 import RiskDetail from "@/pages/RiskDetail";
 import VendorManagement from "@/pages/VendorManagement";
 import VendorDetail from "@/pages/VendorDetail";
@@ -186,6 +187,7 @@ const AppRouter = () => {
       <Route path="/admin/nikto-scans" element={<Protected module="/admin/nikto-scans"><NiktoScans/></Protected>}/>
       <Route path="/admin/recon-osint" element={<Protected module="/admin/recon-osint"><ReconOSINT/></Protected>}/>
       <Route path="/admin/cti" element={<Protected module="/admin/recon-osint"><CtiHub/></Protected>}/>
+      <Route path="/attack-telemetry" element={<Protected module="/attack-telemetry"><AttackTelemetry/></Protected>}/>
       <Route path="/admin/criticality-scoring" element={<Protected module="/admin/criticality-scoring"><CriticalityScoring/></Protected>}/>
       <Route path="/admin/web-scans" element={<Protected module="/admin/web-scans"><WebScansUpload/></Protected>}/>
       <Route path="/admin/users" element={<Protected module="/admin/users"><Users/></Protected>}/>

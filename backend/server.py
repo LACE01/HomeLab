@@ -64,6 +64,7 @@ from routes.risk_register import router as risk_register_router
 from routes.security_reviews import router as security_reviews_router
 from routes.threat_modeling import router as threat_modeling_router
 from routes.cti import router as cti_router
+from routes.attack_telemetry import router as attack_telemetry_router
 from routes.vendors import router as vendors_router
 from routes.directory import router as directory_router
 from routes.settings import router as settings_router
@@ -113,6 +114,7 @@ api.include_router(risk_register_router)
 api.include_router(security_reviews_router)
 api.include_router(threat_modeling_router)
 api.include_router(cti_router)
+api.include_router(attack_telemetry_router)
 api.include_router(rbac_router)
 api.include_router(scan_schedule_router)
 api.include_router(security_events_router)
@@ -254,6 +256,8 @@ async def on_startup():
     _a.create_task(threat_intel_watchlist_sync_loop(db, interval_hours=12))
     from cti import cti_loop
     _a.create_task(cti_loop(db, interval_hours=12))
+    from attack_telemetry import attack_telemetry_loop
+    _a.create_task(attack_telemetry_loop(db))
     # Data retention/archival: purges old records from enabled policies once a day,
     # archiving to a compressed JSON file first (see retention.py)
     from retention import retention_loop
