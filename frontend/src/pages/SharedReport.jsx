@@ -2,10 +2,13 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { API } from "@/lib/api";
 
-// PUBLIC page -- resolves a tokenized share link to a read-only Security Review
-// report. No app account needed; the backend endpoint is unauthenticated and the
-// token is the capability. Uses plain fetch (not the app's api client) so no
-// auth interceptor ever redirects a logged-out stakeholder to /login.
+// PUBLIC page -- resolves a tokenized share grant to a read-only Security Review
+// report. Item 26: the link ALONE is never enough. Either the recipient enters
+// the one-time code emailed to them, or they're signed in as the platform user
+// the report was shared with. Uses plain fetch (not the app's api client) so a
+// signed-out external recipient is never bounced to /login by the auth
+// interceptor -- but credentials are included so the platform-user mode can
+// authenticate off the existing session.
 
 const RISK_PRINT = { Low: "#3b82f6", Medium: "#f59e0b", High: "#f97316", Critical: "#ef4444" };
 
@@ -19,33 +22,136 @@ function Badge({ label, band }) {
   );
 }
 
+function Matrix({ points }) {
+  const cellFill = (l, i) => {
+    const s = l * i;
+    if (s <= 4) return "#dbeafe";
+    if (s <= 9) return "#fef3c7";
+    if (s <= 16) return "#ffedd5";
+    return "#fee2e2";
+  };
+  return (
+    <div className="mb-4">
+      <div className="text-[13px] font-semibold mb-1.5">Risk matrix (likelihood × impact)</div>
+      <table className="border-collapse">
+        <tbody>
+          {[5, 4, 3, 2, 1].map(l => (
+            <tr key={l}>
+              <td className="text-[9px] text-slate-500 pr-1 text-right">{l}</td>
+              {[1, 2, 3, 4, 5].map(i => {
+                const here = points.filter(p => p.likelihood === l && p.impact === i);
+                return (
+                  <td key={i} style={{ background: cellFill(l, i) }}
+                    className="w-14 h-9 border border-slate-300 text-center align-middle">
+                    {here.map((p, j) => (
+                      <span key={j} className="text-[8px] font-bold px-0.5"
+                        style={{ color: RISK_PRINT[p.band] || "#334155" }}>{p.label}</span>
+                    ))}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+          <tr><td/>{[1, 2, 3, 4, 5].map(i => <td key={i} className="text-[9px] text-slate-500 text-center">{i}</td>)}</tr>
+        </tbody>
+      </table>
+      <div className="text-[9px] text-slate-500 mt-0.5">Impact →, likelihood ↑</div>
+    </div>
+  );
+}
+
 export default function SharedReport() {
   const { token } = useParams();
   const [data, setData] = useState(null);
+  const [meta, setMeta] = useState(null);
   const [error, setError] = useState(null);
+  const [code, setCode] = useState("");
+  const [verifying, setVerifying] = useState(false);
+
+  const tryFetch = async () => {
+    const r = await fetch(`${API}/v1/shared/security-review/${token}`, { credentials: "include" });
+    if (r.ok) { setData(await r.json()); return true; }
+    if (r.status === 404) { setError((await r.json()).detail || "This link is invalid or expired."); return true; }
+    return false; // 401/403 -> needs the gate
+  };
 
   useEffect(() => {
-    fetch(`${API}/v1/shared/security-review/${token}`)
-      .then(async r => {
-        if (!r.ok) throw new Error((await r.json()).detail || "Link invalid");
-        setData(await r.json());
-      })
-      .catch(e => setError(e.message));
+    (async () => {
+      try {
+        const m = await fetch(`${API}/v1/shared/security-review/${token}/meta`);
+        if (!m.ok) { setError((await m.json()).detail || "This link is invalid or expired."); return; }
+        const metaJson = await m.json();
+        setMeta(metaJson);
+        await tryFetch();
+      } catch {
+        setError("Could not reach the server.");
+      }
+    })();
+    // eslint-disable-next-line
   }, [token]);
+
+  const verify = async () => {
+    setVerifying(true);
+    try {
+      const r = await fetch(`${API}/v1/shared/security-review/${token}/verify`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      if (!r.ok) { setError(null); alert((await r.json()).detail || "Incorrect code"); return; }
+      setData(await r.json());
+    } finally { setVerifying(false); }
+  };
 
   if (error) {
     return (
       <div className="min-h-screen bg-slate-100 flex items-center justify-center p-6">
         <div className="bg-white rounded shadow p-8 text-center max-w-md">
-          <div className="text-[16px] font-semibold text-slate-800">This report link is invalid or has expired.</div>
+          <div className="text-[16px] font-semibold text-slate-800">{error}</div>
           <div className="text-[13px] text-slate-500 mt-2">Ask the review team for a fresh link.</div>
         </div>
       </div>
     );
   }
-  if (!data) return <div className="min-h-screen bg-slate-100 flex items-center justify-center text-slate-500">Loading…</div>;
 
-  const { review, findings, responses, questionnaire, interviews, executive_summary, generated_at } = data;
+  if (!data) {
+    if (meta?.mode === "email_code") {
+      return (
+        <div className="min-h-screen bg-slate-100 flex items-center justify-center p-6">
+          <div className="bg-white rounded shadow p-8 max-w-sm w-full">
+            <div className="text-[16px] font-semibold text-slate-800">Enter your access code</div>
+            <div className="text-[13px] text-slate-500 mt-1">
+              We emailed a 6-digit code to {meta.recipient_hint}. It's required to open this report.
+            </div>
+            <input value={code} onChange={e => setCode(e.target.value)} onKeyDown={e => e.key === "Enter" && verify()}
+              placeholder="123456" maxLength={6}
+              className="w-full mt-4 h-10 px-3 border border-slate-300 rounded text-[16px] tracking-[0.3em] text-center font-mono"/>
+            <button onClick={verify} disabled={verifying || code.length < 6}
+              className="w-full mt-3 h-9 bg-slate-800 disabled:opacity-50 text-white rounded text-[13px]">
+              {verifying ? "Checking…" : "View report"}
+            </button>
+          </div>
+        </div>
+      );
+    }
+    if (meta?.mode === "platform_user") {
+      return (
+        <div className="min-h-screen bg-slate-100 flex items-center justify-center p-6">
+          <div className="bg-white rounded shadow p-8 text-center max-w-md">
+            <div className="text-[16px] font-semibold text-slate-800">Sign in required</div>
+            <div className="text-[13px] text-slate-500 mt-2">
+              This report was shared with a specific platform user ({meta.recipient_hint}). Sign in as that
+              user, then reopen this link.
+            </div>
+            <a href="/login" className="inline-block mt-4 h-9 px-4 leading-9 bg-slate-800 text-white rounded text-[13px]">Sign in</a>
+          </div>
+        </div>
+      );
+    }
+    return <div className="min-h-screen bg-slate-100 flex items-center justify-center text-slate-500">Loading…</div>;
+  }
+
+  const { review, findings, responses, questionnaire, interviews, executive_summary, generated_at,
+          matrix_points, compensating_controls, recommendation } = data;
   const d = review.decision;
   const conditions = findings.filter(f => f.is_condition_of_approval);
   const respByOrder = Object.fromEntries((responses || []).map(r => [r.question_order, r]));
@@ -74,6 +180,15 @@ export default function SharedReport() {
           <Badge label="Risk with required controls" band={review.residual_risk?.band}/>
         </div>
 
+        {compensating_controls && (
+          <div className="border border-slate-300 rounded p-3 mb-4 bg-slate-50">
+            <div className="text-[12px] font-semibold mb-1">Compensating controls (what moves inherent → residual)</div>
+            <div className="text-[12px] text-slate-700 whitespace-pre-wrap">{compensating_controls}</div>
+          </div>
+        )}
+
+        {matrix_points?.length > 0 && <Matrix points={matrix_points}/>}
+
         <div className="text-[13px] leading-relaxed mb-4">{executive_summary}</div>
 
         {findings.length > 0 && (
@@ -88,6 +203,16 @@ export default function SharedReport() {
                 </li>
               ))}
             </ul>
+          </div>
+        )}
+
+        {recommendation && (recommendation.recommendation || recommendation.why) && (
+          <div className="border border-blue-300 bg-blue-50/60 rounded p-3.5 mb-3">
+            <div className="text-[13px] font-semibold text-blue-900">Reviewer recommendation</div>
+            {recommendation.what_was_reviewed && <div className="text-[12px] text-slate-700 mt-1"><span className="font-medium">What was reviewed:</span> {recommendation.what_was_reviewed}</div>}
+            {recommendation.why && <div className="text-[12px] text-slate-700"><span className="font-medium">Why:</span> {recommendation.why}</div>}
+            {recommendation.recommendation && <div className="text-[12.5px] text-blue-900 font-semibold mt-1.5">{recommendation.recommendation}</div>}
+            {recommendation.rationale && <div className="text-[12px] text-slate-700 mt-1">{recommendation.rationale}</div>}
           </div>
         )}
 
@@ -127,6 +252,7 @@ export default function SharedReport() {
                   <span className="font-medium">Q{q.order}.</span> {q.text}
                   <span className="ml-2 font-semibold uppercase"
                     style={{ color: r.answer === "no" ? "#ef4444" : r.answer === "partial" ? "#f59e0b" : "#16a34a" }}>{r.answer}</span>
+                  {r.na_reason_code && <span className="text-slate-500 ml-1">({r.na_reason_code.replace(/_/g, " ")})</span>}
                   {r.auto_answered && <span className="text-slate-400 ml-1">[{r.source_tag}]</span>}
                   {r.evidence_text && <div className="text-slate-600 ml-4">{r.evidence_text}</div>}
                 </div>

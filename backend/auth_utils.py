@@ -140,3 +140,14 @@ async def verify_api_key(request: Request) -> dict:
     if not key_doc:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return key_doc
+
+
+async def get_current_user_optional(request: Request):
+    """Same as get_current_user, but returns None instead of raising when there's
+    no valid session. Used by endpoints that are reachable both signed-in and
+    signed-out and need to branch on it (e.g. a Security Review report shared
+    with a specific platform user vs. one shared by emailed access code)."""
+    try:
+        return await get_current_user(request)
+    except Exception:
+        return None

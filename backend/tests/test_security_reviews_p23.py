@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 admin_user = {"id": "u1", "email": "admin@x.com", "role": "admin", "name": "Admin", "teams": [], "team": "SecOps"}
 app = server.app
 app.dependency_overrides[auth_utils.get_current_user] = lambda: admin_user
+app.dependency_overrides[auth_utils.get_current_user_optional] = lambda: admin_user
 client = TestClient(app)
 
 db = db_module.db
@@ -203,19 +204,24 @@ print("PASS: executive summary is auto-drafted and analyst-editable (edit wins)"
 
 # ============ share links ============
 
-r = client.post(f"/api/v1/security-reviews/{rid}/share-link", json={"expires_days": 7})
+# Item 26 replaced anyone-with-the-link sharing with recipient-scoped grants:
+# an external email must exchange a one-time code, so the link alone is inert.
+r = client.post(f"/api/v1/security-reviews/{rid}/share", json={"email": "ext@partner.com", "expires_days": 7})
 token = r.json()["token"]
+grant = run(db.security_review_share_grants.find_one({"token": token}, {"_id": 0}))
 r = client.get(f"/api/v1/shared/security-review/{token}")
+assert r.status_code == 401  # link alone is not enough
+r = client.post(f"/api/v1/shared/security-review/{token}/verify", json={"code": grant["code"]})
 assert r.status_code == 200
 shared = r.json()
 assert shared["review"]["review_number"] == review["review_number"]
 assert all(f["status"] != "draft" for f in shared["findings"])  # drafts never leak into shared reports
-r = client.get("/api/v1/shared/security-review/not-a-token")
+r = client.get("/api/v1/shared/security-review/not-a-token/meta")
 assert r.status_code == 404
-run(db.security_review_share_tokens.update_one({"token": token}, {"$set": {"expires_at": "2020-01-01T00:00:00+00:00"}}))
+run(db.security_review_share_grants.update_one({"token": token}, {"$set": {"expires_at": "2020-01-01T00:00:00+00:00"}}))
 r = client.get(f"/api/v1/shared/security-review/{token}")
 assert r.status_code == 404
-print("PASS: tokenized share links serve the report publicly (drafts excluded) and expire")
+print("PASS: recipient-scoped share grants serve the report only after code verification (drafts excluded) and expire")
 
 # ============ external checks (fake httpx) ============
 

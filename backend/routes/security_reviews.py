@@ -24,6 +24,7 @@ from security_reviews_hooks import (
     run_external_checks, clone_for_revalidation, ensure_phase2_seeded,
     REREVIEW_MONTHS,
 )
+import auth_utils
 from auth_utils import get_current_user
 
 router = APIRouter()
@@ -131,7 +132,8 @@ class DecisionBody(BaseModel):
 
 
 class NoteBody(BaseModel):
-    text: str
+    text: str                       # plain-text fallback (search/summary)
+    html: Optional[str] = None      # rich-text body from the editor
 
 
 # --------------------------- helpers ---------------------------
@@ -253,6 +255,26 @@ async def create_review(body: IntakeBody, user: dict = Depends(require_module(MO
     await audit(db, review["id"], "created", user.get("email", "?"),
                 f"Intake: {review['review_number']} — {review['title']} ({review['review_type']})")
     return {k: v for k, v in review.items() if k != "_id"}
+
+
+@router.get("/v1/security-reviews/assignable-users")
+async def assignable_users(user: dict = Depends(require_module(MODULE_KEY))):
+    """Users who can be assigned a review -- anyone with view access to this
+    module (admins always qualify)."""
+    from rbac import access_map_for_role
+    users = await db.users.find({}, {"_id": 0, "id": 1, "email": 1, "name": 1, "role": 1}).to_list(500)
+    out = []
+    for u in users:
+        if u.get("role") == "admin":
+            out.append(u)
+            continue
+        try:
+            granted = (await access_map_for_role(db, u.get("role"))).get(MODULE_KEY)
+        except Exception:
+            granted = None
+        if granted:
+            out.append(u)
+    return {"items": sorted(out, key=lambda x: x.get("email") or "")}
 
 
 @router.get("/v1/security-reviews/dashboard")
@@ -746,8 +768,20 @@ async def add_note(review_id: str, body: NoteBody,
                     user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
     await _get_review_or_404(review_id)
     await _reject_if_closed(review_id)
+    # Item 21: the Notes tab was double-submitting (Enter + click, or a repeated
+    # keypress) and creating two identical rows. The frontend now guards with an
+    # in-flight ref, and this is the server-side backstop: an identical note from
+    # the same author within 5 seconds is treated as the same submission and
+    # returns the existing row instead of inserting a duplicate.
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    cutoff = (_dt.now(_tz.utc) - _td(seconds=5)).isoformat()
+    dup = await db.security_review_notes.find_one(
+        {"review_id": review_id, "author": user.get("email"), "text": body.text,
+         "at": {"$gte": cutoff}}, {"_id": 0})
+    if dup:
+        return dup
     doc = {"id": str(uuid.uuid4()), "review_id": review_id, "text": body.text,
-           "author": user.get("email"), "at": now_iso()}
+           "html": body.html, "author": user.get("email"), "at": now_iso()}
     await db.security_review_notes.insert_one(dict(doc))
     return doc
 
@@ -757,6 +791,24 @@ async def review_audit_log(review_id: str, user: dict = Depends(require_module(M
     await _get_review_or_404(review_id)
     items = await db.security_review_audit.find({"review_id": review_id}, {"_id": 0}).sort("at", -1).to_list(1000)
     return {"items": items}
+
+
+@router.get("/v1/security-reviews/{review_id}/export.docx")
+async def export_review_docx(review_id: str, user: dict = Depends(require_module(MODULE_KEY))):
+    """Item 39 -- editable Word export alongside the existing print/PDF path.
+    Uses a dedicated style-mapped generator (security_review_docx.py) rather
+    than an HTML conversion, so the result stays editable and imports cleanly
+    into Google Docs."""
+    from fastapi.responses import Response
+    from security_review_docx import build_review_docx
+    data = await report_data(review_id, user)
+    blob = build_review_docx(data)
+    review_number = (data["review"].get("review_number") or "security-review")
+    return Response(
+        content=blob,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{review_number}-report.docx"'},
+    )
 
 
 @router.get("/v1/security-reviews/{review_id}/prior-reviews")
@@ -789,6 +841,13 @@ async def report_data(review_id: str, user: dict = Depends(require_module(MODULE
         "review": r, "findings": findings, "responses": responses,
         "questionnaire": template, "steps": steps, "interviews": interviews,
         "executive_summary": summary,
+        # Item 23: the 5x5 matrix points, so the report can draw the same grid the
+        # Risk Scoring tab shows instead of the reader having to open the app.
+        "matrix_points": _matrix_points(r),
+        # Item 27: the compensating controls documented during scoring are the
+        # whole reason residual < inherent -- they belong next to the verdict.
+        "compensating_controls": r.get("compensating_controls") or "",
+        "recommendation": r.get("recommendation"),
         "generated_at": now_iso(),
     }
 
@@ -833,8 +892,34 @@ class ExecSummaryBody(BaseModel):
     text: str
 
 
+class RecommendationBody(BaseModel):
+    """Item 24 -- the ANALYST's proposed path, deliberately separate from the
+    Decision (what leadership actually decided). Both render in the report."""
+    what_was_reviewed: str = ""
+    why: str = ""
+    recommendation: str = ""          # e.g. "Approve with conditions"
+    rationale: str = ""
+
+
 class AcknowledgeBody(BaseModel):
     acknowledged: bool = True
+
+
+class ReassignBody(BaseModel):
+    assignee: str
+
+
+class ShareGrantBody(BaseModel):
+    """Item 26 -- access-controlled sharing. Either an external email (recipient
+    must enter a one-time verification code sent to that address) or an existing
+    platform user (must be logged in as them). Anyone-with-the-link is gone."""
+    email: Optional[str] = None
+    platform_user_email: Optional[str] = None
+    expires_days: int = 30
+
+
+class ShareVerifyBody(BaseModel):
+    code: str
 
 
 class PlaybookVersionBody(BaseModel):
@@ -959,49 +1044,232 @@ async def set_exec_summary(review_id: str, body: ExecSummaryBody,
     return {"ok": True}
 
 
-@router.post("/v1/security-reviews/{review_id}/share-link")
-async def create_share_link(review_id: str, body: ShareLinkBody,
-                             user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
-    """Read-only tokenized report link with expiration -- stakeholders view the
-    report without an app account. The token grants access to the REPORT only
-    (never working notes)."""
+@router.post("/v1/security-reviews/{review_id}/share")
+async def create_share_grant(review_id: str, body: ShareGrantBody,
+                              user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    """Item 26 -- ACCESS-CONTROLLED sharing, replacing the previous
+    anyone-with-the-link token. Two mutually-exclusive modes:
+
+      email=...                a one-time 6-digit verification code is emailed to
+                               that address; the recipient must enter it to open
+                               the report. The link alone is useless.
+      platform_user_email=...  grants an existing platform user access; they must
+                               be logged in as that user to view it.
+
+    Either way the grant is scoped to a named recipient, expires, and every view
+    is recorded on the grant (who/when/how many)."""
     await _get_review_or_404(review_id)
+    if bool(body.email) == bool(body.platform_user_email):
+        raise HTTPException(400, "Provide exactly one of email (external, code-verified) "
+                                  "or platform_user_email (existing platform user)")
     from datetime import datetime as _dt, timezone as _tz, timedelta as _td
     import secrets
     token = secrets.token_urlsafe(24)
     expires = (_dt.now(_tz.utc) + _td(days=max(1, min(body.expires_days, 365)))).isoformat()
-    await db.security_review_share_tokens.insert_one({
+
+    grant = {
         "id": str(uuid.uuid4()), "token": token, "review_id": review_id,
+        "mode": "email_code" if body.email else "platform_user",
+        "recipient": (body.email or body.platform_user_email or "").strip().lower(),
+        "code": None, "verified": False, "view_count": 0, "last_viewed_at": None,
+        "revoked": False,
         "created_by": user.get("email"), "created_at": now_iso(), "expires_at": expires,
-    })
-    await audit(db, review_id, "share_link_created", user.get("email", "?"), f"expires {expires[:10]}")
-    return {"token": token, "expires_at": expires, "url": f"/shared-report/{token}"}
+    }
+    emailed = False
+    if body.email:
+        code = f"{secrets.randbelow(1000000):06d}"
+        grant["code"] = code
+        review = await _get_review_or_404(review_id)
+        try:
+            from notifier import send_email_with_attachment
+            await send_email_with_attachment(
+                grant["recipient"],
+                f"Security Review {review.get('review_number')} — access code",
+                f"You've been given access to the security review report for "
+                f"\"{review.get('title')}\".\n\n"
+                f"Your one-time access code is: {code}\n\n"
+                f"This code and link expire on {expires[:10]}.",
+                [],
+            )
+            emailed = True
+        except Exception:
+            # SMTP not configured / unreachable -- the grant is still valid, the
+            # sharer just has to hand the code over another way. Never silently
+            # fall back to an unauthenticated link.
+            emailed = False
+    if body.platform_user_email:
+        target = await db.users.find_one({"email": grant["recipient"]}, {"_id": 0, "id": 1})
+        if not target:
+            raise HTTPException(404, f"No platform user with email {grant['recipient']}")
+
+    await db.security_review_share_grants.insert_one(dict(grant))
+    await audit(db, review_id, "share_granted", user.get("email", "?"),
+                f"{grant['mode']} → {grant['recipient']}, expires {expires[:10]}")
+    return {"token": token, "mode": grant["mode"], "recipient": grant["recipient"],
+            "expires_at": expires, "url": f"/shared-report/{token}",
+            "code_emailed": emailed,
+            "code": None if emailed else grant["code"]}
 
 
-@router.get("/v1/shared/security-review/{token}")
-async def shared_report(token: str):
-    """PUBLIC (no auth): resolves a share token to report data. Working notes are
-    structurally excluded -- this reuses report-data's shape minus anything
-    internal."""
-    doc = await db.security_review_share_tokens.find_one({"token": token}, {"_id": 0})
-    if not doc or doc["expires_at"] < now_iso():
-        raise HTTPException(404, "This report link is invalid or has expired.")
-    r = await db.security_reviews.find_one({"id": doc["review_id"]}, {"_id": 0})
+@router.get("/v1/security-reviews/{review_id}/shares")
+async def list_share_grants(review_id: str, user: dict = Depends(require_module(MODULE_KEY))):
+    await _get_review_or_404(review_id)
+    items = await db.security_review_share_grants.find(
+        {"review_id": review_id}, {"_id": 0, "code": 0, "token": 0}).sort("created_at", -1).to_list(100)
+    return {"items": items}
+
+
+@router.delete("/v1/security-reviews/{review_id}/shares/{grant_id}")
+async def revoke_share_grant(review_id: str, grant_id: str,
+                              user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    result = await db.security_review_share_grants.update_one(
+        {"id": grant_id, "review_id": review_id}, {"$set": {"revoked": True}})
+    if result.matched_count == 0:
+        raise HTTPException(404, "Share grant not found")
+    await audit(db, review_id, "share_revoked", user.get("email", "?"), grant_id)
+    return {"ok": True}
+
+
+async def _resolve_grant(token: str) -> dict:
+    grant = await db.security_review_share_grants.find_one({"token": token}, {"_id": 0})
+    if not grant or grant.get("revoked") or grant["expires_at"] < now_iso():
+        raise HTTPException(404, "This report link is invalid, revoked, or has expired.")
+    return grant
+
+
+def _matrix_points(r: dict) -> list:
+    """The inherent/residual/not-adopting positions for the report's 5x5 grid."""
+    out = []
+    for key, label in (("inherent_risk", "Inherent"), ("residual_risk", "Residual"),
+                        ("risk_of_not_adopting", "Not adopting")):
+        rating = r.get(key)
+        if rating and rating.get("likelihood") and rating.get("max_impact"):
+            out.append({"label": label, "likelihood": rating["likelihood"],
+                        "impact": rating["max_impact"], "band": rating.get("band")})
+    return out
+
+
+async def _build_shared_payload(review_id: str) -> dict:
+    r = await db.security_reviews.find_one({"id": review_id}, {"_id": 0})
     if not r:
         raise HTTPException(404, "Review not found")
     findings = await db.security_review_findings.find(
-        {"review_id": r["id"], "status": {"$ne": "draft"}}, {"_id": 0}).to_list(200)
+        {"review_id": review_id, "status": {"$ne": "draft"}}, {"_id": 0}).to_list(200)
     sev_rank = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
     findings.sort(key=lambda f: sev_rank.get(f.get("severity"), 4))
-    responses = await db.security_review_responses.find({"review_id": r["id"]}, {"_id": 0}).to_list(200)
+    responses = await db.security_review_responses.find({"review_id": review_id}, {"_id": 0}).to_list(300)
     template = None
     if r.get("template_version_id"):
         template = await db.review_questionnaires.find_one({"id": r["template_version_id"]}, {"_id": 0})
-    interviews = await db.security_review_interviews.find({"review_id": r["id"]}, {"_id": 0}).to_list(100)
+    interviews = await db.security_review_interviews.find({"review_id": review_id}, {"_id": 0}).to_list(100)
     summary = r.get("executive_summary") or draft_executive_summary(r, findings)
     return {"review": r, "findings": findings, "responses": responses, "questionnaire": template,
-            "interviews": interviews, "executive_summary": summary, "generated_at": now_iso(),
-            "shared": True}
+            "interviews": interviews, "executive_summary": summary,
+            "matrix_points": _matrix_points(r),
+            "compensating_controls": r.get("compensating_controls") or "",
+            "recommendation": r.get("recommendation"),
+            "generated_at": now_iso(), "shared": True}
+
+
+@router.get("/v1/shared/security-review/{token}/meta")
+async def shared_report_meta(token: str):
+    """PUBLIC: what kind of verification this link needs, WITHOUT leaking any
+    report content. The viewer page calls this first to know which gate to show."""
+    grant = await _resolve_grant(token)
+    return {"mode": grant["mode"], "recipient_hint": _mask_email(grant["recipient"]),
+            "requires_code": grant["mode"] == "email_code" and not grant.get("verified")}
+
+
+def _mask_email(email: str) -> str:
+    if "@" not in email:
+        return "***"
+    local, domain = email.split("@", 1)
+    return f"{local[:2]}{'*' * max(1, len(local) - 2)}@{domain}"
+
+
+@router.post("/v1/shared/security-review/{token}/verify")
+async def shared_report_verify(token: str, body: ShareVerifyBody):
+    """PUBLIC: exchange the emailed one-time code for report access. Wrong codes
+    are counted and the grant locks after 5 failures."""
+    grant = await _resolve_grant(token)
+    if grant["mode"] != "email_code":
+        raise HTTPException(400, "This link doesn't use a verification code")
+    if (grant.get("failed_attempts") or 0) >= 5:
+        raise HTTPException(429, "Too many incorrect codes -- ask the sender for a new link.")
+    if body.code.strip() != grant.get("code"):
+        await db.security_review_share_grants.update_one(
+            {"id": grant["id"]}, {"$inc": {"failed_attempts": 1}})
+        raise HTTPException(403, "Incorrect code")
+    await db.security_review_share_grants.update_one(
+        {"id": grant["id"]}, {"$set": {"verified": True, "verified_at": now_iso()},
+                               "$unset": {"failed_attempts": ""}})
+    payload = await _build_shared_payload(grant["review_id"])
+    await db.security_review_share_grants.update_one(
+        {"id": grant["id"]}, {"$inc": {"view_count": 1}, "$set": {"last_viewed_at": now_iso()}})
+    await audit(db, grant["review_id"], "shared_report_viewed", grant["recipient"], "code verified")
+    return payload
+
+
+@router.get("/v1/shared/security-review/{token}")
+async def shared_report(token: str, user: Optional[dict] = Depends(auth_utils.get_current_user_optional)):
+    """Resolves a share grant to report data. Access requires EITHER a prior
+    successful code verification (external recipients) OR being logged in as the
+    granted platform user. There is no anonymous path."""
+    grant = await _resolve_grant(token)
+    if grant["mode"] == "platform_user":
+        if not user or (user.get("email") or "").lower() != grant["recipient"]:
+            raise HTTPException(403, "This report was shared with a specific platform user. "
+                                      "Sign in as that user to view it.")
+    else:
+        if not grant.get("verified"):
+            raise HTTPException(401, "Enter the access code that was emailed to you.")
+    payload = await _build_shared_payload(grant["review_id"])
+    await db.security_review_share_grants.update_one(
+        {"id": grant["id"]}, {"$inc": {"view_count": 1}, "$set": {"last_viewed_at": now_iso()}})
+    return payload
+
+
+@router.put("/v1/security-reviews/{review_id}/recommendation")
+async def set_recommendation(review_id: str, body: RecommendationBody,
+                              user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    """Item 24 -- the analyst's Executive Summary / Recommendation, kept separate
+    from the Decision. Recommendation = what the reviewer proposes; Decision =
+    what leadership actually chose. The report renders both, side by side, so a
+    decision that diverges from the recommendation is visible rather than
+    quietly overwritten."""
+    await _get_review_or_404(review_id)
+    await _reject_if_closed(review_id)
+    rec = {
+        "what_was_reviewed": body.what_was_reviewed, "why": body.why,
+        "recommendation": body.recommendation, "rationale": body.rationale,
+        "authored_by": user.get("email"), "authored_at": now_iso(),
+    }
+    await db.security_reviews.update_one({"id": review_id}, {"$set": {
+        "recommendation": rec, "updated_at": now_iso()}})
+    await audit(db, review_id, "recommendation_set", user.get("email", "?"),
+                body.recommendation[:120])
+    return rec
+
+
+@router.post("/v1/security-reviews/{review_id}/reassign")
+async def reassign_reviewer(review_id: str, body: ReassignBody,
+                             user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    """Item 25 -- reassign the reviewer. Its own audited action rather than a
+    silent field edit, since 'who owns this review' is exactly the kind of thing
+    an auditor asks about later."""
+    r = await _get_review_or_404(review_id)
+    await _reject_if_closed(review_id)
+    new_assignee = (body.assignee or "").strip().lower()
+    if not new_assignee:
+        raise HTTPException(400, "assignee is required")
+    target = await db.users.find_one({"email": new_assignee}, {"_id": 0, "id": 1, "name": 1})
+    if not target:
+        raise HTTPException(404, f"No platform user with email {new_assignee}")
+    await db.security_reviews.update_one({"id": review_id}, {"$set": {
+        "assignee": new_assignee, "updated_at": now_iso()}})
+    await audit(db, review_id, "reviewer_reassigned", user.get("email", "?"),
+                f"{r.get('assignee') or 'unassigned'} → {new_assignee}")
+    return {"ok": True, "assignee": new_assignee}
 
 
 @router.get("/v1/security-reviews/{review_id}/suggested-risk")

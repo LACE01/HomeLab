@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -8,6 +8,7 @@ import {
   ArrowLeft, CaretDown, CaretRight, CheckCircle, Printer, ArrowRight,
   Warning, ClipboardText, Scales, ListChecks, Gavel, NotePencil, ClockCounterClockwise,
   Users, ShieldCheck, Copy, ArrowsClockwise, LinkSimple, Sparkle, PaperPlaneTilt,
+  TextB, TextItalic, TextUnderline, Code, Highlighter, FileDoc, UserSwitch, Trash, X,
 } from "@phosphor-icons/react";
 
 const RISK_COLOR = { Low: "blue", Medium: "amber", High: "orange", Critical: "red" };
@@ -24,6 +25,7 @@ const TABS = [
   { id: "questionnaire", label: "Questionnaire", icon: ClipboardText },
   { id: "risk", label: "Risk Scoring", icon: Scales },
   { id: "findings", label: "Findings", icon: Warning },
+  { id: "recommendation", label: "Recommendation", icon: NotePencil },
   { id: "decision", label: "Decision", icon: Gavel },
   { id: "interviews", label: "Interviews", icon: Users },
   { id: "checks", label: "External Checks", icon: ShieldCheck },
@@ -86,6 +88,7 @@ export default function SecurityReviewDetail() {
               <ArrowsClockwise size={13}/> Re-validate
             </button>
           )}
+          <ReassignControl id={id} review={review} closed={closed} onChange={load}/>
           <select value={review.status} onChange={e => setStatus(e.target.value)} disabled={closed}
             className="h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-200 disabled:opacity-60">
             {meta.statuses.map(s => <option key={s} value={s}>{s}</option>)}
@@ -167,6 +170,7 @@ export default function SecurityReviewDetail() {
       {tab === "questionnaire" && <QuestionnaireTab id={id} questionnaire={questionnaire} responses={responses} review={review} closed={closed} onChange={load}/>}
       {tab === "risk" && <RiskTab id={id} review={review} meta={meta} closed={closed} onChange={load}/>}
       {tab === "findings" && <FindingsTab id={id} findings={findings} closed={closed} onChange={load}/>}
+      {tab === "recommendation" && <RecommendationTab id={id} review={review} closed={closed} onChange={load}/>}
       {tab === "decision" && <DecisionTab id={id} review={review} meta={meta} closed={closed} onChange={load}/>}
       {tab === "interviews" && <InterviewsTab id={id} closed={closed}/>}
       {tab === "checks" && <ExternalChecksTab id={id} review={review} closed={closed} onChange={load}/>}
@@ -967,6 +971,130 @@ function FindingsTab({ id, findings, closed, onChange }) {
   );
 }
 
+function ReassignControl({ id, review, closed, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [users, setUsers] = useState([]);
+  const [pick, setPick] = useState("");
+
+  const openPicker = async () => {
+    setOpen(true);
+    try {
+      const r = await api.get("/v1/security-reviews/assignable-users");
+      setUsers(r.data.items || []);
+    } catch { setUsers([]); }
+  };
+
+  const save = async () => {
+    if (!pick) return;
+    try {
+      await api.post(`/v1/security-reviews/${id}/reassign`, { assignee: pick });
+      toast.success(`Reassigned to ${pick}`);
+      setOpen(false); onChange();
+    } catch (e) { toast.error(e.response?.data?.detail || "Reassign failed"); }
+  };
+
+  if (closed) return null;
+  return (
+    <>
+      <button onClick={openPicker} title={`Reviewer: ${review.assignee || "unassigned"}`}
+        className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-blue-500/40 hover:text-blue-300 rounded inline-flex items-center gap-1.5 text-slate-300">
+        <UserSwitch size={13}/> {review.assignee ? review.assignee.split("@")[0] : "Assign"}
+      </button>
+      {open && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setOpen(false)}>
+          <div className="bg-[#0D1117] border border-[#30363D] rounded-md w-full max-w-sm" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#30363D]">
+              <div className="text-[14px] text-slate-100 font-medium">Reassign reviewer</div>
+              <button onClick={() => setOpen(false)} className="text-slate-500 hover:text-slate-200"><X size={18}/></button>
+            </div>
+            <div className="p-5 space-y-3">
+              <div className="text-[11.5px] text-slate-500">Currently: {review.assignee || "unassigned"}</div>
+              <select value={pick} onChange={e => setPick(e.target.value)}
+                className="w-full h-9 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12.5px] text-slate-200">
+                <option value="">Select a reviewer…</option>
+                {users.map(u => <option key={u.id} value={u.email}>{u.name ? `${u.name} (${u.email})` : u.email}</option>)}
+              </select>
+              <div className="text-[10.5px] text-slate-600">Only users whose role has access to Security Reviews are listed. The change is recorded in the audit log.</div>
+            </div>
+            <div className="flex justify-end gap-2 px-5 py-3.5 border-t border-[#30363D]">
+              <button onClick={() => setOpen(false)} className="h-8 px-3 text-[12px] border border-[#30363D] rounded text-slate-300">Cancel</button>
+              <button onClick={save} disabled={!pick} className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-white rounded">Reassign</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function RecommendationTab({ id, review, closed, onChange }) {
+  const rec = review.recommendation || {};
+  const [form, setForm] = useState({
+    what_was_reviewed: rec.what_was_reviewed || "",
+    why: rec.why || "",
+    recommendation: rec.recommendation || "",
+    rationale: rec.rationale || "",
+  });
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.put(`/v1/security-reviews/${id}/recommendation`, form);
+      toast.success("Recommendation saved");
+      onChange();
+    } catch (e) { toast.error(e.response?.data?.detail || "Save failed"); }
+    finally { setSaving(false); }
+  };
+
+  const L = ({ children }) => <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500 mb-1">{children}</div>;
+  const ta = "w-full px-3 py-2 bg-[#161B22] border border-[#30363D] rounded text-[12.5px] text-slate-100 disabled:opacity-60";
+
+  return (
+    <div className="max-w-2xl space-y-3">
+      <div className="border border-blue-500/30 bg-blue-500/5 rounded-md px-3 py-2.5 text-[12px] text-blue-200">
+        This is the <strong>reviewer's proposed path</strong> — deliberately separate from the Decision tab, which records
+        what leadership actually chose. Both appear in the report, so a decision that diverges from the recommendation
+        stays visible instead of being overwritten.
+      </div>
+      <div>
+        <L>What was reviewed</L>
+        <textarea rows={2} disabled={closed} value={form.what_was_reviewed}
+          onChange={e => setForm({ ...form, what_was_reviewed: e.target.value })}
+          placeholder="The product/change under review, in one or two plain sentences." className={ta}/>
+      </div>
+      <div>
+        <L>Why (what problem prompted this)</L>
+        <textarea rows={2} disabled={closed} value={form.why}
+          onChange={e => setForm({ ...form, why: e.target.value })}
+          placeholder="The business driver — why this came to review at all." className={ta}/>
+      </div>
+      <div>
+        <L>Recommendation</L>
+        <input disabled={closed} value={form.recommendation}
+          onChange={e => setForm({ ...form, recommendation: e.target.value })}
+          placeholder="e.g. Approve with conditions / Do not adopt / Defer pending vendor response"
+          className="w-full h-9 px-3 bg-[#161B22] border border-[#30363D] rounded text-[12.5px] text-slate-100 disabled:opacity-60"/>
+      </div>
+      <div>
+        <L>Rationale</L>
+        <textarea rows={4} disabled={closed} value={form.rationale}
+          onChange={e => setForm({ ...form, rationale: e.target.value })}
+          placeholder="Why this is the right call given the residual risk and required controls." className={ta}/>
+      </div>
+      {rec.authored_by && (
+        <div className="text-[10.5px] text-slate-600">Last saved by {rec.authored_by} on {new Date(rec.authored_at).toLocaleString()}</div>
+      )}
+      {!closed && (
+        <button onClick={save} disabled={saving}
+          className="h-9 px-4 text-[12.5px] bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-white rounded">
+          {saving ? "Saving…" : "Save recommendation"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 /* ------------------------------ Decision ------------------------------ */
 
 function DecisionTab({ id, review, meta, closed, onChange }) {
@@ -1045,31 +1173,121 @@ function DecisionTab({ id, review, meta, closed, onChange }) {
 
 /* ------------------------------ Notes / Audit ------------------------------ */
 
+function RichTextEditor({ value, onChange, placeholder, minHeight = 90 }) {
+  // Item 22 -- a real rich-text editor (bold/italic/underline/highlight, font
+  // size, code block, lists) without pulling in a heavyweight dependency:
+  // contentEditable + execCommand, which every browser we target still
+  // supports. Emits HTML; the caller also keeps a plain-text copy for search.
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (ref.current && value !== undefined && ref.current.innerHTML !== value) {
+      ref.current.innerHTML = value || "";
+    }
+    // eslint-disable-next-line
+  }, []);
+
+  const exec = (cmd, arg) => {
+    document.execCommand(cmd, false, arg);
+    ref.current?.focus();
+    emit();
+  };
+  const emit = () => {
+    if (!ref.current) return;
+    onChange({ html: ref.current.innerHTML, text: ref.current.innerText });
+  };
+  const codeBlock = () => {
+    document.execCommand("formatBlock", false, "pre");
+    ref.current?.focus();
+    emit();
+  };
+
+  const Btn = ({ onClick, title, children }) => (
+    <button type="button" onMouseDown={e => e.preventDefault()} onClick={onClick} title={title}
+      className="h-7 w-7 inline-flex items-center justify-center border border-[#30363D] rounded text-slate-300 hover:border-slate-500 hover:text-slate-100">
+      {children}
+    </button>
+  );
+
+  return (
+    <div className="border border-[#30363D] rounded bg-[#161B22]">
+      <div className="flex items-center gap-1 px-2 py-1.5 border-b border-[#30363D] flex-wrap">
+        <Btn onClick={() => exec("bold")} title="Bold (Ctrl+B)"><TextB size={13}/></Btn>
+        <Btn onClick={() => exec("italic")} title="Italic (Ctrl+I)"><TextItalic size={13}/></Btn>
+        <Btn onClick={() => exec("underline")} title="Underline (Ctrl+U)"><TextUnderline size={13}/></Btn>
+        <Btn onClick={() => exec("hiliteColor", "#facc15")} title="Highlight"><Highlighter size={13}/></Btn>
+        <Btn onClick={codeBlock} title="Code block"><Code size={13}/></Btn>
+        <span className="w-px h-5 bg-[#30363D] mx-1"/>
+        <select onChange={e => { exec("fontSize", e.target.value); e.target.value = ""; }} defaultValue=""
+          title="Font size"
+          className="h-7 px-1 bg-[#0D1117] border border-[#30363D] rounded text-[11px] text-slate-300">
+          <option value="" disabled>Size</option>
+          <option value="1">Small</option>
+          <option value="3">Normal</option>
+          <option value="5">Large</option>
+          <option value="7">Huge</option>
+        </select>
+        <Btn onClick={() => exec("insertUnorderedList")} title="Bullet list">•</Btn>
+        <Btn onClick={() => exec("removeFormat")} title="Clear formatting">✕</Btn>
+      </div>
+      <div ref={ref} contentEditable={true} suppressContentEditableWarning
+        onInput={emit} data-placeholder={placeholder}
+        style={{ minHeight }}
+        className="px-3 py-2 text-[12.5px] text-slate-100 outline-none sr-richtext"/>
+    </div>
+  );
+}
+
 function NotesTab({ id, closed }) {
   const [items, setItems] = useState([]);
-  const [text, setText] = useState("");
+  const [draft, setDraft] = useState({ html: "", text: "" });
+  const [saving, setSaving] = useState(false);
+  const inFlight = useRef(false);
+  const editorKey = useRef(0);
+
   const load = () => api.get(`/v1/security-reviews/${id}/notes`).then(r => setItems(r.data.items || []));
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [id]);
 
   const add = async () => {
-    if (!text.trim()) return;
-    await api.post(`/v1/security-reviews/${id}/notes`, { text });
-    setText(""); load();
+    // Item 21 -- the double-submit fix. A ref guard (not state) because state
+    // updates are async and two rapid events could both read the stale `false`
+    // before either render lands. The backend also de-dupes identical notes
+    // within 5s as a backstop.
+    if (inFlight.current) return;
+    if (!draft.text.trim()) return;
+    inFlight.current = true;
+    setSaving(true);
+    try {
+      await api.post(`/v1/security-reviews/${id}/notes`, { text: draft.text, html: draft.html });
+      setDraft({ html: "", text: "" });
+      editorKey.current += 1;
+      await load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to add note");
+    } finally {
+      inFlight.current = false;
+      setSaving(false);
+    }
   };
 
   return (
     <div className="max-w-2xl space-y-3">
       <div className="text-[11px] text-slate-500">Internal working notes — never rendered into shared reports.</div>
       {!closed && (
-        <div className="flex gap-2">
-          <input value={text} onChange={e => setText(e.target.value)} onKeyDown={e => e.key === "Enter" && add()}
-            placeholder="Add a note…" className="flex-1 h-9 px-3 bg-[#161B22] border border-[#30363D] rounded text-[12.5px] text-slate-100"/>
-          <button onClick={add} className="h-9 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded">Add</button>
+        <div className="space-y-2">
+          <RichTextEditor key={editorKey.current} value={draft.html} onChange={setDraft}
+            placeholder="Add a note…"/>
+          <button onClick={add} disabled={saving || !draft.text.trim()}
+            className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-white rounded">
+            {saving ? "Adding…" : "Add note"}
+          </button>
         </div>
       )}
       {items.map(n => (
         <div key={n.id} className="border border-[#30363D] bg-[#0D1117] rounded-md px-4 py-2.5">
-          <div className="text-[12.5px] text-slate-200">{n.text}</div>
+          {n.html
+            ? <div className="text-[12.5px] text-slate-200 sr-richtext" dangerouslySetInnerHTML={{ __html: n.html }}/>
+            : <div className="text-[12.5px] text-slate-200 whitespace-pre-wrap">{n.text}</div>}
           <div className="text-[10.5px] text-slate-500 mt-1">{n.author} · {new Date(n.at).toLocaleString()}</div>
         </div>
       ))}
@@ -1096,6 +1314,157 @@ function AuditTab({ id }) {
 
 /* ------------------------------ Report ------------------------------ */
 
+export function PrintMatrix({ points }) {
+  // Item 23 -- the same 5x5 the Risk Scoring tab draws, rendered into the report
+  // so a reader doesn't have to open the app to see where the ratings landed.
+  const COLORS = { Low: "#3b82f6", Medium: "#f59e0b", High: "#f97316", Critical: "#ef4444" };
+  const cellFill = (l, i) => {
+    const s = l * i;
+    if (s <= 4) return "#dbeafe";
+    if (s <= 9) return "#fef3c7";
+    if (s <= 16) return "#ffedd5";
+    return "#fee2e2";
+  };
+  return (
+    <div className="mb-4">
+      <div className="text-[13px] font-semibold mb-1.5">Risk matrix (likelihood × impact)</div>
+      <div className="inline-block">
+        <table className="border-collapse">
+          <tbody>
+            {[5, 4, 3, 2, 1].map(l => (
+              <tr key={l}>
+                <td className="text-[9px] text-slate-500 pr-1 text-right">{l}</td>
+                {[1, 2, 3, 4, 5].map(i => {
+                  const here = points.filter(p => p.likelihood === l && p.impact === i);
+                  return (
+                    <td key={i} style={{ background: cellFill(l, i) }}
+                      className="w-14 h-9 border border-slate-300 text-center align-middle">
+                      {here.map((p, j) => (
+                        <span key={j} className="text-[8px] font-bold px-0.5"
+                          style={{ color: COLORS[p.band] || "#334155" }}>{p.label}</span>
+                      ))}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+            <tr>
+              <td/>
+              {[1, 2, 3, 4, 5].map(i => <td key={i} className="text-[9px] text-slate-500 text-center">{i}</td>)}
+            </tr>
+          </tbody>
+        </table>
+        <div className="text-[9px] text-slate-500 mt-0.5">Impact →, likelihood ↑ ·{" "}
+          {points.map(p => `${p.label} L${p.likelihood}×I${p.impact} (${p.band})`).join(" · ")}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ShareDialog({ id, review, onClose }) {
+  const [mode, setMode] = useState("email");
+  const [email, setEmail] = useState("");
+  const [userEmail, setUserEmail] = useState("");
+  const [users, setUsers] = useState([]);
+  const [grants, setGrants] = useState([]);
+  const [result, setResult] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const loadGrants = () => api.get(`/v1/security-reviews/${id}/shares`).then(r => setGrants(r.data.items || []));
+  useEffect(() => {
+    loadGrants();
+    api.get("/v1/security-reviews/assignable-users").then(r => setUsers(r.data.items || [])).catch(() => {});
+    // eslint-disable-next-line
+  }, [id]);
+
+  const share = async () => {
+    setBusy(true);
+    try {
+      const body = mode === "email" ? { email, expires_days: 30 } : { platform_user_email: userEmail, expires_days: 30 };
+      const r = await api.post(`/v1/security-reviews/${id}/share`, body);
+      setResult({ ...r.data, url: `${window.location.origin}/shared-report/${r.data.token}` });
+      loadGrants();
+      toast.success(mode === "email"
+        ? (r.data.code_emailed ? "Access code emailed to the recipient" : "Grant created — email wasn't configured, hand the code over yourself")
+        : "Shared with that platform user");
+    } catch (e) { toast.error(e.response?.data?.detail || "Share failed"); }
+    finally { setBusy(false); }
+  };
+
+  const revoke = async (g) => {
+    await api.delete(`/v1/security-reviews/${id}/shares/${g.id}`);
+    loadGrants();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60] p-4 print:hidden" onClick={onClose}>
+      <div className="bg-[#0D1117] border border-[#30363D] rounded-md w-full max-w-lg text-slate-200" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#30363D]">
+          <div className="text-[14px] font-medium">Share report — {review.review_number}</div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-200"><X size={18}/></button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div className="border border-amber-500/30 bg-amber-500/5 rounded px-3 py-2 text-[11.5px] text-amber-200">
+            Links are no longer viewable by anyone who has them. Every share is scoped to one named recipient,
+            expires, and records each view.
+          </div>
+          <div className="flex gap-2">
+            <button onClick={() => setMode("email")}
+              className={`flex-1 border rounded p-2.5 text-left ${mode === "email" ? "border-blue-500/50 bg-blue-500/10" : "border-[#30363D]"}`}>
+              <div className="text-[12.5px]">External email</div>
+              <div className="text-[10.5px] text-slate-500 mt-0.5">One-time code emailed to them; required to open the report.</div>
+            </button>
+            <button onClick={() => setMode("user")}
+              className={`flex-1 border rounded p-2.5 text-left ${mode === "user" ? "border-blue-500/50 bg-blue-500/10" : "border-[#30363D]"}`}>
+              <div className="text-[12.5px]">Platform user</div>
+              <div className="text-[10.5px] text-slate-500 mt-0.5">Must be signed in as that user to view.</div>
+            </button>
+          </div>
+          {mode === "email" ? (
+            <input value={email} onChange={e => setEmail(e.target.value)} placeholder="recipient@example.com"
+              className="w-full h-9 px-3 bg-[#161B22] border border-[#30363D] rounded text-[12.5px]"/>
+          ) : (
+            <select value={userEmail} onChange={e => setUserEmail(e.target.value)}
+              className="w-full h-9 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12.5px]">
+              <option value="">Select a user…</option>
+              {users.map(u => <option key={u.id} value={u.email}>{u.name ? `${u.name} (${u.email})` : u.email}</option>)}
+            </select>
+          )}
+          <button onClick={share} disabled={busy || (mode === "email" ? !email : !userEmail)}
+            className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-white rounded">
+            {busy ? "Sharing…" : "Create share"}
+          </button>
+          {result && (
+            <div className="border border-[#30363D] rounded p-3 space-y-1.5">
+              <div className="text-[11.5px] text-slate-300 break-all">Link: {result.url}</div>
+              <button onClick={() => { navigator.clipboard.writeText(result.url); toast.success("Copied"); }}
+                className="h-7 px-2 text-[11px] border border-[#30363D] rounded inline-flex items-center gap-1"><Copy size={11}/> Copy link</button>
+              {result.code && (
+                <div className="text-[11.5px] text-amber-300">Access code (email wasn't sent — share this separately): <span className="font-mono">{result.code}</span></div>
+              )}
+            </div>
+          )}
+          {grants.length > 0 && (
+            <div>
+              <div className="text-[10.5px] uppercase tracking-wider font-mono text-slate-500 mb-1.5">Active shares</div>
+              {grants.map(g => (
+                <div key={g.id} className="flex items-center gap-2 py-1 text-[11.5px]">
+                  <span className={g.revoked ? "text-slate-600 line-through" : "text-slate-300"}>{g.recipient}</span>
+                  <Chip color="slate">{g.mode === "email_code" ? "code" : "platform user"}</Chip>
+                  <span className="text-slate-600">{g.view_count} view(s)</span>
+                  <span className="text-slate-600 ml-auto">exp {g.expires_at?.slice(0, 10)}</span>
+                  {!g.revoked && <button onClick={() => revoke(g)} className="text-slate-600 hover:text-red-400"><Trash size={12}/></button>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PrintRiskBadge({ label, band, colors }) {
   return (
     <div className="text-center px-7 py-4 rounded-lg border-2"
@@ -1109,19 +1478,22 @@ function PrintRiskBadge({ label, band, colors }) {
 function ReportModal({ id, onClose }) {
   const [data, setData] = useState(null);
   useEffect(() => { api.get(`/v1/security-reviews/${id}/report-data`).then(r => setData(r.data)); }, [id]);
-  const [shareUrl, setShareUrl] = useState(null);
+  const [shareOpen, setShareOpen] = useState(false);
   if (!data) return null;
-  const { review, findings, responses, questionnaire, generated_at, interviews, executive_summary } = data;
+  const { review, findings, responses, questionnaire, generated_at, interviews, executive_summary,
+          matrix_points, compensating_controls, recommendation } = data;
   const visibleFindings = findings.filter(f => f.status !== "draft");
 
-  const makeShareLink = async () => {
+  const downloadDocx = async () => {
     try {
-      const r = await api.post(`/v1/security-reviews/${id}/share-link`, { expires_days: 30 });
-      const url = `${window.location.origin}/shared-report/${r.data.token}`;
-      setShareUrl(url);
-      navigator.clipboard.writeText(url);
-      toast.success("Share link created and copied — expires in 30 days");
-    } catch (e) { toast.error(e.response?.data?.detail || "Share link failed"); }
+      const r = await api.get(`/v1/security-reviews/${id}/export.docx`, { responseType: "blob" });
+      const url = window.URL.createObjectURL(new Blob([r.data]));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${review.review_number}-report.docx`;
+      document.body.appendChild(a); a.click(); a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (e) { toast.error("Word export failed"); }
   };
   const d = review.decision;
   const conditions = findings.filter(f => f.is_condition_of_approval && f.status !== "draft");
@@ -1142,16 +1514,12 @@ function ReportModal({ id, onClose }) {
               </div>
             </div>
             <div className="print:hidden flex gap-2">
-              <button onClick={makeShareLink} className="h-8 px-3 text-[12px] border border-slate-400 text-slate-700 rounded inline-flex items-center gap-1"><LinkSimple size={13}/> Share link</button>
+              <button onClick={() => setShareOpen(true)} className="h-8 px-3 text-[12px] border border-slate-400 text-slate-700 rounded inline-flex items-center gap-1"><LinkSimple size={13}/> Share</button>
+              <button onClick={downloadDocx} className="h-8 px-3 text-[12px] border border-slate-400 text-slate-700 rounded inline-flex items-center gap-1"><FileDoc size={13}/> Word</button>
               <button onClick={() => window.print()} className="h-8 px-3 text-[12px] bg-slate-800 text-white rounded">Print / PDF</button>
             </div>
           </div>
 
-          {shareUrl && (
-            <div className="print:hidden text-[11px] text-blue-700 bg-blue-50 border border-blue-200 rounded px-3 py-2 mb-3 break-all">
-              Read-only link (copied): {shareUrl}
-            </div>
-          )}
           <div className="text-[13px] mb-4">
             <span className="font-semibold">What was reviewed:</span> {review.entity_name || review.title} — {review.title}
           </div>
@@ -1168,6 +1536,15 @@ function ReportModal({ id, onClose }) {
               </div>
             )}
           </div>
+
+          {compensating_controls && (
+            <div className="border border-slate-300 rounded p-3 mb-4 bg-slate-50">
+              <div className="text-[12px] font-semibold mb-1">Compensating controls (what moves inherent → residual)</div>
+              <div className="text-[12px] text-slate-700 whitespace-pre-wrap">{compensating_controls}</div>
+            </div>
+          )}
+
+          {matrix_points?.length > 0 && <PrintMatrix points={matrix_points}/>}
 
           {/* Plain-English summary */}
           <div className="text-[13px] leading-relaxed mb-4">
@@ -1187,6 +1564,23 @@ function ReportModal({ id, onClose }) {
                   </li>
                 ))}
               </ul>
+            </div>
+          )}
+
+          {recommendation && (recommendation.recommendation || recommendation.why || recommendation.what_was_reviewed) && (
+            <div className="border border-blue-300 bg-blue-50/60 rounded p-3.5 mb-3">
+              <div className="text-[13px] font-semibold text-blue-900">Reviewer recommendation</div>
+              {recommendation.what_was_reviewed && (
+                <div className="text-[12px] text-slate-700 mt-1"><span className="font-medium">What was reviewed:</span> {recommendation.what_was_reviewed}</div>
+              )}
+              {recommendation.why && (
+                <div className="text-[12px] text-slate-700"><span className="font-medium">Why:</span> {recommendation.why}</div>
+              )}
+              {recommendation.recommendation && (
+                <div className="text-[12.5px] text-blue-900 font-semibold mt-1.5">{recommendation.recommendation}</div>
+              )}
+              {recommendation.rationale && <div className="text-[12px] text-slate-700 mt-1">{recommendation.rationale}</div>}
+              {recommendation.authored_by && <div className="text-[10.5px] text-slate-500 mt-1">— {recommendation.authored_by}</div>}
             </div>
           )}
 
@@ -1251,6 +1645,7 @@ function ReportModal({ id, onClose }) {
           <div className="border-t border-slate-300 pt-2 text-[10.5px] text-slate-500">
             {review.review_number} · Playbook {review.playbook_key} v{review.playbook_version} · Template {review.template_key} v{review.template_version} · Generated {new Date(generated_at).toLocaleString()} · Technical appendix included above
           </div>
+          {shareOpen && <ShareDialog id={id} review={review} onClose={() => setShareOpen(false)}/>}
         </div>
       </div>
     </div>
