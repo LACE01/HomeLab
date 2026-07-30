@@ -46,8 +46,17 @@ services:
       SMTP_FROM: ${SMTP_FROM:-VulnOps <noreply@vulnops.local>}
       SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
       BACKUP_SCHEDULE_ENABLED: ${BACKUP_SCHEDULE_ENABLED:-false}
+    # Two deliberate details here:
+    #   * 127.0.0.1, not "localhost". Uvicorn binds 0.0.0.0 (IPv4). When the
+    #     container has IPv6 enabled, "localhost" can resolve to ::1 first and the
+    #     probe gets connection-refused against a perfectly healthy app -- which
+    #     shows up as `Up (unhealthy)` in `docker compose ps` and sends you
+    #     debugging the wrong thing.
+    #   * it checks the JSON body, not just the HTTP status. /api/v1/healthz
+    #     answers 200 with {"status":"error"} when it cannot reach Mongo, so a
+    #     status-only probe reports healthy while no login can possibly succeed.
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/healthz', timeout=5)"]
+      test: ["CMD", "python", "-c", "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/v1/healthz', timeout=5)); raise SystemExit(0 if d.get('status')=='ok' else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3

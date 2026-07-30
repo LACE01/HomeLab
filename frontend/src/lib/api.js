@@ -1,29 +1,42 @@
 import axios from "axios";
 
-// REACT_APP_BACKEND_URL is baked in at BUILD time, not read at runtime. If the
-// build ran without frontend/.env present, this is `undefined` and every request
-// in the app goes to the literal string "undefined/api" -- which fails as a
-// network error, with no response object. The login page then falls back to
-// "Login failed", which reads exactly like a wrong password. That is a bad
-// failure mode: an infrastructure problem disguised as a credential problem.
+// REACT_APP_BACKEND_URL is substituted in at BUILD time, not read at runtime, and
+// it has THREE meaningful states -- conflating them is a trap:
 //
-// So we detect it here and say so, rather than letting it masquerade.
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+//   ""         -> deliberate. docker-compose.yml passes an empty string so the
+//                 app calls same-origin "/api" and the frontend's nginx proxies
+//                 to the backend. This is the normal self-hosted setup and is
+//                 completely valid. An empty string is falsy, so a naive
+//                 truthiness check flags the standard deployment as broken.
+//   a URL      -> deliberate. Cross-origin backend.
+//   undefined  -> a mistake. The build ran with no value at all, so the bundle
+//                 contains the literal string "undefined" and every request goes
+//                 to "undefined/api", failing as a network error with no
+//                 response object. The login page then says "Login failed",
+//                 which reads exactly like a wrong password -- an infrastructure
+//                 problem wearing a credential problem's costume.
+//
+// Only the third state is a fault, so only the third state is reported.
+const RAW_BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
-/** True when the frontend was built without REACT_APP_BACKEND_URL. Nothing can
- *  work in this state, and no amount of retrying the password will help. */
+/** True only when the build had NO value for REACT_APP_BACKEND_URL. An empty
+ *  string is a valid same-origin configuration, not a fault. */
 export const BACKEND_URL_MISSING =
-  !BACKEND_URL || BACKEND_URL === "undefined" || BACKEND_URL === "null";
+  RAW_BACKEND_URL === undefined || RAW_BACKEND_URL === null ||
+  RAW_BACKEND_URL === "undefined" || RAW_BACKEND_URL === "null";
+
+const BACKEND_URL = BACKEND_URL_MISSING ? "" : RAW_BACKEND_URL;
 
 if (BACKEND_URL_MISSING && typeof console !== "undefined") {
   console.error(
-    "[VulnOps] REACT_APP_BACKEND_URL was not set when this frontend was built, so " +
-    "every API call will fail. Fix: ensure frontend/.env contains REACT_APP_BACKEND_URL " +
-    "and rebuild the frontend image (the value is compiled in, not read at runtime)."
+    "[VulnOps] REACT_APP_BACKEND_URL had no value when this frontend was built. " +
+    "Pass it as a build arg (docker-compose passes \"\" for same-origin) -- the value " +
+    "is compiled into the bundle, not read at runtime."
   );
 }
 
-export const API = BACKEND_URL_MISSING ? "/api" : `${BACKEND_URL}/api`;
+// Same-origin when empty: "/api", which is what the frontend nginx proxies.
+export const API = `${BACKEND_URL}/api`;
 
 export const api = axios.create({
   baseURL: API,
@@ -82,6 +95,18 @@ export async function probeBackend() {
 export function describeLoginError(ex, probe) {
   const status = ex?.response?.status;
   const detail = ex?.response?.data?.detail;
+
+  // A failure with no response is NOT automatically a network problem. If the
+  // error didn't come from axios at all, it's a bug in our own code that threw
+  // before or after the call (for example the post-login profile/module-access
+  // fetch failing, which rejects login() even though the password was accepted).
+  // Blaming the network for that sends you to inspect infrastructure that is
+  // working fine.
+  if (ex && !ex.response && !ex.request && ex.isAxiosError !== true) {
+    if (typeof console !== "undefined") console.error("[VulnOps] sign-in threw:", ex);
+    return `Sign-in hit an error in the app itself, not a rejected password: ` +
+           `${ex.name || "Error"}: ${ex.message || String(ex)}. The browser console has the stack.`;
+  }
 
   // No response at all: the request never reached the API.
   if (!ex?.response) {

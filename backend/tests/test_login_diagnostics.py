@@ -91,6 +91,31 @@ assert "probeBackend" in api_js and "/v1/healthz" in api_js
 print("PASS: the frontend detects being built without REACT_APP_BACKEND_URL — the failure that makes "
       "every request fail with no response and looks exactly like a bad password")
 
+# CRITICAL, and nearly shipped wrong: docker-compose.yml deliberately builds with
+# REACT_APP_BACKEND_URL="" so the app calls same-origin /api and the frontend's
+# nginx proxies it. An empty string is FALSY, so a truthiness check would flag the
+# standard self-hosted deployment as misconfigured and paint a scary banner on a
+# perfectly healthy login page.
+import yaml
+compose = yaml.safe_load(open("../docker-compose.yml"))
+build_args = compose["services"]["frontend"]["build"]["args"]
+assert build_args["REACT_APP_BACKEND_URL"] == "", \
+    "this test exists because compose passes an empty string on purpose"
+assert "!BACKEND_URL" not in api_js and "!RAW_BACKEND_URL" not in api_js, \
+    "a truthiness check would treat the intended empty-string (same-origin) config as broken"
+assert "RAW_BACKEND_URL === undefined" in api_js, \
+    "only a genuinely absent value counts as missing"
+print("PASS: an empty REACT_APP_BACKEND_URL is treated as the valid same-origin setup that "
+      "docker-compose actually uses — not reported as a misconfiguration")
+
+# a client-side exception is not a network problem and must not be reported as one
+assert "isAxiosError" in api_js, \
+    "an error thrown by our own code has no response AND no request -- blaming the network for it " \
+    "sends you to inspect infrastructure that is working fine"
+assert "error in the app itself" in api_js
+print("PASS: an exception thrown inside the app is reported as an app error with its message, not as "
+      "'the server is unreachable'")
+
 assert "describeLoginError" in login_jsx and "probeBackend" in login_jsx
 assert 'setErr(ex.response?.data?.detail || "Login failed")' not in login_jsx, \
     "the catch-all 'Login failed' string must no longer be the answer to every failure"
@@ -118,3 +143,18 @@ print("PASS: when nothing responded, the message never implies the password was 
 # a missing backend URL is reported before the user even tries to sign in
 assert "BACKEND_URL_MISSING" in login_jsx
 print("PASS: a frontend built with no backend URL says so on page load, rather than after a failed attempt")
+
+
+# ============ the container healthcheck tells the truth ============
+
+probe = compose["services"]["backend"]["healthcheck"]["test"]
+probe_code = probe[-1]
+assert "127.0.0.1" in probe_code and "localhost" not in probe_code, \
+    "uvicorn binds IPv4 0.0.0.0; 'localhost' can resolve to ::1 first and the probe then fails " \
+    "against a healthy app, showing Up (unhealthy) and sending you after the wrong problem"
+assert "status" in probe_code and "ok" in probe_code, \
+    "healthz answers HTTP 200 with {'status':'error'} when Mongo is unreachable -- a status-code-only " \
+    "probe would report healthy while no login can possibly succeed"
+compile(probe_code, "<healthcheck>", "exec")
+print("PASS: the backend healthcheck probes 127.0.0.1 (not localhost) and checks the JSON body, so "
+      "'Up (unhealthy)' means something real and 'API up, database down' is caught")
