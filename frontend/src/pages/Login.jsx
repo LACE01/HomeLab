@@ -3,7 +3,7 @@ import { useAuth } from "@/lib/auth";
 import { useNavigate } from "react-router-dom";
 import { Binoculars, ShieldStar, DeviceMobile, ArrowLeft, WindowsLogo } from "@phosphor-icons/react";
 import { FcGoogle } from "react-icons/fc";
-import { api, API } from "@/lib/api";
+import { api, API, probeBackend, describeLoginError, BACKEND_URL_MISSING } from "@/lib/api";
 
 export default function Login() {
   const { login, verifyMfa } = useAuth();
@@ -28,6 +28,14 @@ export default function Login() {
     // env var alone (see routes/auth.py's /auth/entra/status).
     api.get("/auth/entra/status").then(r => setEntraConfigured(!!r.data?.configured)).catch(() => {});
 
+    // Nothing in the app can work in this state, and it is invisible otherwise --
+    // say so up front rather than after a failed sign-in attempt.
+    if (BACKEND_URL_MISSING) {
+      setErr("This app was built without its backend URL (REACT_APP_BACKEND_URL), so it cannot reach " +
+             "the API. Set it in frontend/.env and rebuild the frontend — signing in cannot work until then.");
+      return;
+    }
+
     if (new URLSearchParams(window.location.search).get("error") === "entra_sso") {
       setErr("Microsoft sign-in didn't complete -- try again, or use email/password below.");
     }
@@ -41,7 +49,14 @@ export default function Login() {
       if (result?.mfaRequired) { setMfaToken(result.mfaToken); }
       else { nav("/"); }
     }
-    catch (ex) { setErr(ex.response?.data?.detail || "Login failed"); }
+    catch (ex) {
+      // "Login failed" reads like a wrong password even when the request never
+      // reached the API. When there's no response at all, ask the unauthenticated
+      // health endpoint whether the backend is even there, so the message names
+      // the real problem instead of implying a credential one.
+      const probe = ex.response ? null : await probeBackend();
+      setErr(describeLoginError(ex, probe));
+    }
     finally { setBusy(false); }
   };
 
