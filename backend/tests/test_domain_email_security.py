@@ -121,7 +121,15 @@ print("PASS: check_dkim returns no selectors when none of the candidates resolve
 
 des.check_spf = lambda domain: dict(NO_SPF)
 des.check_dmarc = lambda domain: dict(NONE_DMARC)
-des.check_dkim = lambda domain, selectors=None: dict(GOOD_DKIM)
+# run_domain_check now calls check_dkim_async, not check_dkim: the 16 candidate
+# selectors are resolved CONCURRENTLY on worker threads instead of serially on the
+# event loop. Serially that was up to 16 x 8s during which this single-process API
+# answered nothing at all -- see blocking_io and tests/test_blocking_io.py. The
+# synchronous check_dkim above is still tested directly, just no longer the seam
+# this lifecycle test patches.
+async def _fake_dkim_async(domain, selectors=None):
+    return dict(GOOD_DKIM)
+des.check_dkim_async = _fake_dkim_async
 
 result = run(des.run_domain_check(db, "acme.com"))
 assert result["domain"] == "acme.com" and len(result["issues"]) == 2
@@ -166,7 +174,7 @@ run(db.domain_watch_targets.insert_many([
 ]))
 des.check_spf = lambda domain: dict(GOOD_SPF)
 des.check_dmarc = lambda domain: dict(GOOD_DMARC)
-des.check_dkim = lambda domain, selectors=None: dict(GOOD_DKIM)
+des.check_dkim_async = _fake_dkim_async  # returns GOOD_DKIM; see note above
 batch = run(des.run_all_domain_checks(db))
 assert batch["checked"] == 2  # disabled.com skipped
 assert batch["issues"] == 0
@@ -176,7 +184,9 @@ print("PASS: run_all_domain_checks only checks enabled targets and reports a cle
 
 des.check_spf = lambda domain: dict(NO_SPF)
 des.check_dmarc = lambda domain: dict(NO_DMARC)
-des.check_dkim = lambda domain, selectors=None: dict(NO_DKIM)
+async def _no_dkim_async(domain, selectors=None):
+    return dict(NO_DKIM)
+des.check_dkim_async = _no_dkim_async
 
 r = client.post("/api/v1/admin/email-auth/targets", json={"domain": "Widget.COM", "label": "Primary"})
 assert r.status_code == 200, r.text

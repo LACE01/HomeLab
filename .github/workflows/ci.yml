@@ -51,7 +51,7 @@ jobs:
             tests/test_batch_ui_fixes.py \
             tests/test_backups_offsite_and_verify.py \
             tests/test_container_scan.py \
-            tests/test_cf_diagnostics.py tests/test_opencti_client.py tests/test_login_diagnostics.py \
+            tests/test_cf_diagnostics.py tests/test_opencti_client.py tests/test_login_diagnostics.py tests/test_blocking_io.py \
             tests/test_cti.py \
             tests/test_secrets_scan.py \
             tests/test_domain_email_security.py \

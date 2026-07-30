@@ -375,13 +375,14 @@ async def google_session(body: GoogleSessionBody, response: Response):
             detail="Google sign-in is not configured on this deployment. Use email/password login, "
                    "or set GOOGLE_OAUTH_RELAY_URL to enable it.",
         )
-    import requests as _requests
+    # A synchronous requests.get inside an async route blocks the event loop for
+    # its full duration -- so one person signing in via the OAuth relay could
+    # freeze the API, including everyone else's login, for up to 10 seconds.
+    # httpx is already a dependency and is natively async.
+    import httpx
     try:
-        r = _requests.get(
-            relay_url,
-            headers={"X-Session-ID": body.session_id},
-            timeout=10,
-        )
+        async with httpx.AsyncClient(timeout=10) as _c:
+            r = await _c.get(relay_url, headers={"X-Session-ID": body.session_id})
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Auth provider unreachable: {e}")
     if r.status_code != 200:

@@ -489,14 +489,22 @@ async def _dns_whois(entity: dict) -> dict:
     detail = {}
     problems = []
     try:
-        import dns.resolver
-        resolver = dns.resolver.Resolver()
-        resolver.timeout = resolver.lifetime = 4
-        for rtype in ("A", "NS", "MX"):
-            try:
-                detail[rtype] = [a.to_text() for a in resolver.resolve(domain, rtype)]
-            except Exception:
-                detail[rtype] = []
+        # dnspython is synchronous. Three lookups at 4s each is 12 seconds during
+        # which this single-process API answers NOTHING -- not other users, not
+        # the healthcheck. Offloaded to worker threads and run concurrently.
+        from blocking_io import gather_blocking
+
+        def _lookup(rtype: str) -> list:
+            import dns.resolver
+            resolver = dns.resolver.Resolver()
+            resolver.timeout = resolver.lifetime = 4
+            return [a.to_text() for a in resolver.resolve(domain, rtype)]
+
+        rtypes = ("A", "NS", "MX")
+        answers = await gather_blocking([(_lookup, (rt,)) for rt in rtypes],
+                                         timeout=8, label=f"DNS lookup for {domain}")
+        for rtype, ans in zip(rtypes, answers):
+            detail[rtype] = [] if isinstance(ans, Exception) else ans
         if not detail.get("A"):
             problems.append("no A record resolves")
         if len(detail.get("NS") or []) < 2:
@@ -506,8 +514,21 @@ async def _dns_whois(entity: dict) -> dict:
     except Exception as e:
         return _result("dns_whois", "manual", f"DNS lookup failed ({type(e).__name__}).", source="DNS")
     try:
-        import whois  # optional dependency; degrade cleanly if absent
-        w = whois.whois(domain)
+        # python-whois opens a raw socket to a registrar's WHOIS server and takes
+        # NO timeout argument -- an unresponsive or rate-limiting server can hold
+        # the connection open indefinitely. Called directly from this async
+        # function that is not "a slow check", it is a total, permanent API
+        # freeze: the process stays alive with its port open while answering
+        # nothing, which looks like the app being broken rather than one lookup
+        # hanging. Offloaded AND given a deadline the caller enforces itself,
+        # because the library has none of its own.
+        from blocking_io import run_blocking
+
+        def _whois_lookup():
+            import whois  # optional dependency; degrade cleanly if absent
+            return whois.whois(domain)
+
+        w = await run_blocking(_whois_lookup, timeout=12, label=f"WHOIS lookup for {domain}")
         created = w.creation_date
         if isinstance(created, list):
             created = created[0]

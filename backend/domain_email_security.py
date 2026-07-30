@@ -121,6 +121,35 @@ def check_dkim(domain: str, selectors: list = None) -> dict:
     }
 
 
+async def check_dkim_async(domain: str, selectors: list = None) -> dict:
+    """Same probe as check_dkim, but the candidate selectors are resolved
+    CONCURRENTLY on worker threads instead of one after another.
+
+    Serially this is len(selectors) x 8s -- over two minutes for the 16 common
+    selectors when a resolver is not answering, and every second of it used to be
+    a second the whole API was frozen. Concurrently it is one timeout, and the
+    loop stays free throughout.
+    """
+    from blocking_io import gather_blocking
+    selectors = selectors or COMMON_DKIM_SELECTORS
+    results = await gather_blocking(
+        [(_txt_strings, (f"{sel}._domainkey.{domain}",)) for sel in selectors],
+        timeout=12, label=f"DKIM lookup for {domain}")
+    found = []
+    for sel, records in zip(selectors, results):
+        if isinstance(records, Exception):
+            continue  # unreachable/slow name: "not found", same as before
+        for r in records:
+            low = r.lower()
+            if "v=dkim1" in low or "p=" in low:
+                found.append(sel)
+                break
+    return {
+        "found_selectors": found, "checked_selectors": selectors,
+        "best_effort": True, "checked_at": _now_iso(),
+    }
+
+
 def classify(spf: dict, dmarc: dict, dkim: dict) -> list:
     """Returns a list of (check_type, severity, reason) tuples, one per issue
     actually found -- zero, one, two, or all three of SPF/DMARC/DKIM can be
@@ -185,19 +214,26 @@ async def run_domain_check(db, domain: str, asset_id: str = None, label: str = N
     """Checks one domain's SPF/DKIM/DMARC, upserts the result into
     domain_email_security, and creates/updates/auto-resolves up to three
     independent findings (one per check type) based on current status.
-    Idempotent -- re-running just updates the existing records/findings."""
+    Idempotent -- re-running just updates the existing records/findings.
+
+    Every DNS lookup below runs on a worker thread. dnspython is synchronous, and
+    this function probes 2 + len(COMMON_DKIM_SELECTORS) names at up to 8s each --
+    calling that directly from an async function froze the entire API (every user,
+    every request, plus the container healthcheck) for as long as two minutes per
+    domain against an unresponsive resolver. See blocking_io."""
+    from blocking_io import run_blocking, BlockingTimeout
     now = _now_iso()
 
     try:
-        spf = check_spf(domain)
-    except Exception as e:
+        spf = await run_blocking(check_spf, domain, timeout=15, label=f"SPF lookup for {domain}")
+    except (Exception, BlockingTimeout) as e:
         spf = {"present": False, "error": str(e), "checked_at": now}
     try:
-        dmarc = check_dmarc(domain)
-    except Exception as e:
+        dmarc = await run_blocking(check_dmarc, domain, timeout=15, label=f"DMARC lookup for {domain}")
+    except (Exception, BlockingTimeout) as e:
         dmarc = {"present": False, "error": str(e), "checked_at": now}
     try:
-        dkim = check_dkim(domain)
+        dkim = await check_dkim_async(domain)
     except Exception as e:
         dkim = {"found_selectors": [], "error": str(e), "checked_at": now}
 

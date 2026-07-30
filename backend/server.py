@@ -214,6 +214,12 @@ async def on_startup():
     from routes.splunk import splunk_sync_loop
     from routes.wazuh import wazuh_sync_loop
     from routes.threat_intel import threat_intel_watchlist_sync_loop
+    # Watchdog first: it logs a warning whenever the event loop stalls. Without it
+    # a blocking call in any of the loops below is invisible from the server side --
+    # the log just goes quiet, which reads like "no traffic" rather than "the
+    # process stopped answering everything", and that ambiguity is expensive.
+    from blocking_io import loop_lag_monitor
+    _a.create_task(loop_lag_monitor())
     _a.create_task(nightly_loop(db, interval_hours=24))
     # KEV / EPSS / active-attacks sync loop (12h) — was previously manual-trigger only
     _a.create_task(threat_intel_loop(db, interval_hours=12))
