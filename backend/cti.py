@@ -175,23 +175,27 @@ async def sync_opencti_reports(db, limit: int = 100) -> dict:
         "edges { node { id name description published createdBy { ... on Identity { name } } "
         "objectLabel { value } externalReferences { edges { node { url source_name } } } } } } }"
     )
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    from cf_diagnostics import api_headers, classify_response, classify_exception, summary_line
+    headers = api_headers({"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"})
     if cfg.get("cf_access_client_id"):
         headers["CF-Access-Client-Id"] = cfg["cf_access_client_id"]
     if cfg.get("cf_access_client_secret"):
         headers["CF-Access-Client-Secret"] = cfg["cf_access_client_secret"]
+    token_sent = bool(cfg.get("cf_access_client_id") and cfg.get("cf_access_client_secret"))
 
     try:
         async with httpx.AsyncClient(timeout=30, follow_redirects=False) as c:
             r = await c.post(endpoint.rstrip("/") + "/graphql", headers=headers,
                               json={"query": query, "variables": {"first": limit}})
     except httpx.HTTPError as e:
-        raise RuntimeError(f"Could not reach OpenCTI: {e}")
-    if r.status_code in (301, 302, 303, 307, 308):
-        raise RuntimeError("OpenCTI redirected (likely Cloudflare Access) -- check the connection "
-                            "under Integrations -> OpenCTI.")
-    if r.status_code != 200:
-        raise RuntimeError(f"OpenCTI HTTP {r.status_code}: {r.text[:300]}")
+        raise RuntimeError(summary_line(classify_exception(e, service_name="OpenCTI")))
+    # Name the layer that refused us instead of pasting a Cloudflare HTML page
+    # into the error -- "Just a moment..." means the CDN edge blocked this before
+    # Access or OpenCTI ever saw it, which is a completely different fix.
+    verdict = classify_response(r, service_name="OpenCTI", token_sent=token_sent,
+                                 client_id=cfg.get("cf_access_client_id"))
+    if not verdict["ok"]:
+        raise RuntimeError(summary_line(verdict))
     data = r.json()
     if data.get("errors"):
         raise RuntimeError(f"OpenCTI GraphQL error: {data['errors'][0].get('message', data['errors'])}")

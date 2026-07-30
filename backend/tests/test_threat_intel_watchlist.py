@@ -69,10 +69,17 @@ _reset()
 
 
 class FakeResponse:
-    def __init__(self, json_data, status_code=200):
+    """Faithful stand-in for an httpx response: real JSON in .text and a
+    content-type header. The previous version had no headers at all and put a
+    Python repr in .text, which meant anything inspecting the response shape
+    (like the Cloudflare-vs-Access-vs-origin diagnostic) saw a malformed reply."""
+
+    def __init__(self, json_data, status_code=200, headers=None, text=None):
+        import json as _json
         self._json = json_data
         self.status_code = status_code
-        self.text = str(json_data)[:200]
+        self.text = text if text is not None else _json.dumps(json_data)
+        self.headers = headers or {"Content-Type": "application/json"}
 
     def json(self):
         return self._json

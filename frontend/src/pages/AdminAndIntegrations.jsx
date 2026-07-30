@@ -57,6 +57,7 @@ export function Integrations() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({});
   const [testing, setTesting] = useState(null);
+  const [diagnostic, setDiagnostic] = useState(null);
   const [qualysScope, setQualysScope] = useState(null);
   const [tiStatus, setTiStatus] = useState(null);
   const [tiSyncing, setTiSyncing] = useState(null);
@@ -281,7 +282,17 @@ export function Integrations() {
     setTesting(i.id);
     try {
       const r = await api.post(`/v1/integrations/${i.id}/test`);
-      toast.success(r.data.message);
+      // A structured diagnostic (which LAYER refused us + numbered remediation)
+      // goes into a panel instead of a toast -- a toast can't hold the steps, and
+      // truncating them is how the raw Cloudflare HTML ended up on screen.
+      if (r.data.diagnostic && !r.data.diagnostic.ok) {
+        setDiagnostic({ integration: i.name, ...r.data.diagnostic });
+      } else if (r.data.ok === false) {
+        toast.error(r.data.message || "Connection test failed");
+      } else {
+        setDiagnostic(null);
+        toast.success(r.data.message);
+      }
       await load();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Connection test failed");
@@ -291,6 +302,7 @@ export function Integrations() {
 
   return (
     <Layout title="Integrations" subtitle="Configure scanner connectors and ticketing systems with your API keys">
+      {diagnostic && <ConnectionDiagnostic d={diagnostic} onClose={() => setDiagnostic(null)}/>}
       {qualysScope?.configured && qualysScope?.role && (
         <div
           data-testid="qualys-scope-banner"
@@ -834,5 +846,72 @@ export function Admin() {
         </div>
       </div>
     </Layout>
+  );
+}
+
+
+const LAYER_META = {
+  cloudflare_edge_challenge: {
+    label: "Cloudflare CDN edge (bot protection)",
+    note: "This runs BEFORE Cloudflare Access and before the app. Service tokens cannot satisfy it.",
+  },
+  cloudflare_access: {
+    label: "Cloudflare Access (Zero Trust)",
+    note: "The request reached Access, so the edge let it through. This is a policy or token problem.",
+  },
+  origin_app: {
+    label: "The application itself",
+    note: "Cloudflare let the request through — the app's own auth or health is the issue.",
+  },
+  transport: {
+    label: "Network / DNS",
+    note: "The request never established a connection.",
+  },
+};
+
+function ConnectionDiagnostic({ d, onClose }) {
+  const meta = LAYER_META[d.layer] || { label: d.layer, note: "" };
+  const ev = d.evidence || {};
+  return (
+    <div className="mb-4 border border-red-500/40 bg-red-500/5 rounded-md p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-[13px] text-red-200 font-medium">{d.integration}: {d.title}</div>
+          <div className="text-[11.5px] text-red-300/80 mt-0.5">
+            Blocked at: <span className="font-medium">{meta.label}</span>
+          </div>
+        </div>
+        <button onClick={onClose} className="text-slate-500 hover:text-slate-200 text-[12px] shrink-0">Dismiss</button>
+      </div>
+
+      {meta.note && <div className="text-[11.5px] text-amber-200 mt-2">{meta.note}</div>}
+      <div className="text-[12px] text-slate-300 mt-2 leading-relaxed">{d.message}</div>
+
+      {d.remediation?.length > 0 && (
+        <div className="mt-3">
+          <div className="text-[10.5px] uppercase tracking-wider font-mono text-slate-500 mb-1.5">
+            What to change, in order
+          </div>
+          <ol className="list-decimal ml-5 space-y-1.5">
+            {d.remediation.map((r, i) => (
+              <li key={i} className="text-[11.5px] text-slate-300 leading-relaxed">{r}</li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      <details className="mt-3">
+        <summary className="text-[11px] text-blue-300 cursor-pointer">Response evidence</summary>
+        <div className="mt-1.5 text-[10.5px] text-slate-400 font-mono space-y-0.5">
+          {ev.status_code != null && <div>HTTP status: {ev.status_code}</div>}
+          {ev.server && <div>server: {ev.server}</div>}
+          {ev.cf_ray && <div>cf-ray: {ev.cf_ray} (quote this to Cloudflare support / find it in the CF Security Events log)</div>}
+          {ev.cf_mitigated && <div>cf-mitigated: {ev.cf_mitigated}</div>}
+          {ev.content_type && <div>content-type: {ev.content_type}</div>}
+          {ev.location && <div className="break-all">location: {ev.location}</div>}
+          {ev.body_snippet && <div className="break-all mt-1 text-slate-500">body: {ev.body_snippet}</div>}
+        </div>
+      </details>
+    </div>
   );
 }

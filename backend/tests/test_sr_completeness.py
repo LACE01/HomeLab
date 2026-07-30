@@ -36,11 +36,17 @@ def run(coro):
 
 
 class Resp:
+    """Faithful httpx-like response: .text is real JSON and content-type is set,
+    so anything inspecting the response shape sees a well-formed reply."""
+
     def __init__(self, status_code=200, json_data=None, text=None, headers=None, url="https://acme.com/"):
+        import json as _json
         self.status_code = status_code
         self._json = json_data
-        self.text = text if text is not None else str(json_data or "")
-        self.headers = headers or {}
+        self.text = text if text is not None else (
+            _json.dumps(json_data) if json_data is not None else "")
+        default_headers = {"Content-Type": "application/json"} if json_data is not None else {}
+        self.headers = headers if headers is not None else default_headers
         self.url = url
     def json(self):
         if self._json is None:

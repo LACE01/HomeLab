@@ -259,7 +259,8 @@ async def opencti_ping(cfg: dict) -> dict:
     cf_client_id = cfg.get("cf_access_client_id")
     cf_client_secret = cfg.get("cf_access_client_secret")
     cf_headers_sent = bool(cf_client_id) and bool(cf_client_secret)
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    from cf_diagnostics import api_headers, classify_response, classify_exception, LAYER_EDGE
+    headers = api_headers({"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"})
     if cf_client_id:
         headers["CF-Access-Client-Id"] = cf_client_id
     if cf_client_secret:
@@ -268,6 +269,15 @@ async def opencti_ping(cfg: dict) -> dict:
         async with httpx.AsyncClient(timeout=15, follow_redirects=False) as c:
             r = await c.post(_opencti_graphql_url(endpoint), headers=headers,
                               json={"query": "{ about { version } }"})
+        # A Cloudflare browser challenge ("Just a moment...") is served at the CDN
+        # edge BEFORE Access runs, so it needs its own verdict -- telling someone
+        # to fix their service token when the request never reached Access is how
+        # an afternoon gets lost.
+        verdict = classify_response(r, service_name="OpenCTI", token_sent=cf_headers_sent,
+                                     client_id=cf_client_id)
+        if verdict["layer"] == LAYER_EDGE:
+            return {"ok": False, "message": f"{verdict['title']}. {verdict['message']}",
+                    "diagnostic": verdict}
         if r.status_code in (301, 302, 303, 307, 308):
             loc = r.headers.get("location", "")
             cf_login = "cloudflareaccess.com" in loc or "/cdn-cgi/access/login" in loc
@@ -285,7 +295,8 @@ async def opencti_ping(cfg: dict) -> dict:
                     "add cf_access_client_id + cf_access_client_secret and Save, then test again.")}
             return {"ok": False, "message": f"Unexpected redirect to {loc[:120]}"}
         if r.status_code != 200:
-            return {"ok": False, "message": f"OpenCTI HTTP {r.status_code}: {r.text[:200]}"}
+            return {"ok": False, "message": f"{verdict['title']}. {verdict['message']}",
+                    "diagnostic": verdict}
         ctype = (r.headers.get("content-type") or "").lower()
         if "application/json" not in ctype:
             return {"ok": False, "message": f"OpenCTI returned non-JSON ({ctype or 'no content-type'}) -- endpoint may be wrong or still behind an interstitial page."}
@@ -294,10 +305,13 @@ async def opencti_ping(cfg: dict) -> dict:
             return {"ok": False, "message": f"OpenCTI GraphQL error: {data['errors'][0].get('message', data['errors'])}"}
         version = (data.get("data") or {}).get("about", {}).get("version", "unknown")
         return {"ok": True, "message": f"Connected — OpenCTI version {version}."}
-    except httpx.TimeoutException:
-        return {"ok": False, "message": "Connection timed out — check the endpoint URL and that the server is reachable from this host."}
+    except httpx.TimeoutException as e:
+        v = classify_exception(e, service_name="OpenCTI")
+        return {"ok": False, "message": "Connection timed out — check the endpoint URL and that the server "
+                                         "is reachable from this host.", "diagnostic": v}
     except httpx.ConnectError as e:
-        return {"ok": False, "message": f"Could not connect: {e}"}
+        v = classify_exception(e, service_name="OpenCTI")
+        return {"ok": False, "message": f"Could not connect: {e}", "diagnostic": v}
     except Exception as e:
         return {"ok": False, "message": f"Unexpected error: {e}"}
 

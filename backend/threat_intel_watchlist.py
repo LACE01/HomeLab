@@ -331,7 +331,8 @@ async def sync_opencti_feed(db, limit: int = 200) -> dict:
         "  indicatorPatterns: pattern "
         "} } } }"
     )
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    from cf_diagnostics import api_headers
+    headers = api_headers({"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"})
     if cfg.get("cf_access_client_id"):
         headers["CF-Access-Client-Id"] = cfg["cf_access_client_id"]
     if cfg.get("cf_access_client_secret"):
@@ -343,11 +344,12 @@ async def sync_opencti_feed(db, limit: int = 200) -> dict:
                               json={"query": query, "variables": {"first": limit}})
     except httpx.HTTPError as e:
         raise RuntimeError(f"Could not reach OpenCTI: {e}")
-    if r.status_code in (301, 302, 303, 307, 308):
-        raise RuntimeError("OpenCTI redirected (likely Cloudflare Access) -- check the connection under "
-                            "Integrations -> OpenCTI, same as the CVE threat-intel panel.")
-    if r.status_code != 200:
-        raise RuntimeError(f"OpenCTI HTTP {r.status_code}: {r.text[:200]}")
+    from cf_diagnostics import classify_response, summary_line
+    verdict = classify_response(r, service_name="OpenCTI",
+                                 token_sent=bool(cfg.get("cf_access_client_id")),
+                                 client_id=cfg.get("cf_access_client_id"))
+    if not verdict["ok"]:
+        raise RuntimeError(summary_line(verdict))
     data = r.json()
     if data.get("errors"):
         raise RuntimeError(f"OpenCTI GraphQL error: {data['errors'][0].get('message', data['errors'])}")
