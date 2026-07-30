@@ -306,17 +306,14 @@ async def run_opencti_lookup(target: str) -> list:
         '... on ThreatActor { name } ... on IntrusionSet { name } ... on Malware { name } } } } } '
         '} } } }'
     )
-    from cf_diagnostics import api_headers, classify_response, classify_exception, summary_line
-    headers = api_headers({"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"})
-    if cfg.get("cf_access_client_id"):
-        headers["CF-Access-Client-Id"] = cfg["cf_access_client_id"]
-    if cfg.get("cf_access_client_secret"):
-        headers["CF-Access-Client-Secret"] = cfg["cf_access_client_secret"]
-    token_sent = bool(cfg.get("cf_access_client_id") and cfg.get("cf_access_client_secret"))
+    from cf_diagnostics import classify_response, classify_exception, summary_line
+    import opencti_client
+    headers = opencti_client.headers({**cfg, "api_key": api_key})
+    token_sent = opencti_client.token_sent(cfg)
 
     try:
         async with httpx.AsyncClient(timeout=15, follow_redirects=False) as c:
-            r = await c.post(endpoint.rstrip("/") + "/graphql", headers=headers, json={"query": query})
+            r = await c.post(opencti_client.graphql_url(endpoint), headers=headers, json={"query": query})
     except httpx.HTTPError as e:
         raise RuntimeError(summary_line(classify_exception(e, service_name="OpenCTI")))
     verdict = classify_response(r, service_name="OpenCTI", token_sent=token_sent,

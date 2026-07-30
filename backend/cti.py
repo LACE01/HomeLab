@@ -175,17 +175,16 @@ async def sync_opencti_reports(db, limit: int = 100) -> dict:
         "edges { node { id name description published createdBy { ... on Identity { name } } "
         "objectLabel { value } externalReferences { edges { node { url source_name } } } } } } }"
     )
-    from cf_diagnostics import api_headers, classify_response, classify_exception, summary_line
-    headers = api_headers({"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"})
-    if cfg.get("cf_access_client_id"):
-        headers["CF-Access-Client-Id"] = cfg["cf_access_client_id"]
-    if cfg.get("cf_access_client_secret"):
-        headers["CF-Access-Client-Secret"] = cfg["cf_access_client_secret"]
-    token_sent = bool(cfg.get("cf_access_client_id") and cfg.get("cf_access_client_secret"))
+    from cf_diagnostics import classify_response, classify_exception, summary_line
+    import opencti_client
+    # URL + headers come from the shared client so every OpenCTI caller talks to
+    # the same path -- Test Connection passing while syncs 404 was exactly this.
+    headers = opencti_client.headers({**cfg, "api_key": api_key})
+    token_sent = opencti_client.token_sent(cfg)
 
     try:
         async with httpx.AsyncClient(timeout=30, follow_redirects=False) as c:
-            r = await c.post(endpoint.rstrip("/") + "/graphql", headers=headers,
+            r = await c.post(opencti_client.graphql_url(endpoint), headers=headers,
                               json={"query": query, "variables": {"first": limit}})
     except httpx.HTTPError as e:
         raise RuntimeError(summary_line(classify_exception(e, service_name="OpenCTI")))

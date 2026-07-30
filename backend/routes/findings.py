@@ -228,22 +228,11 @@ async def cwe_prevalence(user: dict = Depends(get_current_user)):
 
 # --------------------------- THREAT INTEL (OpenCTI) ---------------------------
 def _opencti_graphql_url(endpoint: str) -> str:
-    """OpenCTI's GraphQL route is /graphql by default, but a lot of real deployments
-    sit behind a reverse proxy / Cloudflare Tunnel that only forwards a specific,
-    non-default path (e.g. a "/public/graphql" route carved out specifically so it
-    can be exposed differently from the rest of the app -- this is exactly what one
-    user's setup turned out to be, confirmed from their own browser hitting
-    `open.smrtlab.net/public/graphql` and landing on OpenCTI's GraphQL playground).
-    Previously this always blindly appended "/graphql" to whatever endpoint was
-    configured, which silently mangled a fully-specified endpoint like
-    "https://host/public/graphql" into "https://host/public/graphql/graphql" -- a
-    request to a path that simply doesn't exist, no matter how correct the
-    Cloudflare Access headers are. If the endpoint already ends in "/graphql",
-    use it as-is; only append the default suffix when it doesn't."""
-    endpoint = (endpoint or "").rstrip("/")
-    if endpoint.endswith("/graphql"):
-        return endpoint
-    return endpoint + "/graphql"
+    """Kept as a thin alias: the real logic now lives in opencti_client so the
+    three sync paths cannot append "/graphql" to an endpoint that already names
+    it. See opencti_client.graphql_url for why that mattered."""
+    import opencti_client
+    return opencti_client.graphql_url(endpoint)
 
 
 async def opencti_ping(cfg: dict) -> dict:
@@ -259,15 +248,17 @@ async def opencti_ping(cfg: dict) -> dict:
     cf_client_id = cfg.get("cf_access_client_id")
     cf_client_secret = cfg.get("cf_access_client_secret")
     cf_headers_sent = bool(cf_client_id) and bool(cf_client_secret)
-    from cf_diagnostics import api_headers, classify_response, classify_exception, LAYER_EDGE
-    headers = api_headers({"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"})
-    if cf_client_id:
-        headers["CF-Access-Client-Id"] = cf_client_id
-    if cf_client_secret:
-        headers["CF-Access-Client-Secret"] = cf_client_secret
+    from cf_diagnostics import classify_response, classify_exception, LAYER_EDGE
+    import opencti_client
+    headers = opencti_client.headers(cfg)
+    # The exact URL matters: a Cloudflare WAF "Skip" rule is usually written
+    # against one specific path, so if this ping goes to a different path than
+    # the operator's rule matches, the rule quietly doesn't apply. Report the URL
+    # so it can be compared against the Path column in Security Events.
+    target_url = opencti_client.graphql_url(endpoint)
     try:
         async with httpx.AsyncClient(timeout=15, follow_redirects=False) as c:
-            r = await c.post(_opencti_graphql_url(endpoint), headers=headers,
+            r = await c.post(target_url, headers=headers,
                               json={"query": "{ about { version } }"})
         # A Cloudflare browser challenge ("Just a moment...") is served at the CDN
         # edge BEFORE Access runs, so it needs its own verdict -- telling someone
@@ -275,6 +266,7 @@ async def opencti_ping(cfg: dict) -> dict:
         # an afternoon gets lost.
         verdict = classify_response(r, service_name="OpenCTI", token_sent=cf_headers_sent,
                                      client_id=cf_client_id)
+        verdict["evidence"]["request_url"] = target_url
         if verdict["layer"] == LAYER_EDGE:
             return {"ok": False, "message": f"{verdict['title']}. {verdict['message']}",
                     "diagnostic": verdict}
@@ -304,7 +296,8 @@ async def opencti_ping(cfg: dict) -> dict:
         if data.get("errors"):
             return {"ok": False, "message": f"OpenCTI GraphQL error: {data['errors'][0].get('message', data['errors'])}"}
         version = (data.get("data") or {}).get("about", {}).get("version", "unknown")
-        return {"ok": True, "message": f"Connected — OpenCTI version {version}."}
+        return {"ok": True,
+                "message": f"Connected — OpenCTI version {version} at {target_url}."}
     except httpx.TimeoutException as e:
         v = classify_exception(e, service_name="OpenCTI")
         return {"ok": False, "message": "Connection timed out — check the endpoint URL and that the server "

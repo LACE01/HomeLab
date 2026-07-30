@@ -152,6 +152,11 @@ def classify_response(response, *, service_name: str = "the integration",
                 "Alternative: Security → WAF → Custom rules → create a rule matching this hostname and path "
                 "(e.g. http.host eq \"opencti.example.net\" and http.request.uri.path eq \"/graphql\") with "
                 "action Skip, and tick Super Bot Fight Mode + Browser Integrity Check under the skip options.",
+                "If you ALREADY have a Skip rule and it is not taking effect: in Security → Events, compare the "
+                "Path and User Agent on the challenged request against your rule's conditions. A rule written "
+                "against /graphql does not cover /public/graphql, and a rule that matches on user agent will "
+                "not match this platform. Skip rules are matched per-request, not per-hostname, so one path "
+                "being allowed tells you nothing about another.",
                 "Verify from the server with: curl -sS -o /dev/null -w '%{http_code}\\n' -X POST "
                 "https://<host>/graphql -H 'Content-Type: application/json' --data '{\"query\":\"{about{version}}\"}' "
                 "— if you still get 403 with a 'Just a moment' body, it is still the edge, not Access.",

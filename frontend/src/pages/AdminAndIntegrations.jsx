@@ -887,6 +887,18 @@ function ConnectionDiagnostic({ d, onClose }) {
       {meta.note && <div className="text-[11.5px] text-amber-200 mt-2">{meta.note}</div>}
       <div className="text-[12px] text-slate-300 mt-2 leading-relaxed">{d.message}</div>
 
+      {/* The URL we actually called. A Cloudflare WAF Skip rule is written against
+          one specific path, so a rule that isn't taking effect is very often
+          scoped to a different path than this -- which is invisible unless the
+          exact URL is shown next to the Path column in Security Events. */}
+      {ev.request_url && (
+        <div className="mt-2 text-[11px] text-slate-400">
+          Request sent to <span className="font-mono text-slate-200 break-all">{ev.request_url}</span>
+          {" "}— compare this against the <span className="text-slate-300">Path</span> column in
+          Cloudflare → Security → Events. A Skip rule on a different path will not apply here.
+        </div>
+      )}
+
       {d.remediation?.length > 0 && (
         <div className="mt-3">
           <div className="text-[10.5px] uppercase tracking-wider font-mono text-slate-500 mb-1.5">
@@ -903,6 +915,7 @@ function ConnectionDiagnostic({ d, onClose }) {
       <details className="mt-3">
         <summary className="text-[11px] text-blue-300 cursor-pointer">Response evidence</summary>
         <div className="mt-1.5 text-[10.5px] text-slate-400 font-mono space-y-0.5">
+          {ev.request_url && <div className="break-all">request url: {ev.request_url}</div>}
           {ev.status_code != null && <div>HTTP status: {ev.status_code}</div>}
           {ev.server && <div>server: {ev.server}</div>}
           {ev.cf_ray && <div>cf-ray: {ev.cf_ray} (quote this to Cloudflare support / find it in the CF Security Events log)</div>}
