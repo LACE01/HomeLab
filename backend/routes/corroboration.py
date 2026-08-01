@@ -112,3 +112,57 @@ async def finding_context(finding_id: str, user: dict = Depends(get_current_user
     if not f:
         raise HTTPException(404, "No such finding")
     return await fc.build(db, f)
+
+
+# ---------------------------------------------------------------------------
+# Correlation
+# ---------------------------------------------------------------------------
+@router.get("/v1/correlation/hits")
+async def correlation_hits(status: str = "open", limit: int = 100,
+                            user: dict = Depends(get_current_user)):
+    """Open correlation hits, worst first."""
+    import correlation as cx
+    q = {} if status == "all" else {"status": status}
+    rows = await db.correlation_hits.find(q, {"_id": 0}).to_list(2000)
+    rank = {s: i for i, s in enumerate(cx.SEVERITY)}
+    rows.sort(key=lambda h: (-rank.get(h.get("severity"), 0), h.get("last_seen_at") or ""))
+    return {"items": rows[:limit], "count": len(rows)}
+
+
+@router.get("/v1/correlation/rules")
+async def correlation_rules(user: dict = Depends(get_current_user)):
+    """The rule catalogue, with what each one needs to be able to run at all."""
+    import correlation as cx
+    available = await cx._availability(db)
+    return {"rules": [{
+        "key": r.key, "title": r.title, "severity": r.severity,
+        "requires": r.requires, "why_it_matters": r.why_it_matters,
+        "can_run": all(available.get(x, False) for x in r.requires),
+        "missing_inputs": [x for x in r.requires if not available.get(x, False)],
+    } for r in cx.RULES], "input_availability": available}
+
+
+@router.post("/v1/correlation/run")
+async def correlation_run(user: dict = Depends(require_role("admin"))):
+    import correlation as cx
+    return await cx.run(db)
+
+
+@router.patch("/v1/correlation/hits/{hit_id}")
+async def correlation_triage(hit_id: str, body: dict,
+                              user: dict = Depends(get_current_user)):
+    """Acknowledge or dismiss a hit. Dismissal requires a reason, because a hit
+    dismissed without one is indistinguishable from one nobody looked at."""
+    allowed = {"open", "acknowledged", "dismissed"}
+    status = body.get("status")
+    if status not in allowed:
+        raise HTTPException(400, f"status must be one of {sorted(allowed)}")
+    if status == "dismissed" and not (body.get("reason") or "").strip():
+        raise HTTPException(400, "A dismissal reason is required.")
+    res = await db.correlation_hits.update_one({"id": hit_id}, {"$set": {
+        "status": status, "triage_reason": body.get("reason"),
+        "triaged_by": user.get("email") or user.get("id"),
+        "triaged_at": __import__("correlation")._now_iso()}})
+    if not res.matched_count:
+        raise HTTPException(404, "No such hit")
+    return {"updated": True, "status": status}

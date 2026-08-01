@@ -230,8 +230,10 @@ async def on_startup():
     # a blocking call in any of the loops below is invisible from the server side --
     # the log just goes quiet, which reads like "no traffic" rather than "the
     # process stopped answering everything", and that ambiguity is expensive.
+    from correlation_loop import correlation_loop
     from blocking_io import loop_lag_monitor
     _a.create_task(loop_lag_monitor())
+    _a.create_task(correlation_loop(db, interval_hours=6))
     _a.create_task(nightly_loop(db, interval_hours=24))
     # KEV / EPSS / active-attacks sync loop (12h) — was previously manual-trigger only
     _a.create_task(threat_intel_loop(db, interval_hours=12))
