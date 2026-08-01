@@ -96,3 +96,19 @@ async def backfill(body: BackfillBody, user: dict = Depends(require_role("admin"
     Defaults to a dry run on purpose: this rewrites the live backlog.
     """
     return await corr.backfill_existing(db, dry_run=body.dry_run)
+
+
+# ---------------------------------------------------------------------------
+# The context panel lives here rather than in routes/findings.py for one reason:
+# findings.py registers "/v1/findings/{finding_id}", and this router is
+# deliberately mounted ahead of it so literal paths resolve first.
+# ---------------------------------------------------------------------------
+@router.get("/v1/findings/{finding_id}/context")
+async def finding_context(finding_id: str, user: dict = Depends(get_current_user)):
+    """Why this finding matters on THIS asset -- assembled from every module that
+    knows something about it, with a source on every claim."""
+    import finding_context as fc
+    f = await db.findings.find_one({"id": finding_id}, {"_id": 0})
+    if not f:
+        raise HTTPException(404, "No such finding")
+    return await fc.build(db, f)

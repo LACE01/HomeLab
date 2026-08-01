@@ -26,6 +26,72 @@ const KV = ({ k, v, mono }) => (
   </div>
 );
 
+// "Why does this matter HERE" -- the join across every module.
+//
+// Two deliberate choices in this rendering:
+//   * every claim shows the module it came from. A panel that asserts things
+//     without attribution is unfalsifiable, and an analyst who cannot check it
+//     stops believing all of it.
+//   * "missing" is its own visual weight, not an absent row. "No EDR has ever
+//     reported on this machine" is one of the most important things the panel can
+//     say, and hiding empty sections would turn a blind spot into apparent safety.
+const WEIGHT_STYLE = {
+  aggravating: { dot: "bg-red-500", text: "text-slate-200", label: "raises risk" },
+  mitigating: { dot: "bg-emerald-500", text: "text-slate-300", label: "lowers risk" },
+  missing: { dot: "bg-amber-500", text: "text-amber-200/90", label: "not checked" },
+  neutral: { dot: "bg-slate-600", text: "text-slate-400", label: "context" },
+};
+
+function ContextItem({ item }) {
+  const st = WEIGHT_STYLE[item.weight] || WEIGHT_STYLE.neutral;
+  const body = (
+    <div className="flex gap-2.5 py-1.5">
+      <span className={`mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 ${st.dot}`} title={st.label}/>
+      <div className="min-w-0">
+        <div className={`text-[12.5px] leading-snug ${st.text}`}>{item.headline}</div>
+        {item.detail && <div className="text-[11px] text-slate-500 leading-relaxed mt-0.5">{item.detail}</div>}
+        <div className="text-[10px] font-mono text-slate-600 mt-0.5">{item.source}</div>
+      </div>
+    </div>
+  );
+  return item.link
+    ? <a href={item.link} className="block hover:bg-white/[0.02] rounded px-1 -mx-1">{body}</a>
+    : body;
+}
+
+function ContextPanel({ ctx }) {
+  const [open, setOpen] = useState(true);
+  const v = ctx.verdict || {};
+  return (
+    <Section title="Why this matters here">
+      <div className="border-l-2 border-blue-500/60 pl-3 mb-3">
+        <div className="text-[13.5px] font-medium text-slate-100">{v.headline}</div>
+        <div className="text-[12px] text-slate-400 leading-relaxed mt-1">{v.body}</div>
+        <div className="flex gap-3 mt-1.5 text-[10px] font-mono text-slate-600">
+          <span>{v.environmental_aggravators ?? 0} environmental</span>
+          <span>{v.mitigating_count ?? 0} mitigating</span>
+          {v.unknown_count > 0 && <span className="text-amber-500/80">{v.unknown_count} unchecked</span>}
+        </div>
+      </div>
+
+      <button onClick={() => setOpen(o => !o)}
+        className="text-[11px] text-blue-300 hover:underline mb-1">
+        {open ? "Hide" : "Show"} the evidence
+      </button>
+
+      {open && Object.entries(ctx.sections || {}).map(([key, items]) =>
+        items?.length ? (
+          <div key={key} className="mt-2.5 pt-2.5 border-t border-[#30363D]">
+            <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider mb-0.5">
+              {ctx.section_labels?.[key] || key}
+            </div>
+            {items.map((it, i) => <ContextItem key={i} item={it}/>)}
+          </div>
+        ) : null)}
+    </Section>
+  );
+}
+
 function AddMitigationForm({ types, onCancel, onAdded, findingId }) {
   const [controlType, setControlType] = useState(types?.[0] || "Other");
   const [description, setDescription] = useState("");
@@ -73,6 +139,7 @@ export default function FindingDetail() {
   const [statusVal, setStatusVal] = useState("");
   const [kri, setKri] = useState(null);
   const [mitreCoverage, setMitreCoverage] = useState(null);
+  const [context, setContext] = useState(null);
   const [intel, setIntel] = useState(null);
   const [playbook, setPlaybook] = useState(undefined); // undefined = loading, null = none found
   const [playbookBasis, setPlaybookBasis] = useState(null);
@@ -130,6 +197,10 @@ export default function FindingDetail() {
 
   useEffect(() => {
     api.get(`/v1/findings/${id}`).then(r => { setF(r.data); setStatusVal(r.data.status); });
+    // "Why does this matter HERE" -- joined from every module that knows something
+    // about this finding's asset. Failing quietly is deliberate: the context panel
+    // is additive, and a missing panel must never block the finding itself.
+    api.get(`/v1/findings/${id}/context`).then(r => setContext(r.data)).catch(() => {});
     api.get(`/v1/findings/${id}/tickets`).then(r => setTickets(r.data.items));
     api.get(`/v1/findings/${id}/observations`).then(r => setObs(r.data.items));
     api.get(`/v1/findings/${id}/timeline`).then(r => setActivity(r.data.items));
@@ -282,6 +353,8 @@ export default function FindingDetail() {
           <Section title="Detection Logic" testid="section-detection">
             <div className="text-[12.5px] text-slate-300 leading-relaxed font-mono whitespace-pre-wrap">{f.detection_logic}</div>
           </Section>
+
+          {context && <ContextPanel ctx={context}/>}
 
           <Section title="MITRE ATT&CK Mapping">
             {/* The mapping now resolves from whatever the finding actually carries --
