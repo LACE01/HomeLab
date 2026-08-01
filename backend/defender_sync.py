@@ -63,7 +63,10 @@ async def sync_defender(db, max_pages: int = 30) -> dict:
         if k:
             asset_by_key[k] = a
 
+    import entity_resolution as er
+    await er.ensure_indexes(db)
     now_iso = _now_iso()
+    unmatched: list = []
     devices_matched = 0
     high_risk = 0
     device_id_to_asset_id: dict = {}
@@ -73,9 +76,34 @@ async def sync_defender(db, max_pages: int = 30) -> dict:
         exposure = m.get("exposureLevel") or "None"
         if RISK_ORDER.get(risk, 0) >= RISK_ORDER["High"]:
             high_risk += 1
-        asset = asset_by_key.get(_hostname_key(dns_name))
+        # Identity resolution, not string equality. Defender sends an FQDN
+        # ("laptop-7.corp.example.com") while Qualys created the asset from a
+        # short name ("laptop-7"), so the old dict lookup missed every device and
+        # reported devices_matched: 0 -- which reads like a permissions problem
+        # and isn't. See entity_resolution.py.
+        verdict = await er.resolve(db, {
+            "computerDnsName": dns_name,
+            "defender_device_id": m.get("id"),
+            "aad_device_id": m.get("aadDeviceId"),
+            "ip": m.get("lastIpAddress"),
+            "mac": m.get("macAddress"),
+        }, source="defender")
+        asset = None
+        if verdict["asset_id"]:
+            asset = await db.assets.find_one({"id": verdict["asset_id"]}, {"_id": 0, "id": 1})
         if not asset:
+            asset = asset_by_key.get(_hostname_key(dns_name))
+        if not asset:
+            unmatched.append({"device_id": m.get("id"), "name": dns_name,
+                               "reason": verdict["reason"]})
             continue
+        # Record what Defender knows about this machine's identity, so the NEXT
+        # sync (and every other connector) resolves it directly.
+        await er.record_identifiers(db, asset["id"], er.identifiers_from({
+            "computerDnsName": dns_name, "defender_device_id": m.get("id"),
+            "aad_device_id": m.get("aadDeviceId"), "ip": m.get("lastIpAddress"),
+            "mac": m.get("macAddress"),
+        }), "defender")
         device_id_to_asset_id[m.get("id")] = asset["id"]
         await db.assets.update_one({"id": asset["id"]}, {"$set": {
             "defender_device_id": m.get("id"),
@@ -155,6 +183,11 @@ async def sync_defender(db, max_pages: int = 30) -> dict:
 
     return {
         "devices_seen": len(machines), "devices_matched_to_assets": devices_matched,
+        # Unmatched devices are reported WITH the reason resolution failed, rather
+        # than only as a count. "0 matched" told you nothing about whether the
+        # problem was permissions, naming, or an empty asset inventory.
+        "devices_unmatched": len(unmatched),
+        "unmatched_examples": unmatched[:10],
         "high_risk_devices": high_risk,
         "org_software_products_synced": software_synced,
         "per_device_software_links_synced": per_machine_synced,

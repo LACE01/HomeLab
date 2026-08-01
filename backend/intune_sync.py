@@ -43,13 +43,21 @@ async def sync_intune(db, max_pages: int = 30) -> dict:
     devices = await graph_get_paginated(
         token, f"{base}/deviceManagement/managedDevices",
         params={
+            # serialNumber / azureADDeviceId / the MAC fields are requested purely
+            # for identity resolution: they are the STRONG keys that let Intune,
+            # Defender, Entra and the scanners agree on which machine is which.
+            # Without them this connector can only offer a short device name,
+            # which is exactly the weak key that made matching unreliable.
             "$select": "id,deviceName,operatingSystem,osVersion,complianceState,"
-                       "managementState,lastSyncDateTime,isEncrypted,jailBroken,userPrincipalName",
+                       "managementState,lastSyncDateTime,isEncrypted,jailBroken,userPrincipalName,"
+                       "serialNumber,azureADDeviceId,wiFiMacAddress,ethernetMacAddress",
             "$top": "999",
         },
         max_pages=max_pages,
     )
 
+    import entity_resolution as er
+    await er.ensure_indexes(db)
     assets = await db.assets.find({}, {"_id": 0, "id": 1, "hostname": 1}).to_list(50000)
     asset_by_key = {_hostname_key(a.get("hostname")): a for a in assets if _hostname_key(a.get("hostname"))}
 
@@ -62,7 +70,19 @@ async def sync_intune(db, max_pages: int = 30) -> dict:
         compliance_counts[state] = compliance_counts.get(state, 0) + 1
         if state == "noncompliant":
             noncompliant += 1
-        asset = asset_by_key.get(_hostname_key(d.get("deviceName")))
+        # Intune sends the SHORT device name while Defender sends an FQDN and
+        # Qualys sends whatever the scan target was. Resolve on identity -- the
+        # Entra device GUID and MACs Intune also provides are strong keys that
+        # tie all three together permanently. See entity_resolution.py.
+        _rec = {"deviceName": d.get("deviceName"), "intune_device_id": d.get("id"),
+                "aad_device_id": d.get("azureADDeviceId"),
+                "serial": d.get("serialNumber"),
+                "mac": [d.get("wiFiMacAddress"), d.get("ethernetMacAddress")]}
+        _v = await er.resolve(db, _rec, source="intune")
+        asset = (await db.assets.find_one({"id": _v["asset_id"]}, {"_id": 0, "id": 1})
+                 if _v["asset_id"] else None) or asset_by_key.get(_hostname_key(d.get("deviceName")))
+        if asset:
+            await er.record_identifiers(db, asset["id"], er.identifiers_from(_rec), "intune")
         if not asset:
             continue
         await db.assets.update_one({"id": asset["id"]}, {"$set": {
