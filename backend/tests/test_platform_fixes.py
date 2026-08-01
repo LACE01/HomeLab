@@ -95,7 +95,12 @@ print("PASS: a bare-number CWE now resolves to an ATT&CK technique (previously e
 f = apply_mitre_mapping({"id": "f1", "cwe": "89"})
 assert f["mitre_tactic"] == "Initial Access"
 assert "T1190" in f["mitre_technique"]
-assert f["mitre_mapping_source"] == "heuristic"
+# The source now names WHICH layer produced the mapping rather than the flat
+# "heuristic", because the layers are different strengths of claim: a CWE lookup
+# and a title-keyword inference should not be presented as the same statement.
+# See mitre_signals.py and tests/test_mitre_signals.py.
+assert f["mitre_mapping_source"] == "cwe"
+assert f["mitre_confidence"] == "high" and f["mitre_explanation"]
 # an analyst-set mapping is never overwritten
 f2 = apply_mitre_mapping({"id": "f2", "cwe": "89", "mitre_tactic": "Impact", "mitre_technique": "Custom"})
 assert f2["mitre_tactic"] == "Impact"
@@ -104,6 +109,9 @@ f3 = apply_mitre_mapping({"id": "f3", "cwe": None, "cwes": ["CWE-79"]})
 assert f3.get("mitre_technique_id") == "T1190"
 print("PASS: apply_mitre_mapping populates from normalized CWEs, respects analyst overrides, and checks alt fields")
 
+# mapping_coverage is the CWE-only figure and is kept for the historical view.
+# The live endpoint now uses coverage_from_findings, which measures across every
+# layer -- see the endpoint assertions below.
 cov = mapping_coverage({"89": 10, "CWE-79": 5, "CWE-99999": 3, None: 7})
 assert cov["findings_total"] == 25
 assert cov["findings_mapped"] == 15
@@ -128,9 +136,24 @@ r = client.get("/api/v1/mitre/coverage")
 assert r.status_code == 200
 cov = r.json()
 assert cov["findings_total"] == 5, "closed findings must be excluded from coverage"
-assert cov["findings_mapped"] == 2                  # 89 + CWE-79
-assert cov["findings_without_cwe"] == 1
+# a and b map from CWE. c/d/e have no usable CWE and no title, category or
+# exposure to fall back on, so they stay honestly unmapped -- the point of the
+# layering is that a finding with a REAL title no longer lands here.
+assert cov["findings_mapped"] == 2
+assert cov["unmapped_count"] == 3
+assert {b["basis"] for b in cov["by_basis"]} == {"cwe"}
 print("PASS: /v1/mitre/coverage reports live backlog coverage, excluding closed findings")
+
+# the same backlog, but with the titles real findings actually carry: the ones
+# that were unmappable become mappable without a single CWE being added
+run(db.findings.update_one({"id": "d"}, {"$set": {"title": "Telnet Service Detected on Port 23"}}))
+run(db.findings.update_one({"id": "e"}, {"$set": {"title": "Windows Firewall Is Disabled"}}))
+cov2 = client.get("/api/v1/mitre/coverage").json()
+assert cov2["findings_mapped"] == 4 and cov2["unmapped_count"] == 1
+bases = {b["basis"]: b["count"] for b in cov2["by_basis"]}
+assert bases == {"cwe": 2, "signature": 2}, bases
+print("PASS: findings with no CWE but a real title now map from their own text — coverage went from "
+      "2/5 to 4/5 with no CWE data added, which is the whole point")
 
 r = client.post("/api/v1/mitre/backfill-cwe")
 assert r.status_code == 200

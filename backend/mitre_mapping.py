@@ -130,6 +130,60 @@ def mitre_for_cwe(cwe):
     return CWE_MITRE_MAP.get(key)
 
 
+def coverage_from_findings(findings: list) -> dict:
+    """Coverage measured the way the product actually maps, i.e. across every
+    layer -- not just CWE.
+
+    The old figure ("0.8%") measured only the CWE table and so described a
+    limitation of one input rather than what the feature delivers. It also gave a
+    misleading instruction: "extend the CWE table", when the CWE table was never
+    going to reach findings that have no CWE.
+    """
+    by_basis: dict = {}
+    unmapped_examples = []
+    unmapped_categories: dict = {}
+    techniques: dict = {}
+    tactics: dict = {}
+    for f in findings:
+        r = resolve_mitre(f)
+        by_basis[r["basis"]] = by_basis.get(r["basis"], 0) + 1
+        if r["technique_id"]:
+            key = (r["technique_id"], r["technique"])
+            techniques[key] = techniques.get(key, 0) + 1
+            tactics[r["tactic"]] = tactics.get(r["tactic"], 0) + 1
+        else:
+            cat = (f.get("detection_logic") or "uncategorized").strip() or "uncategorized"
+            unmapped_categories[cat] = unmapped_categories.get(cat, 0) + 1
+            if len(unmapped_examples) < 10:
+                unmapped_examples.append({"id": f.get("id"), "title": f.get("title"),
+                                           "category": f.get("detection_logic")})
+    total = len(findings)
+    mapped = total - by_basis.get("none", 0)
+    return {
+        "findings_total": total,
+        "findings_mapped": mapped,
+        "coverage_pct": round(100 * mapped / total, 1) if total else 0.0,
+        "by_basis": [
+            {"basis": b, "count": c, "confidence": CONFIDENCE.get(b, "none")}
+            for b, c in sorted(by_basis.items(), key=lambda x: -x[1]) if b != "none"
+        ],
+        "unmapped_count": by_basis.get("none", 0),
+        "top_techniques": [
+            {"technique_id": tid, "technique": name, "count": c,
+             "url": "https://attack.mitre.org/techniques/" + tid.replace(".", "/") + "/"}
+            for (tid, name), c in sorted(techniques.items(), key=lambda x: -x[1])[:12]
+        ],
+        "tactics": [{"tactic": t, "count": c}
+                     for t, c in sorted(tactics.items(), key=lambda x: -x[1])],
+        "top_unmapped_categories": [
+            {"category": k, "count": v}
+            for k, v in sorted(unmapped_categories.items(), key=lambda x: -x[1])[:10]
+        ],
+        "unmapped_examples": unmapped_examples,
+        "table_size": len(CWE_MITRE_MAP),
+    }
+
+
 def mapping_coverage(cwe_counts: dict) -> dict:
     """Item 33's coverage indicator: given {cwe: finding_count}, how much of the
     backlog we can actually map, and which unmapped CWEs are costing us the most
@@ -162,20 +216,119 @@ def mapping_coverage(cwe_counts: dict) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# The layered resolver. See mitre_signals.py for why CWE alone is not enough:
+# 7,441 of 7,501 open findings in a real backlog carry no CWE, so a CWE-only
+# mapping renders "-" on 99% of the product.
+# ---------------------------------------------------------------------------
+# Sources this module produces itself. "heuristic" is the pre-layering marker and
+# is deliberately included: those mappings SHOULD be recomputed, since recomputing
+# is the upgrade.
+INFERRED_SOURCES = {"cwe", "signature", "category", "exposure", "heuristic"}
+
+CONFIDENCE = {
+    "analyst": "confirmed",
+    "cwe": "high",
+    "signature": "medium",
+    "category": "low",
+    "exposure": "low",
+}
+
+
+def resolve_mitre(finding: dict) -> dict:
+    """Best available ATT&CK mapping for a finding, WITH the basis for it.
+
+    Always returns a dict. When nothing maps, `technique_id` is None and
+    `explanation` says what was looked at -- an honest "we could not determine
+    this from what the scanner gave us" is a different statement from a silent
+    dash, and it tells the analyst whether to go add evidence or move on.
+    """
+    from mitre_signals import match_signature, match_category
+
+    # 1. an analyst's own mapping outranks every inference.
+    #    "analyst" means "not produced by a layer below". Mappings stored before
+    #    this field existed have no source at all, and clobbering those would
+    #    silently discard human decisions -- so anything whose source is not one of
+    #    our own inference labels is treated as human.
+    existing = finding.get("mitre_technique_id") or finding.get("mitre_technique")
+    if existing and finding.get("mitre_mapping_source") not in INFERRED_SOURCES:
+        return {
+            "tactic": finding.get("mitre_tactic"),
+            "technique_id": finding["mitre_technique_id"],
+            "technique": finding.get("mitre_technique"),
+            "basis": "analyst", "confidence": "confirmed",
+            "explanation": "Set explicitly by an analyst on this finding.",
+            "matched": None,
+        }
+
+    # 2. CWE, when the scanner gave us one
+    cwe = normalize_cwe(finding.get("cwe")) or normalize_cwe(
+        finding.get("cwes") or (finding.get("raw") or {}).get("cwe"))
+    if cwe:
+        m = CWE_MITRE_MAP.get(cwe)
+        if m:
+            return {**m, "basis": "cwe", "confidence": "high",
+                    "explanation": f"Mapped from {cwe}, the weakness class the scanner recorded.",
+                    "matched": cwe}
+
+    # 3. what the finding SAYS -- the layer that covers the CWE-less majority
+    sig = match_signature(finding)
+    if sig:
+        mapping, label, matched = sig
+        return {**mapping, "basis": "signature", "confidence": "medium",
+                "explanation": (f"No CWE on this finding, so it was matched on what it describes: "
+                                 f"{label}."),
+                "matched": matched}
+
+    # 4. the scanner's own category -- coarse but rarely wrong about the domain
+    cat = match_category(finding)
+    if cat:
+        mapping, label = cat
+        return {**mapping, "basis": "category", "confidence": "low",
+                "explanation": (f"Inferred from the scanner category alone ({label}); no CWE and no "
+                                 "recognizable pattern in the finding text. Treat as a starting point."),
+                "matched": finding.get("detection_logic")}
+
+    # 5. position, as a last resort
+    if finding.get("internet_facing") and (finding.get("severity") in ("Critical", "High")
+                                            or finding.get("kev_flag")):
+        return {"tactic": "Initial Access", "technique_id": "T1190",
+                "technique": "Exploit Public-Facing Application",
+                "basis": "exposure", "confidence": "low",
+                "explanation": ("Nothing in the finding text identified a technique. Mapped on position "
+                                 "alone: a serious weakness on an internet-facing asset is reachable "
+                                 "from outside, whatever the mechanism."),
+                "matched": "internet-facing"}
+
+    return {"tactic": None, "technique_id": None, "technique": None,
+            "basis": "none", "confidence": "none",
+            "explanation": ("Could not determine a technique: this finding has no CWE, no scanner "
+                             "category, and nothing in its title or description matched a known "
+                             "behaviour pattern. Set one manually if you recognize it."),
+            "matched": None}
+
+
 def apply_mitre_mapping(finding: dict) -> dict:
     """Returns the finding dict with mitre_tactic/mitre_technique/mitre_technique_id
     filled in (live, best-fit) whenever the finding doesn't already carry an explicit
     analyst-set mapping. Safe to call on a doc that already has these fields -- it
     won't overwrite a value that's already present."""
-    if finding.get("mitre_tactic") or finding.get("mitre_technique"):
+    if ((finding.get("mitre_technique_id") or finding.get("mitre_technique"))
+            and finding.get("mitre_mapping_source") not in INFERRED_SOURCES):
         return finding
-    m = mitre_for_cwe(finding.get("cwe"))
-    if not m:
-        # Some importers put the CWE in a list field or on the raw payload.
-        m = mitre_for_cwe(finding.get("cwes") or (finding.get("raw") or {}).get("cwe"))
-    if m:
-        finding["mitre_tactic"] = m["tactic"]
-        finding["mitre_technique"] = f'{m["technique"]} ({m["technique_id"]})'
-        finding["mitre_technique_id"] = m["technique_id"]
-        finding["mitre_mapping_source"] = "heuristic"
+    r = resolve_mitre(finding)
+    # Always attach the reasoning, even when nothing mapped: "we looked at X, Y
+    # and Z and could not tell" is useful; a bare dash is not.
+    finding["mitre_basis"] = r["basis"]
+    finding["mitre_confidence"] = r["confidence"]
+    finding["mitre_explanation"] = r["explanation"]
+    finding["mitre_matched"] = r.get("matched")
+    if r["technique_id"]:
+        finding["mitre_tactic"] = r["tactic"]
+        finding["mitre_technique"] = f'{r["technique"]} ({r["technique_id"]})'
+        finding["mitre_technique_id"] = r["technique_id"]
+        finding["mitre_technique_name"] = r["technique"]
+        finding["mitre_url"] = (
+            "https://attack.mitre.org/techniques/" + r["technique_id"].replace(".", "/") + "/")
+        finding.setdefault("mitre_mapping_source", r["basis"])
     return finding

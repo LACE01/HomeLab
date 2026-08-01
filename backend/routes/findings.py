@@ -463,15 +463,19 @@ async def mitre_coverage(user: dict = Depends(get_current_user)):
     """Item 33's mapping-coverage indicator: how much of the open backlog we can
     actually map to ATT&CK, and which unmapped CWEs would buy the most coverage
     if added to the table."""
-    from mitre_mapping import mapping_coverage
+    from mitre_mapping import coverage_from_findings
     OPEN = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
-    counts: dict = {}
-    async for row in db.findings.aggregate([
-        {"$match": {"status": {"$in": OPEN}}},
-        {"$group": {"_id": "$cwe", "count": {"$sum": 1}}},
-    ]):
-        counts[row["_id"]] = row["count"]
-    return mapping_coverage(counts)
+    # Coverage is now measured across every mapping layer, so we need the fields
+    # the resolver reads -- not just the CWE. Projected down to those fields so
+    # this stays cheap on a 7k+ backlog.
+    findings = await db.findings.find(
+        {"status": {"$in": OPEN}},
+        {"_id": 0, "id": 1, "title": 1, "description": 1, "consequence": 1, "remediation": 1,
+         "business_impact": 1, "cwe": 1, "cwes": 1, "detection_logic": 1, "severity": 1,
+         "internet_facing": 1, "kev_flag": 1, "mitre_technique_id": 1, "mitre_tactic": 1,
+         "mitre_technique": 1, "mitre_mapping_source": 1},
+    ).to_list(None)
+    return coverage_from_findings(findings)
 
 
 @router.post("/v1/mitre/backfill-cwe")

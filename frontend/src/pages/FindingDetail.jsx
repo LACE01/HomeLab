@@ -284,37 +284,77 @@ export default function FindingDetail() {
           </Section>
 
           <Section title="MITRE ATT&CK Mapping">
+            {/* The mapping now resolves from whatever the finding actually carries --
+                CWE if present, otherwise what the finding SAYS, otherwise the
+                scanner's category. Each layer is a different strength of claim, so
+                the basis and confidence are shown rather than presenting an
+                inference as if it were a lookup. */}
             <KV k="Tactic" v={f.mitre_tactic} />
-            <KV k="Technique" v={f.mitre_technique} />
-            {f.mitre_mapping_source === "heuristic" && (
-              <div className="text-[10.5px] text-slate-500 mt-1">Best-fit suggestion based on CWE class — not an authoritative source, verify for this specific finding.</div>
-            )}
-            {!f.mitre_tactic && !f.mitre_technique && (
-              <div className="text-[11.5px] text-slate-500">
-                {f.cwe
-                  ? <>No mapping for <span className="font-mono text-slate-400">{f.cwe}</span> yet — it isn&apos;t in the current CWE→ATT&amp;CK table.</>
-                  : <>This finding has no CWE recorded, so there&apos;s nothing to map from. Scanners often omit CWE on
-                     configuration/informational checks; the coverage figure below shows how much of the backlog this affects.</>}
+            <KV k="Technique" v={
+              f.mitre_technique_id
+                ? <a href={f.mitre_url} target="_blank" rel="noreferrer"
+                     className="text-blue-300 hover:underline">{f.mitre_technique}</a>
+                : null} />
+
+            {f.mitre_technique_id && (
+              <div className="mt-2 flex items-start gap-2">
+                <span className={`shrink-0 text-[9.5px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded border ${
+                  f.mitre_confidence === "confirmed" ? "border-emerald-600/50 text-emerald-300 bg-emerald-500/10" :
+                  f.mitre_confidence === "high" ? "border-blue-600/50 text-blue-300 bg-blue-500/10" :
+                  f.mitre_confidence === "medium" ? "border-amber-600/50 text-amber-300 bg-amber-500/10" :
+                  "border-slate-600/50 text-slate-400 bg-slate-500/10"}`}>
+                  {f.mitre_confidence} confidence
+                </span>
+                <div className="text-[10.5px] text-slate-500 leading-relaxed">
+                  {f.mitre_explanation}
+                  {f.mitre_matched && f.mitre_basis === "signature" && (
+                    <> Matched on <span className="font-mono text-slate-400">&ldquo;{f.mitre_matched}&rdquo;</span>.</>
+                  )}
+                </div>
               </div>
             )}
+
+            {!f.mitre_technique_id && (
+              <div className="text-[11.5px] text-slate-500">{f.mitre_explanation
+                || "No technique could be determined for this finding."}</div>
+            )}
+
             {mitreCoverage && (
               <div className="mt-2.5 pt-2.5 border-t border-[#30363D]">
                 <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider mb-1">Mapping coverage</div>
                 <div className="flex items-center gap-2">
                   <div className="flex-1 h-2 bg-slate-800 rounded overflow-hidden">
-                    <div className={`h-full ${mitreCoverage.coverage_pct_of_all >= 60 ? "bg-emerald-500" : mitreCoverage.coverage_pct_of_all >= 30 ? "bg-amber-500" : "bg-red-500"}`}
-                      style={{ width: `${mitreCoverage.coverage_pct_of_all}%` }}/>
+                    <div className={`h-full ${mitreCoverage.coverage_pct >= 60 ? "bg-emerald-500" : mitreCoverage.coverage_pct >= 30 ? "bg-amber-500" : "bg-red-500"}`}
+                      style={{ width: `${mitreCoverage.coverage_pct}%` }}/>
                   </div>
-                  <span className="text-[11.5px] text-slate-200">{mitreCoverage.coverage_pct_of_all}%</span>
+                  <span className="text-[11.5px] text-slate-200">{mitreCoverage.coverage_pct}%</span>
                 </div>
                 <div className="text-[10.5px] text-slate-500 mt-1">
-                  {mitreCoverage.findings_mapped.toLocaleString()} of {mitreCoverage.findings_total.toLocaleString()} open findings map to a technique
-                  ({mitreCoverage.findings_without_cwe.toLocaleString()} carry no CWE at all).
-                  Table covers {mitreCoverage.table_size} CWE classes.
+                  {mitreCoverage.findings_mapped?.toLocaleString()} of {mitreCoverage.findings_total?.toLocaleString()} open
+                  findings map to a technique.
+                  {mitreCoverage.by_basis?.length > 0 && (
+                    <> By basis: {mitreCoverage.by_basis.map(b => `${b.count.toLocaleString()} ${b.basis}`).join(", ")}.</>
+                  )}
                 </div>
-                {mitreCoverage.top_unmapped?.length > 0 && (
-                  <div className="text-[10.5px] text-slate-600 mt-1">
-                    Biggest gaps: {mitreCoverage.top_unmapped.slice(0, 5).map(u => `${u.cwe} (${u.count})`).join(", ")}
+                {mitreCoverage.top_techniques?.length > 0 && (
+                  <div className="mt-1.5">
+                    <div className="text-[10px] uppercase font-mono text-slate-600 tracking-wider mb-0.5">Most common techniques in your backlog</div>
+                    <div className="flex flex-wrap gap-1">
+                      {mitreCoverage.top_techniques.slice(0, 6).map(t => (
+                        <a key={t.technique_id} href={t.url} target="_blank" rel="noreferrer"
+                           className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-[#30363D] text-slate-400 hover:text-blue-300 hover:border-blue-700">
+                          {t.technique_id} · {t.count.toLocaleString()}
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {mitreCoverage.unmapped_count > 0 && (
+                  <div className="text-[10.5px] text-slate-600 mt-1.5">
+                    {mitreCoverage.unmapped_count.toLocaleString()} still unmapped
+                    {mitreCoverage.top_unmapped_categories?.length > 0 && (
+                      <>, mostly {mitreCoverage.top_unmapped_categories.slice(0, 3).map(c => `${c.category} (${c.count})`).join(", ")}</>
+                    )}.
                   </div>
                 )}
               </div>
