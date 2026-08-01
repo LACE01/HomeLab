@@ -22,6 +22,7 @@ from seed import seed_all
 
 from routes.auth import router as auth_router
 from routes.findings import router as findings_router
+from routes.corroboration import router as corroboration_router
 from routes.identity import router as identity_router
 from routes.inventory import router as inventory_router
 from routes.workflows import router as workflows_router
@@ -81,12 +82,17 @@ api = APIRouter(prefix="/api")
 
 # Register each domain router (order does not matter — APIRouter merges routes safely).
 api.include_router(auth_router)
-api.include_router(findings_router)
-# BEFORE inventory_router, deliberately. inventory registers "/v1/assets/{asset_id}",
-# which is a catch-all that would swallow the literal paths "/v1/assets/duplicates",
-# "/v1/assets/merge" and "/v1/assets/merges" and try to look them up as asset ids.
-# FastAPI matches in registration order, so the literal routes have to come first.
+# These two go FIRST, deliberately. FastAPI matches routes in registration order,
+# and both of the big routers below register catch-alls that would swallow the
+# literal paths registered here:
+#   inventory  "/v1/assets/{asset_id}"   would eat "/v1/assets/duplicates"
+#   findings   "/v1/findings/{finding_id}" would eat "/v1/findings/corroboration/summary"
+# and then try to look the literal segment up as an id. This codebase has hit that
+# shadowing bug repeatedly; registering the literal routes ahead of the catch-alls
+# is what prevents it.
 api.include_router(identity_router)
+api.include_router(corroboration_router)
+api.include_router(findings_router)
 api.include_router(inventory_router)
 api.include_router(workflows_router)
 api.include_router(integrations_router)

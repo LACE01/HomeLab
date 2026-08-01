@@ -221,22 +221,34 @@ assert summary["created"] == 2  # one High/CVE finding + one Info/no-CVE finding
 print("PASS: run_tenable_sync() only processes completed scans and creates one finding per plugin hit")
 
 findings = run(db.findings.find({}, {"_id": 0}).to_list(10))
+# The key is now (CVE, RESOLVED ASSET ID) rather than (CVE, hostname string).
+# Building it from a name meant Qualys and Nessus reporting the same CVE on the
+# same machine either collided and overwrote each other's source_tool, or missed
+# and duplicated -- decided by nothing but how each tool spelled the host.
+# See corroboration.py.
+_asset = run(db.assets.find_one({"hostname": "10.0.0.5"}, {"_id": 0}))
 by_key = {f["canonical_key"]: f for f in findings}
-assert "CVE-2023-1234::10.0.0.5" in by_key
-assert "NESSUS-99999::10.0.0.5" in by_key
-print("PASS: canonical_key uses the plugin's CVE when present, else NESSUS-<plugin_id>")
+assert f"CVE-2023-1234::{_asset['id']}" in by_key, by_key.keys()
+assert any(k.startswith("tenable-nessus:99999::") for k in by_key), by_key.keys()
+print("PASS: canonical_key is keyed on the resolved asset id, using the CVE when present and the "
+      "tool's own plugin id otherwise (two tools' proprietary ids are not the same finding)")
 
-high = by_key["CVE-2023-1234::10.0.0.5"]
+high = by_key[f"CVE-2023-1234::{_asset['id']}"]
 assert high["severity"] == "High"
 assert high["cvss_score"] == 7.5
 assert high["remediation"] == "Upgrade to the latest OpenSSL version."
 assert high["title"] == "OpenSSL Multiple Vulnerabilities"
 assert high["source_tool"] == "Tenable Nessus"
+# and the finding now carries a sources[] array, so a second scanner reporting the
+# same CVE corroborates it instead of overwriting source_tool
+assert high["source_count"] == 1
+assert high["sources"][0]["tool"] == "Tenable Nessus"
+assert high["sources"][0]["native_id"] == "12345"
 assert high["detection_channel"] == "tenable_api"
 assert high["cve_list"] == ["CVE-2023-1234"]
 print("PASS: finding fields (severity/cvss/remediation/title) are populated from the plugin-detail lookup")
 
-info = by_key["NESSUS-99999::10.0.0.5"]
+info = by_key[next(k for k in by_key if k.startswith("tenable-nessus:99999::"))]
 assert info["severity"] == "Info"
 assert info["cve"] is None
 print("PASS: an Info-severity, no-CVE plugin hit still becomes its own finding (no severity filtering)")
@@ -305,11 +317,13 @@ print("PASS: a previously-open finding no longer reported on re-scan of the same
 _reset()
 _seed_integration()
 run(ts.run_tenable_sync(db))
-closed = run(db.findings.find_one({"canonical_key": "CVE-2023-1234::10.0.0.5"}, {"_id": 0}))
+_a = run(db.assets.find_one({"hostname": "10.0.0.5"}, {"_id": 0}))
+_key = f"CVE-2023-1234::{_a['id']}"
+closed = run(db.findings.find_one({"canonical_key": _key}, {"_id": 0}))
 run(db.findings.update_one({"id": closed["id"]}, {"$set": {"status": "Fixed validated"}}))
 
 result = run(ts.run_tenable_sync(db))
-reopened = run(db.findings.find_one({"canonical_key": "CVE-2023-1234::10.0.0.5"}, {"_id": 0}))
+reopened = run(db.findings.find_one({"canonical_key": _key}, {"_id": 0}))
 assert reopened["status"] == "Reopened"
 assert reopened["reopened_count"] == 1
 assert result["summary"]["updated"] >= 1

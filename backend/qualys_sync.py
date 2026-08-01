@@ -331,7 +331,13 @@ async def _upsert_finding(db, det: dict, kb: dict, nvd_cache: dict | None = None
     severity = _norm_severity(det.get("severity"))
     cve = kb_entry.get("cve")
     nvd = (nvd_cache or {}).get(cve) if cve else None
-    canonical = f"{cve or qid}::{asset['hostname']}"
+    # Keyed on the RESOLVED asset id, not the hostname string. Both scanners used
+    # to build this key from a name, so whether Qualys and Nessus reporting the
+    # same CVE on the same machine collided (silently overwriting source_tool) or
+    # duplicated came down to nothing but how each tool spelled the host. See
+    # corroboration.py.
+    from corroboration import canonical_key as _ckey
+    canonical = _ckey(asset_id=asset["id"], cve=cve, native_id=qid, tool="Qualys VMDR")
     existing = await db.findings.find_one({"canonical_key": canonical}, {"_id": 0})
 
     # Strip HTML from Qualys KB fields for nicer display
@@ -385,6 +391,26 @@ async def _upsert_finding(db, det: dict, kb: dict, nvd_cache: dict | None = None
         base["reopened_count"] = reopened
         base["first_seen_at"] = existing["first_seen_at"]
         base["canonical_key"] = canonical
+        # Append this scanner's report rather than replacing whoever was here.
+        # The old code overwrote source_tool, so a finding two tools had
+        # independently confirmed ended up claiming to come from whichever
+        # scanner synced last -- the corroboration was destroyed on write.
+        from corroboration import merge_source, make_source, reconcile_severity
+        _sources = merge_source(existing.get("sources") or (
+            [make_source(tool=existing.get("source_tool"),
+                          native_id=existing.get("source_native_id"),
+                          severity=existing.get("severity"),
+                          first_seen=existing.get("first_seen_at"))]
+            if existing.get("source_tool") else []),
+            make_source(tool="Qualys VMDR", native_id=qid, severity=severity,
+                         title=base.get("title")))
+        base["sources"] = _sources
+        base["source_count"] = len({x["tool"] for x in _sources})
+        _sev = reconcile_severity(_sources)
+        if _sev["severity"]:
+            base["severity"] = _sev["severity"]
+            base["severity_agreement"] = _sev["agreement"]
+            base["severity_disagreement"] = _sev["disagreement"]
         risk = compute_risk({**existing, **base}, asset)
         base["risk_score"] = risk["score"]
         base["risk_breakdown"] = risk["breakdown"]
@@ -397,8 +423,12 @@ async def _upsert_finding(db, det: dict, kb: dict, nvd_cache: dict | None = None
         _fs_dt = datetime.fromisoformat(first_seen_val.replace("Z", "+00:00"))
     except Exception:
         _fs_dt = datetime.now(timezone.utc)
+    from corroboration import make_source as _mk
     new_finding = {
         "id": str(uuid.uuid4()), "canonical_key": canonical,
+        "sources": [_mk(tool="Qualys VMDR", native_id=qid, severity=severity,
+                         title=base.get("title"), first_seen=first_seen_val)],
+        "source_count": 1,
         "first_seen_at": first_seen_val,
         "reopened_count": 0,
         "status": "New", "validation_status": "pending",

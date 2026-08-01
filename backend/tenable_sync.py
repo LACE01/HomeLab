@@ -248,7 +248,12 @@ async def _upsert_finding(db, asset: dict, vuln: dict, plugin: dict, scan_name: 
     severity = _norm_severity(vuln.get("severity"))
     cve_list = plugin.get("cve_list") or []
     primary_cve = cve_list[0] if cve_list else None
-    canonical = f"{primary_cve or 'NESSUS-' + str(plugin_id)}::{asset['hostname']}"
+    # Keyed on the resolved asset id -- see corroboration.py. With a CVE this
+    # deliberately produces the SAME key Qualys produces, so the two scanners
+    # corroborate one finding instead of racing to overwrite each other.
+    from corroboration import canonical_key as _ckey
+    canonical = _ckey(asset_id=asset["id"], cve=primary_cve,
+                       native_id=plugin_id, tool="Tenable Nessus")
     existing = await db.findings.find_one({"canonical_key": canonical}, {"_id": 0})
 
     base = {
@@ -291,16 +296,43 @@ async def _upsert_finding(db, asset: dict, vuln: dict, plugin: dict, scan_name: 
         base["reopened_count"] = reopened
         base["first_seen_at"] = existing["first_seen_at"]
         base["canonical_key"] = canonical
+        from corroboration import merge_source, make_source, reconcile_severity
+        _sources = merge_source(existing.get("sources") or (
+            [make_source(tool=existing.get("source_tool"),
+                          native_id=existing.get("source_native_id"),
+                          severity=existing.get("severity"),
+                          first_seen=existing.get("first_seen_at"))]
+            if existing.get("source_tool") else []),
+            make_source(tool="Tenable Nessus", native_id=str(plugin_id),
+                         severity=severity, title=base.get("title")))
+        base["sources"] = _sources
+        base["source_count"] = len({x["tool"] for x in _sources})
+        _sev = reconcile_severity(_sources)
+        if _sev["severity"]:
+            base["severity"] = _sev["severity"]
+            base["severity_agreement"] = _sev["agreement"]
+            base["severity_disagreement"] = _sev["disagreement"]
+        # A second scanner enriches, it does not rewrite. Without this guard the
+        # Nessus description and remediation would replace Qualys' (and any human
+        # edit) on every sync, and vice versa -- the two tools would overwrite
+        # each other forever.
+        for _f in ("description", "remediation", "title"):
+            if existing.get(_f) and base.get(_f):
+                base.pop(_f)
         risk = compute_risk({**existing, **base}, asset)
         base["risk_score"] = risk["score"]
         base["risk_breakdown"] = risk["breakdown"]
         await db.findings.update_one({"id": existing["id"]}, {"$set": base})
-        return "updated", canonical
+        return "corroborated" if base["source_count"] > 1 else "updated", canonical
 
     sla_days_val = compute_sla_days(severity, asset["criticality"])
     now = _now_iso()
     new_finding = {
         "id": str(uuid.uuid4()), "canonical_key": canonical,
+        "sources": [__import__("corroboration").make_source(
+            tool="Tenable Nessus", native_id=str(plugin_id), severity=severity,
+            title=base.get("title"))],
+        "source_count": 1,
         "first_seen_at": now, "reopened_count": 0,
         "status": "New", "validation_status": "pending",
         "sla_days": sla_days_val,
