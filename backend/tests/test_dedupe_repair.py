@@ -422,14 +422,16 @@ print("PASS: only rows superseded BY THIS REPAIR are eligible — a finding an a
 
 reset()
 run(db.findings.insert_many([
+    # imported_at is the field that matters -- see the dedicated test further
+    # down for why first_seen_at is the wrong one.
     {"id": "old-dup", "cve": "CVE-300", "asset_id": "a1", "status": "Superseded",
      "superseded_reason": "Duplicate created when the finding key changed from hostname-based "
                            "to asset-id-based without a migration path. Folded into the original.",
-     "first_seen_at": "2025-06-01T00:00:00Z"},
+     "first_seen_at": "2025-06-01T00:00:00Z", "imported_at": "2025-06-01T00:00:00Z"},
     {"id": "new-dup", "cve": "CVE-301", "asset_id": "a1", "status": "Superseded",
      "superseded_reason": "Duplicate created when the finding key changed from hostname-based "
                            "to asset-id-based without a migration path. Folded into the original.",
-     "first_seen_at": "2026-08-01T18:29:00Z"},
+     "first_seen_at": "2025-06-01T00:00:00Z", "imported_at": "2026-08-01T18:29:00Z"},
 ]))
 scoped = run(dr.purge_superseded(db, dry_run=True, created_after="2026-08-01T18:00:00Z"))
 assert scoped["candidates"] == 1 and scoped["deletable"] == 1
@@ -440,3 +442,97 @@ print("PASS: --since scopes the purge to a single sync window, so cleaning up on
 unscoped = run(dr.purge_superseded(db, dry_run=True))
 assert unscoped["candidates"] == 2
 print("PASS: without --since every machine-folded duplicate is a candidate")
+
+
+# ============ THE ONE THE USER'S DRY RUN CAUGHT ============
+#
+# Their real output: every example showed keep=Fixed validated, fold=New. The
+# duplicate is evidence from the CURRENT scan that the vulnerability is still
+# present; the survivor is a record that was closed at some earlier point.
+#
+# Folding the open row into the closed one and stopping there would mark 7,361
+# live vulnerabilities as fixed, and the finding COUNT would look perfectly
+# correct afterwards -- which is what makes it the most dangerous outcome this
+# repair could produce.
+
+reset()
+run(db.findings.insert_many([
+    {"id": "closed-orig", "cve": "CVE-2013-3900", "asset_id": "a1",
+     "status": "Fixed validated", "reopened_count": 1,
+     "first_seen_at": "2023-04-07T16:29:43Z", "imported_at": "2023-04-07T16:29:43Z"},
+    {"id": "new-dup", "cve": "CVE-2013-3900", "asset_id": "a1", "status": "New",
+     "first_seen_at": "2023-04-07T16:29:43Z", "imported_at": "2026-08-01T18:29:00Z"},
+]))
+
+preview = run(dr.repair(db, dry_run=True))
+assert preview["reopened"] == 1, preview
+assert any(t["from"] == "Fixed validated" and t["to"] == "Reopened"
+            for t in preview["status_transitions"])
+print("PASS: the dry run REPORTS that a closed survivor will be reopened, and shows the status "
+      "transition — the user's run showed 'keep status=Fixed validated / fold status=New' on "
+      "every example and nothing said what that would do to the survivor")
+
+run(dr.repair(db, dry_run=False))
+kept = run(db.findings.find_one({"id": "closed-orig"}, {"_id": 0}))
+assert kept["status"] == "Reopened", \
+    "a live vulnerability was left marked fixed — the count would look right and the data would be wrong"
+assert kept["reopened_count"] == 2, "the reopen counter must advance, as the sync would have"
+assert "reported this as present while this record was closed" in kept["verification_note"]
+print("PASS: folding OPEN evidence into a CLOSED survivor REOPENS it, increments reopened_count "
+      "and records why — finishing the job the broken sync started rather than silently closing "
+      "a vulnerability the scanner still sees")
+
+assert run(db.findings.find_one({"id": "new-dup"}))["status"] == "Superseded"
+print("PASS: the duplicate is still folded away; only the survivor's status changes")
+
+
+# a closed survivor with a closed duplicate must NOT be reopened
+reset()
+run(db.findings.insert_many([
+    {"id": "c1", "cve": "CVE-1", "asset_id": "a1", "status": "Fixed validated",
+     "first_seen_at": "2024-01-01T00:00:00Z"},
+    {"id": "c2", "cve": "CVE-1", "asset_id": "a1", "status": "Fixed validated",
+     "first_seen_at": "2024-06-01T00:00:00Z"},
+]))
+result = run(dr.repair(db, dry_run=False))
+assert result["reopened"] == 0
+assert run(db.findings.find_one({"id": "c1"}))["status"] == "Fixed validated"
+print("PASS: two closed copies stay closed — reopening requires actual open evidence, not merely "
+      "the presence of a duplicate")
+
+# an open survivor is untouched
+reset()
+run(db.findings.insert_many([
+    {"id": "o1", "cve": "CVE-2", "asset_id": "a1", "status": "Valid",
+     "first_seen_at": "2024-01-01T00:00:00Z"},
+    {"id": "o2", "cve": "CVE-2", "asset_id": "a1", "status": "New",
+     "first_seen_at": "2026-08-01T18:29:00Z"},
+]))
+run(dr.repair(db, dry_run=False))
+assert run(db.findings.find_one({"id": "o1"}))["status"] == "Valid"
+print("PASS: an already-open survivor keeps its triage status")
+
+
+# ============ --since must filter the ROW's write time ============
+
+reset()
+run(db.findings.insert_many([
+    {"id": "d1", "status": "Superseded",
+     "superseded_reason": "Duplicate created when the finding key changed from hostname-based "
+                           "to asset-id-based without a migration path.",
+     # The scanner first saw this vulnerability in 2023; the ROW was written by
+     # the bad sync last night. Scoping on first_seen_at would exclude it.
+     "first_seen_at": "2023-04-07T16:29:43Z", "imported_at": "2026-08-01T18:29:00Z"},
+    {"id": "d2", "status": "Superseded",
+     "superseded_reason": "Duplicate created when the finding key changed from hostname-based "
+                           "to asset-id-based without a migration path.",
+     "first_seen_at": "2023-04-07T16:29:43Z", "imported_at": "2024-01-01T00:00:00Z"},
+]))
+scoped = run(dr.purge_superseded(db, dry_run=True, created_after="2026-08-01T18:00:00Z"))
+assert scoped["candidates"] == 1, (
+    f"--since found {scoped['candidates']} rows; it must filter imported_at (when the ROW was "
+    "written), not first_seen_at (the scanner's own first_found, which duplicates inherit and "
+    "which is years old)")
+assert scoped["referenced_examples"] == [] and scoped["deletable"] == 1
+print("PASS: --since filters on imported_at, the time the ROW was written — filtering the "
+      "inherited first_seen_at is why the user's purge reported 0 candidates for 7,361 duplicates")

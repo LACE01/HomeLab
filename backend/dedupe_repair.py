@@ -45,6 +45,13 @@ DECIDED_STATUSES = {
     "Fixed pending validation", "Fixed validated", "Closed administratively",
 }
 
+# Statuses the sync itself treats as "closed, and seeing this again is a reopen"
+# (qualys_sync._upsert_finding). Kept identical on purpose: the repair is
+# reconstructing what that sync WOULD have done had it found the existing row.
+CLOSED_STATUSES = {"Fixed validated", "Mitigated", "Closed administratively"}
+
+OPEN_STATUSES = {"New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"}
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -115,6 +122,8 @@ async def repair(db, *, dry_run: bool = True, include_closed: bool = False) -> d
     folded = 0
     examples = []
     conflicts = []
+    transitions: dict = {}
+    reopened = 0
 
     for ident, findings in groups.items():
         ordered = sorted(findings, key=_sort_key)
@@ -133,6 +142,13 @@ async def repair(db, *, dry_run: bool = True, include_closed: bool = False) -> d
                                "first_seen_at": f.get("first_seen_at")} for f in ordered],
             })
             continue
+
+        # Is the survivor closed while the evidence we are folding in is open?
+        reopen = (keeper.get("status") in CLOSED_STATUSES
+                  and any(d.get("status") in OPEN_STATUSES for d in rest))
+        transitions[(keeper.get("status"), "Reopened" if reopen else keeper.get("status"))] = \
+            transitions.get((keeper.get("status"),
+                              "Reopened" if reopen else keeper.get("status")), 0) + 1
 
         sources = _sources_of(keeper)
         for dup in rest:
@@ -163,10 +179,12 @@ async def repair(db, *, dry_run: bool = True, include_closed: bool = False) -> d
             })
 
         folded += len(rest)
+        if reopen:
+            reopened += 1
         if dry_run:
             continue
 
-        await db.findings.update_one({"id": keeper["id"]}, {"$set": {
+        patch = {
             "canonical_key": new_key,
             "sources": sources,
             "source_count": len({s["tool"] for s in sources if s.get("tool")}),
@@ -175,7 +193,25 @@ async def repair(db, *, dry_run: bool = True, include_closed: bool = False) -> d
             "severity_disagreement": sev["disagreement"],
             "first_seen_at": earliest,
             "deduped_at": _now_iso(),
-        }})
+        }
+        if reopen:
+            # The scanner reported this as present in the run that created the
+            # duplicate. Folding an OPEN row into a CLOSED survivor and stopping
+            # there would silently mark a live vulnerability as fixed -- the
+            # single most dangerous outcome this repair could produce, and it
+            # would be invisible because the count would look right.
+            #
+            # So we finish the job the broken sync started: reopen, exactly as
+            # qualys_sync._upsert_finding would have done had it found this row.
+            patch["status"] = "Reopened"
+            patch["reopened_count"] = (keeper.get("reopened_count") or 0) + 1
+            patch["last_changed_at"] = _now_iso()
+            patch["verification_note"] = (
+                f"Reopened during duplicate repair: the scan on "
+                f"{sorted(d.get('imported_at') or '' for d in rest)[-1][:10] or 'the affected run'} "
+                "reported this as present while this record was closed. The duplicate that scan "
+                "created has been folded in.")
+        await db.findings.update_one({"id": keeper["id"]}, {"$set": patch})
         for dup in rest:
             await db.findings.update_one({"id": dup["id"]}, {"$set": {
                 "status": "Superseded",
@@ -190,6 +226,10 @@ async def repair(db, *, dry_run: bool = True, include_closed: bool = False) -> d
         "dry_run": dry_run,
         "duplicate_groups": len(groups),
         "findings_folded": folded,
+        "reopened": reopened,
+        "status_transitions": [
+            {"from": k[0], "to": k[1], "count": v}
+            for k, v in sorted(transitions.items(), key=lambda kv: -kv[1])],
         "conflicts": conflicts,
         "conflict_count": len(conflicts),
         "examples": examples,
@@ -268,11 +308,21 @@ async def purge_superseded(db, *, dry_run: bool = True, created_after: str = Non
     if only_from_key_migration:
         q["superseded_reason"] = {"$regex": "key changed from hostname-based"}
     if created_after:
-        q["first_seen_at"] = {"$gte": created_after}
+        # imported_at, NOT first_seen_at.
+        #
+        # first_seen_at is the scanner's own first_found -- 2020, 2022, 2023 for
+        # a real backlog. The duplicate rows inherit it, so scoping on that field
+        # excludes every row the bad sync wrote and the purge silently finds
+        # nothing. imported_at is when THIS row was written, which is what
+        # "since the bad run" actually means.
+        q["$or"] = [
+            {"imported_at": {"$gte": created_after}},
+            {"superseded_at": {"$gte": created_after}},
+        ]
 
     candidates = await db.findings.find(
         q, {"_id": 0, "id": 1, "cve": 1, "title": 1, "first_seen_at": 1,
-            "superseded_by": 1}).to_list(200000)
+            "imported_at": 1, "superseded_at": 1, "superseded_by": 1}).to_list(200000)
     ids = [c["id"] for c in candidates]
     referenced = await references_to(db, ids)
 
@@ -324,7 +374,21 @@ def _print_report(result: dict) -> None:
     print(f"  duplicate groups : {result['duplicate_groups']}")
     print(f"  findings folded  : {result['findings_folded']}")
     print(f"  conflicts        : {result['conflict_count']}")
+    if result.get("reopened"):
+        print(f"  REOPENED         : {result['reopened']}")
+        print()
+        print("  These survivors are currently CLOSED, but the scan that created the")
+        print("  duplicate reported the vulnerability as still present. Keeping the closed")
+        print("  record as-is would mark a live vulnerability fixed, so they are reopened —")
+        print("  which is what the sync itself would have done had it found the row.")
     print()
+
+    if result.get("status_transitions"):
+        print("Status of the surviving finding:")
+        for t in result["status_transitions"][:10]:
+            arrow = f"{t['from']} -> {t['to']}" if t["from"] != t["to"] else f"{t['from']} (unchanged)"
+            print(f"  {t['count']:>6}  {arrow}")
+        print()
 
     if result["examples"]:
         print("Examples (keeping <- folding):")
