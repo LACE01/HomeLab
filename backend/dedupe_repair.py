@@ -77,14 +77,41 @@ def _identity(f: dict) -> tuple:
     return None
 
 
-def _sort_key(f: dict):
-    """Which of a duplicate group survives.
+def _sort_key(f: dict, new_key: str = None):
+    """Which of a duplicate group survives. Lower sorts first.
 
-    Human engagement first, then age. A row someone has triaged is worth more
-    than a row that merely appeared earlier.
+    Four signals, in order:
+
+    1. HUMAN ENGAGEMENT. A row someone has triaged outranks one that merely
+       appeared earlier.
+
+    2. WHICH ROW IS THE ORIGINAL. This one is essential and was missing.
+
+       The duplicate was written by the bad sync under the NEW key
+       (CVE::asset_id); the pre-existing row still carries a LEGACY key
+       (CVE::hostname), because find_existing refuses to migrate onto a key
+       another row already holds. So the key format identifies the original
+       exactly.
+
+       Without this the two rows are frequently indistinguishable: both status
+       "New", and both carrying the SAME first_seen_at, because the duplicate
+       inherited Qualys' first_found. On a real backlog that was 7,052 of 7,361
+       groups -- and the tiebreak fell through to a random UUID, so roughly half
+       would have kept the row created last night and superseded the original,
+       silently discarding years of activity log, observations, comments and
+       ticket links that point at the original's id.
+
+    3. IMPORTED EARLIER. A secondary signal for the same thing: imported_at is
+       refreshed on every sync, so the original's is the previous run's timestamp
+       while the duplicate's is the bad run's.
+
+    4. first_seen_at, then id, so the ordering is deterministic.
     """
     decided = 0 if f.get("status") in DECIDED_STATUSES else 1
-    return (decided, f.get("first_seen_at") or "", f.get("id") or "")
+    # 0 = pre-existing row, 1 = row written under the new key by the bad sync
+    is_new_row = 1 if (new_key and f.get("canonical_key") == new_key) else 0
+    return (decided, is_new_row, f.get("imported_at") or "",
+            f.get("first_seen_at") or "", f.get("id") or "")
 
 
 def _sources_of(f: dict) -> list:
@@ -124,10 +151,27 @@ async def repair(db, *, dry_run: bool = True, include_closed: bool = False) -> d
     conflicts = []
     transitions: dict = {}
     reopened = 0
+    kept_original = 0
+    kept_new_row = 0
+    would_fold_ids: list = []
 
     for ident, findings in groups.items():
-        ordered = sorted(findings, key=_sort_key)
+        # The key the current code would write for this vulnerability. Computed
+        # from the GROUP rather than from a chosen survivor, because which row
+        # survives depends on which one already holds it.
+        sample = findings[0]
+        group_key = canonical_key(
+            asset_id=sample["asset_id"],
+            cve=sample.get("cve"),
+            native_id=sample.get("source_native_id") or sample.get("qid"),
+            tool=sample.get("source_tool"))
+
+        ordered = sorted(findings, key=lambda f: _sort_key(f, group_key))
         keeper, rest = ordered[0], ordered[1:]
+        if keeper.get("canonical_key") == group_key:
+            kept_new_row += 1
+        else:
+            kept_original += 1
 
         # If more than one row has been triaged differently, a machine should not
         # pick. Report it and leave both alone.
@@ -156,17 +200,15 @@ async def repair(db, *, dry_run: bool = True, include_closed: bool = False) -> d
                 sources = merge_source(sources, src)
 
         sev = reconcile_severity(sources)
-        new_key = canonical_key(
-            asset_id=keeper["asset_id"],
-            cve=keeper.get("cve"),
-            native_id=keeper.get("source_native_id") or keeper.get("qid"),
-            tool=keeper.get("source_tool"))
+        new_key = group_key
 
         # The earliest first_seen across the group -- the duplicate was created
         # later by definition, but the SLA clock should reflect when the
         # vulnerability was actually first observed.
         earliest = min((f.get("first_seen_at") for f in ordered if f.get("first_seen_at")),
                         default=keeper.get("first_seen_at"))
+
+        would_fold_ids.extend(d["id"] for d in rest)
 
         if len(examples) < 15:
             examples.append({
@@ -227,6 +269,9 @@ async def repair(db, *, dry_run: bool = True, include_closed: bool = False) -> d
         "duplicate_groups": len(groups),
         "findings_folded": folded,
         "reopened": reopened,
+        "kept_pre_existing_row": kept_original,
+        "kept_newly_created_row": kept_new_row,
+        "folded_ids": would_fold_ids,
         "status_transitions": [
             {"from": k[0], "to": k[1], "count": v}
             for k, v in sorted(transitions.items(), key=lambda kv: -kv[1])],
@@ -287,7 +332,8 @@ async def references_to(db, finding_ids: list) -> dict:
 
 
 async def purge_superseded(db, *, dry_run: bool = True, created_after: str = None,
-                            only_from_key_migration: bool = True) -> dict:
+                            only_from_key_migration: bool = True,
+                            candidate_ids: list = None) -> dict:
     """Permanently delete superseded duplicates that nothing points at.
 
     Folding marks duplicates Superseded rather than deleting them, which is the
@@ -304,6 +350,34 @@ async def purge_superseded(db, *, dry_run: bool = True, created_after: str = Non
       * optionally, it was created after `created_after` -- so a purge can be
         scoped to the one bad sync rather than to all history
     """
+    # In a dry run nothing has been superseded yet, so querying for Superseded
+    # rows finds none and the preview reads "0 safe to delete" -- which looks
+    # like the purge will do nothing rather than "the fold has not happened yet".
+    # The caller passes the ids the fold WOULD supersede so the preview is about
+    # the same rows the real run will act on.
+    if candidate_ids is not None:
+        q = {"id": {"$in": candidate_ids}}
+        if created_after:
+            q["$or"] = [{"imported_at": {"$gte": created_after}},
+                         {"superseded_at": {"$gte": created_after}}]
+        candidates = await db.findings.find(
+            q, {"_id": 0, "id": 1, "cve": 1, "title": 1, "first_seen_at": 1,
+                "imported_at": 1, "superseded_at": 1, "superseded_by": 1}).to_list(200000)
+        ids = [c["id"] for c in candidates]
+        referenced = await references_to(db, ids)
+        deletable = [c for c in candidates if c["id"] not in referenced]
+        kept = [{**c, "referenced_by": referenced[c["id"]]}
+                for c in candidates if c["id"] in referenced]
+        return {
+            "dry_run": True, "candidates": len(candidates), "deletable": len(deletable),
+            "deleted": 0, "kept_because_referenced": len(kept),
+            "referenced_examples": kept[:10],
+            "scope": {"created_after": created_after,
+                       "only_from_key_migration": only_from_key_migration},
+            "note": ("Nothing was deleted. These are the rows the fold above would supersede; "
+                      "this is what --apply would remove."),
+        }
+
     q = {"status": "Superseded"}
     if only_from_key_migration:
         q["superseded_reason"] = {"$regex": "key changed from hostname-based"}
@@ -383,6 +457,15 @@ def _print_report(result: dict) -> None:
         print("  which is what the sync itself would have done had it found the row.")
     print()
 
+    if result.get("kept_pre_existing_row") is not None:
+        print("Which row survives:")
+        print(f"  {result['kept_pre_existing_row']:>6}  the PRE-EXISTING finding "
+              "(keeps its history, tickets, comments)")
+        if result.get("kept_newly_created_row"):
+            print(f"  {result['kept_newly_created_row']:>6}  the row the bad sync created "
+                  "— only when it is the one a human has triaged")
+        print()
+
     if result.get("status_transitions"):
         print("Status of the surviving finding:")
         for t in result["status_transitions"][:10]:
@@ -449,7 +532,11 @@ async def _main(apply: bool, include_closed: bool, purge: bool,
     _print_report(result)
 
     if purge:
-        purged = await purge_superseded(db, dry_run=not apply, created_after=since)
+        purged = await purge_superseded(
+            db, dry_run=not apply, created_after=since,
+            # On a dry run the fold has not happened, so preview against the rows
+            # it WOULD supersede rather than against an empty Superseded set.
+            candidate_ids=(result.get("folded_ids") if not apply else None))
         _print_purge(purged)
 
     if apply:

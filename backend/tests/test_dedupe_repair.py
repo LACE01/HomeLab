@@ -536,3 +536,98 @@ assert scoped["candidates"] == 1, (
 assert scoped["referenced_examples"] == [] and scoped["deletable"] == 1
 print("PASS: --since filters on imported_at, the time the ROW was written — filtering the "
       "inherited first_seen_at is why the user's purge reported 0 candidates for 7,361 duplicates")
+
+
+# ============ WHICH row survives when the two are indistinguishable ============
+#
+# From the user's real dry run: 7,052 of 7,361 groups had BOTH rows at status
+# "New" with the SAME first_seen_at, because the duplicate inherited Qualys'
+# first_found. With only (status, first_seen, id) to sort on, the tiebreak was a
+# random UUID -- so roughly half of those would have kept the row written last
+# night and superseded the original, discarding every activity-log entry,
+# observation, comment and ticket that points at the original's id.
+
+reset()
+run(db.tickets.delete_many({}))
+
+ORIGINAL = "aaa-original-sorts-first"
+DUPLICATE = "000-duplicate-sorts-earlier"   # deliberately sorts BEFORE by id
+
+run(db.findings.insert_many([
+    # The pre-existing row: still carries the legacy hostname-based key.
+    {"id": ORIGINAL, "canonical_key": "CVE-2013-3900::web-1", "cve": "CVE-2013-3900",
+     "asset_id": "asset-1", "status": "New", "first_seen_at": "2023-04-07T16:29:43Z",
+     "imported_at": "2026-08-01T16:49:00Z", "reopened_count": 3},
+    # The row the bad sync wrote: carries the new asset-id key.
+    {"id": DUPLICATE, "canonical_key": "CVE-2013-3900::asset-1", "cve": "CVE-2013-3900",
+     "asset_id": "asset-1", "status": "New", "first_seen_at": "2023-04-07T16:29:43Z",
+     "imported_at": "2026-08-01T18:29:00Z"},
+]))
+
+preview = run(dr.repair(db, dry_run=True))
+assert preview["kept_pre_existing_row"] == 1, preview
+assert preview["kept_newly_created_row"] == 0
+assert preview["examples"][0]["keeping"]["id"] == ORIGINAL, (
+    "the row created by the bad sync was chosen as the survivor purely because its UUID sorted "
+    "first — the original's history would have been superseded")
+print("PASS: with both rows at status New and an IDENTICAL first_seen, the PRE-EXISTING row is "
+      "kept — identified by its legacy canonical_key, not by a UUID tiebreak that would have "
+      "picked wrong roughly half the time across 7,052 groups")
+
+run(dr.repair(db, dry_run=False))
+kept = run(db.findings.find_one({"id": ORIGINAL}, {"_id": 0}))
+assert kept["status"] != "Superseded" and kept["reopened_count"] == 3
+assert run(db.findings.find_one({"id": DUPLICATE}))["status"] == "Superseded"
+print("PASS: the original keeps its accumulated history and the new row is folded away")
+
+# but a triaged new row still wins, because a human decision outranks provenance
+reset()
+run(db.findings.insert_many([
+    {"id": "orig", "canonical_key": "CVE-5::web-1", "cve": "CVE-5", "asset_id": "a1",
+     "status": "New", "first_seen_at": "2024-01-01T00:00:00Z",
+     "imported_at": "2026-08-01T16:49:00Z"},
+    {"id": "dup-triaged", "canonical_key": "CVE-5::a1", "cve": "CVE-5", "asset_id": "a1",
+     "status": "False positive", "first_seen_at": "2024-01-01T00:00:00Z",
+     "imported_at": "2026-08-01T18:29:00Z"},
+]))
+result = run(dr.repair(db, dry_run=True))
+assert result["examples"][0]["keeping"]["id"] == "dup-triaged"
+assert result["kept_newly_created_row"] == 1
+print("PASS: a human decision still outranks provenance — if someone triaged the newer row, that "
+      "is the one worth keeping, and the report says so explicitly")
+
+
+# ============ the dry-run purge previews the rows the fold WOULD supersede ============
+
+reset()
+run(db.tickets.delete_many({}))
+run(db.findings.insert_many([
+    {"id": "keep-1", "canonical_key": "CVE-7::web-1", "cve": "CVE-7", "asset_id": "a1",
+     "status": "New", "first_seen_at": "2023-01-01T00:00:00Z",
+     "imported_at": "2026-08-01T16:49:00Z"},
+    {"id": "fold-1", "canonical_key": "CVE-7::a1", "cve": "CVE-7", "asset_id": "a1",
+     "status": "New", "first_seen_at": "2023-01-01T00:00:00Z",
+     "imported_at": "2026-08-01T18:29:00Z"},
+    {"id": "keep-2", "canonical_key": "CVE-8::web-1", "cve": "CVE-8", "asset_id": "a1",
+     "status": "New", "first_seen_at": "2023-01-01T00:00:00Z",
+     "imported_at": "2026-08-01T16:49:00Z"},
+    {"id": "fold-2", "canonical_key": "CVE-8::a1", "cve": "CVE-8", "asset_id": "a1",
+     "status": "New", "first_seen_at": "2023-01-01T00:00:00Z",
+     "imported_at": "2026-08-01T18:29:00Z"},
+]))
+run(db.tickets.insert_one({"id": "t9", "finding_id": "fold-2"}))
+
+plan = run(dr.repair(db, dry_run=True))
+assert sorted(plan["folded_ids"]) == ["fold-1", "fold-2"]
+
+preview = run(dr.purge_superseded(db, dry_run=True, created_after="2026-08-01T18:00:00Z",
+                                   candidate_ids=plan["folded_ids"]))
+assert preview["candidates"] == 2, preview
+assert preview["deletable"] == 1 and preview["kept_because_referenced"] == 1
+assert "what --apply would remove" in preview["note"]
+print("PASS: on a DRY RUN the purge previews the rows the fold would supersede — querying for "
+      "already-Superseded rows found none and printed '0 safe to delete', which read as 'the "
+      "purge will do nothing' rather than 'the fold has not run yet'")
+
+assert run(db.findings.count_documents({})) == 4, "the dry run changed data"
+print("PASS: previewing still changes nothing")
