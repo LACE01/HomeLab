@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import { api } from "@/lib/api";
+import { AsyncState } from "@/components/AsyncState";
 import Layout from "@/components/Layout";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtDate, fmtRel, isOverdue } from "@/lib/utils-fmt";
@@ -309,9 +310,14 @@ export function AssetDetail() {
   const [editingType, setEditingType] = useState(false);
   const [typeChoice, setTypeChoice] = useState("server");
   const [savingType, setSavingType] = useState(false);
+  const [loadError, setLoadError] = useState(null);
 
   useEffect(() => {
-    api.get(`/v1/assets/${id}`).then(r => setA(r.data));
+    // A failed load used to leave `A` null forever, which renders as a permanent
+    // "Loading…" -- indistinguishable from a slow request, so nobody could tell
+    // the page had died. Capture the error and render it.
+    setLoadError(null);
+    api.get(`/v1/assets/${id}`).then(r => setA(r.data)).catch(e => setLoadError(e));
     api.get(`/v1/assets/${id}/findings`).then(r => setFindings(r.data.items));
     api.get(`/v1/assets/${id}/albert-alerts`).then(r => setAlbertAlerts(r.data)).catch(() => {});
     api.get(`/v1/assets/${id}/software`).then(r => setSoftware(r.data)).catch(() => {});
@@ -400,7 +406,14 @@ export function AssetDetail() {
     }
   };
 
-  if (!a) return <Layout title="Asset…"><div className="text-slate-500">Loading…</div></Layout>;
+  if (!a) return (
+    <Layout title="Asset…">
+      <AsyncState loading={!loadError} error={loadError} label="this asset"
+                  onRetry={() => window.location.reload()}>
+        <span/>
+      </AsyncState>
+    </Layout>
+  );
 
   return (
     <Layout title={

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { AsyncState } from "@/components/AsyncState";
 import { useNavigate, Link } from "react-router-dom";
 import { toast } from "sonner";
 import { api, API } from "@/lib/api";
@@ -147,6 +148,7 @@ export default function AlbertMonitoring() {
   const [deviceTrend, setDeviceTrend] = useState(null);
   const [days, setDays] = useState(30);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
 
   const [alerts, setAlerts] = useState({ items: [], total: 0, page: 1, page_size: 25 });
   const [q, setQ] = useState("");
@@ -176,6 +178,7 @@ export default function AlbertMonitoring() {
 
   const loadDashboard = async (rangeDays) => {
     setLoading(true);
+    setLoadError(null);
     try {
       const [statsR, sigR, impR, sankeyR] = await Promise.all([
         api.get("/v1/admin/albert/stats", { params: { days: rangeDays } }),
@@ -188,7 +191,11 @@ export default function AlbertMonitoring() {
       setImports(impR.data);
       setSankey(sankeyR.data);
     } catch (e) {
-      // non-fatal -- no data yet is a valid empty state
+      // NOT a valid empty state. This used to swallow the error, so a timed-out
+      // or erroring API rendered as "TOTAL ALERTS —" with blank charts, which
+      // reads as "nothing is happening on the network" — the most dangerous
+      // possible misreading on a monitoring page.
+      setLoadError(e);
     } finally {
       setLoading(false);
     }
@@ -520,6 +527,13 @@ export default function AlbertMonitoring() {
           </button>
         </div>
       </div>
+
+      {loadError && (
+        <AsyncState loading={false} error={loadError} onRetry={() => loadDashboard(days)}
+                    label="the Albert dashboard">
+          <span/>
+        </AsyncState>
+      )}
 
       {!loading && (!stats || stats.total_alerts === 0) ? (
         <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-10 text-center">

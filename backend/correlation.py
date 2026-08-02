@@ -28,6 +28,7 @@ DESIGN RULES
     a prepared context. Adding one is adding an entry, and each is independently
     testable.
 """
+import asyncio
 import uuid
 from datetime import datetime, timezone, timedelta
 
@@ -249,38 +250,101 @@ RULES_BY_KEY = {r.key: r for r in RULES}
 
 
 # ---------------------------------------------------------------------------
-async def _context_for(db, asset: dict) -> dict:
-    import entity_resolution as er
-    findings = await db.findings.find(
-        {"asset_id": asset["id"], "status": {"$in": OPEN_STATUSES}},
-        {"_id": 0, "id": 1, "cve": 1, "severity": 1, "kev_flag": 1, "port": 1,
-         "title": 1}).to_list(500)
-    identity = await er.identity_of(db, asset["id"])
-    alerts = await db.albert_alerts.find(
-        {"$or": [{"destination_ip": asset.get("ip")}, {"source_ip": asset.get("ip")}],
-         "time_gmt": {"$gte": _since(WINDOW_DAYS)}},
-        {"_id": 0, "destination_port": 1, "category": 1}).to_list(200) if asset.get("ip") else []
-    users = await db.directory_users.find(
-        {"primary_device_id": asset.get("intune_device_id")}, {"_id": 0}).to_list(50) \
+async def _prefetch(db, assets: list) -> dict:
+    """Load everything the rules need in a handful of queries, not six per asset.
+
+    The first version did ~6 round trips PER ASSET. On a few hundred assets that
+    is thousands of sequential queries every run, which does not block the loop
+    (they are awaits) but does monopolise the database and the scheduler for
+    minutes at a time -- and it grows linearly with the estate, so it gets worse
+    exactly as the platform becomes more useful.
+    """
+    asset_ids = [a["id"] for a in assets]
+    ips = [a.get("ip") for a in assets if a.get("ip")]
+    intune_ids = [a.get("intune_device_id") for a in assets if a.get("intune_device_id")]
+
+    findings_by_asset: dict = {}
+    for f in await db.findings.find(
+            {"asset_id": {"$in": asset_ids}, "status": {"$in": OPEN_STATUSES}},
+            {"_id": 0, "id": 1, "asset_id": 1, "cve": 1, "severity": 1, "kev_flag": 1,
+             "port": 1, "title": 1}).to_list(200000):
+        findings_by_asset.setdefault(f["asset_id"], []).append(f)
+
+    sources_by_asset: dict = {}
+    for row in await db.asset_identifiers.find(
+            {"asset_id": {"$in": asset_ids}}, {"_id": 0, "asset_id": 1, "source": 1}
+    ).to_list(200000):
+        sources_by_asset.setdefault(row["asset_id"], set()).add(row["source"])
+
+    alerts_by_ip: dict = {}
+    if ips:
+        for a in await db.albert_alerts.find(
+                {"time_gmt": {"$gte": _since(WINDOW_DAYS)},
+                 "$or": [{"destination_ip": {"$in": ips}}, {"source_ip": {"$in": ips}}]},
+                {"_id": 0, "destination_ip": 1, "source_ip": 1, "destination_port": 1,
+                 "category": 1}).to_list(100000):
+            for ip in (a.get("destination_ip"), a.get("source_ip")):
+                if ip:
+                    alerts_by_ip.setdefault(ip, []).append(a)
+
+    users_by_device: dict = {}
+    emails: list = []
+    if intune_ids:
+        for u in await db.directory_users.find(
+                {"primary_device_id": {"$in": intune_ids}}, {"_id": 0}).to_list(50000):
+            users_by_device.setdefault(u["primary_device_id"], []).append(u)
+            upn = u.get("user_principal_name") or u.get("email")
+            if upn:
+                emails.append(upn)
+
+    breaches_by_email: dict = {}
+    if emails:
+        for b in await db.breach_exposures.find(
+                {"email": {"$in": emails}}, {"_id": 0}).to_list(50000):
+            breaches_by_email.setdefault(b["email"], []).append(b)
+
+    paths_by_asset: dict = {}
+    for p in await db.attack_paths.find(
+            {"status": {"$ne": "resolved"}, "node_asset_ids": {"$in": asset_ids}},
+            {"_id": 0}).to_list(20000):
+        for nid in (p.get("node_asset_ids") or []):
+            paths_by_asset.setdefault(nid, []).append(p)
+    for lst in paths_by_asset.values():
+        lst.sort(key=lambda x: -(x.get("score") or 0))
+
+    certs_by_asset: dict = {}
+    for c in await db.cert_checks.find(
+            {"asset_id": {"$in": asset_ids}, "days_left": {"$lte": 30, "$gte": 0}},
+            {"_id": 0}).to_list(20000):
+        certs_by_asset.setdefault(c["asset_id"], []).append(c)
+    for lst in certs_by_asset.values():
+        lst.sort(key=lambda x: x.get("days_left", 999))
+
+    return {"findings": findings_by_asset, "sources": sources_by_asset,
+            "alerts": alerts_by_ip, "users": users_by_device,
+            "breaches": breaches_by_email, "paths": paths_by_asset,
+            "certs": certs_by_asset}
+
+
+def _context_for(asset: dict, pre: dict) -> dict:
+    """Assemble one asset's context from the prefetched maps. No I/O."""
+    alerts = pre["alerts"].get(asset.get("ip"), []) if asset.get("ip") else []
+    users = pre["users"].get(asset.get("intune_device_id"), []) \
         if asset.get("intune_device_id") else []
-    emails = [u.get("user_principal_name") or u.get("email") for u in users if u]
-    breached = await db.breach_exposures.find(
-        {"email": {"$in": [e for e in emails if e]}}, {"_id": 0}).to_list(50) if emails else []
-    paths = await db.attack_paths.find(
-        {"status": {"$ne": "resolved"}, "node_asset_ids": asset["id"]},
-        {"_id": 0}).sort("score", -1).to_list(5)
-    certs = await db.cert_checks.find(
-        {"asset_id": asset["id"], "days_left": {"$lte": 30, "$gte": 0}},
-        {"_id": 0}).sort("days_left", 1).to_list(5)
+    breached = []
+    for u in users:
+        upn = u.get("user_principal_name") or u.get("email")
+        breached.extend(pre["breaches"].get(upn, []) if upn else [])
     return {
-        "asset": asset, "findings": findings,
-        "sources": set(identity.get("sources") or []),
+        "asset": asset,
+        "findings": pre["findings"].get(asset["id"], []),
+        "sources": pre["sources"].get(asset["id"], set()),
         "alerts": alerts,
         "alert_ports": {a.get("destination_port") for a in alerts if a.get("destination_port")},
         "privileged_users": [u for u in users if u.get("is_privileged") or u.get("admin_roles")],
         "breached_users": breached,
-        "attack_paths": paths,
-        "expiring_certs": certs,
+        "attack_paths": pre["paths"].get(asset["id"], []),
+        "expiring_certs": pre["certs"].get(asset["id"], []),
     }
 
 
@@ -329,10 +393,17 @@ async def run(db, *, asset_limit: int = 5000) -> dict:
     assets = await db.assets.find(
         {"status": {"$nin": ["merged", "decommissioned"]}}, {"_id": 0}).to_list(asset_limit)
 
+    pre = await _prefetch(db, assets)
+
     new_hits, refreshed = 0, 0
     seen_keys = set()
-    for asset in assets:
-        ctx = await _context_for(db, asset)
+    for i, asset in enumerate(assets):
+        # Yield periodically. Rule evaluation is pure CPU over the prefetched
+        # maps, so without this a large estate would hold the loop for the whole
+        # sweep -- the same defect as the coverage endpoint, one layer down.
+        if i % 200 == 0:
+            await asyncio.sleep(0)
+        ctx = _context_for(asset, pre)
         for rule in runnable:
             try:
                 hit = rule.evaluate(rule, ctx)

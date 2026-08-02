@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
+import { AsyncState } from "@/components/AsyncState";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import { FirstAidKit, Warning, CheckCircle, ArrowRight, ArrowCounterClockwise, Wrench } from "@phosphor-icons/react";
@@ -13,6 +14,7 @@ const CLASSIFICATION_COLOR = {
 export default function IRWizard() {
   const navigate = useNavigate();
   const [cfg, setCfg] = useState(null);
+  const [loadError, setLoadError] = useState(null);
   const [answers, setAnswers] = useState({}); // question_id -> option_id
   const [title, setTitle] = useState("");
   const [reporterContact, setReporterContact] = useState("");
@@ -20,7 +22,10 @@ export default function IRWizard() {
   const [result, setResult] = useState(null);
 
   useEffect(() => {
-    api.get("/v1/ir/wizard").then(r => setCfg(r.data)).catch(() => toast.error("Failed to load the triage wizard"));
+    // The toast disappears; the page then sits on "Loading…" forever with nothing
+    // on screen saying it failed. Keep the error so the page can render it.
+    setLoadError(null);
+    api.get("/v1/ir/wizard").then(r => setCfg(r.data)).catch(e => setLoadError(e));
   }, []);
 
   const answeredCount = Object.keys(answers).length;
@@ -50,7 +55,14 @@ export default function IRWizard() {
 
   const reset = () => { setAnswers({}); setTitle(""); setReporterContact(""); setResult(null); };
 
-  if (!cfg) return <Layout title="Incident Triage Wizard"><div className="text-slate-500 text-center py-10">Loading…</div></Layout>;
+  if (!cfg) return (
+    <Layout title="Incident Triage Wizard">
+      <AsyncState loading={!loadError} error={loadError} label="the triage wizard"
+                  onRetry={() => window.location.reload()}>
+        <span/>
+      </AsyncState>
+    </Layout>
+  );
 
   if (result) {
     const { result: r, action_plan, recommended_tools, case: c } = result;

@@ -148,7 +148,12 @@ print("PASS: /v1/mitre/coverage reports live backlog coverage, excluding closed 
 # that were unmappable become mappable without a single CWE being added
 run(db.findings.update_one({"id": "d"}, {"$set": {"title": "Telnet Service Detected on Port 23"}}))
 run(db.findings.update_one({"id": "e"}, {"$set": {"title": "Windows Firewall Is Disabled"}}))
-cov2 = client.get("/api/v1/mitre/coverage").json()
+# ?refresh=true, because coverage is now CACHED. It walks every open finding
+# through the ATT&CK layers -- 5.5s of CPU on a 7,500-finding backlog -- so it is
+# computed on a TTL off the event loop rather than on every request. A test that
+# changes the data and immediately re-reads has to say it wants a recompute, and
+# so does a person who has just finished a large sync.
+cov2 = client.get("/api/v1/mitre/coverage?refresh=true").json()
 assert cov2["findings_mapped"] == 4 and cov2["unmapped_count"] == 1
 bases = {b["basis"]: b["count"] for b in cov2["by_basis"]}
 assert bases == {"cwe": 2, "signature": 2}, bases

@@ -174,10 +174,13 @@ async def take_snapshot(db, *, day: str = None) -> dict:
     """
     day = day or _day()
 
+    # Explicit limits rather than an unbounded cursor: this runs inside the API
+    # process, and reading a whole collection that only ever grows is a memory
+    # spike waiting for the estate to get big enough.
     open_findings = await db.findings.find(
         {"status": {"$in": OPEN_STATUSES}},
         {"_id": 0, "id": 1, "severity": 1, "kev_flag": 1, "asset_id": 1,
-         "internet_facing": 1, "due_at": 1}).to_list(None)
+         "internet_facing": 1, "due_at": 1}).to_list(200000)
 
     by_sev = {s: 0 for s in SEVERITIES}
     for f in open_findings:
@@ -186,7 +189,7 @@ async def take_snapshot(db, *, day: str = None) -> dict:
 
     assets = await db.assets.find(
         {"status": {"$nin": ["merged", "decommissioned"]}},
-        {"_id": 0, "id": 1, "internet_facing": 1, "exposure": 1}).to_list(None)
+        {"_id": 0, "id": 1, "internet_facing": 1, "exposure": 1}).to_list(100000)
     internet_facing = [a["id"] for a in assets
                         if a.get("internet_facing") or a.get("exposure") in ("internet", "external")]
 
@@ -195,8 +198,8 @@ async def take_snapshot(db, *, day: str = None) -> dict:
                if f.get("due_at") and f["due_at"] < _now_iso()]
 
     paths = await db.attack_paths.find({"status": {"$ne": "resolved"}},
-                                        {"_id": 0, "id": 1}).to_list(None)
-    hits = await db.correlation_hits.find({"status": "open"}, {"_id": 0, "id": 1}).to_list(None)
+                                        {"_id": 0, "id": 1}).to_list(50000)
+    hits = await db.correlation_hits.find({"status": "open"}, {"_id": 0, "id": 1}).to_list(50000)
 
     doc = {
         "id": str(uuid.uuid4()),

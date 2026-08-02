@@ -141,3 +141,49 @@ export function describeLoginError(ex, probe) {
   }
   return detail || `Sign-in failed (HTTP ${status}).`;
 }
+
+
+/** Describe ANY failed API call, not just sign-in.
+ *
+ *  Three separate times now this codebase has rendered a failure as something
+ *  that looks fine: "Login failed" for a 504, "no data yet" for a timed-out
+ *  Albert dashboard, and a permanent "Loading…" for an asset page whose request
+ *  never came back. Each one sent someone looking in the wrong place.
+ *
+ *  The rule this encodes: a request that FAILED must never render as a request
+ *  that succeeded and found nothing, and a request that is STILL RUNNING must
+ *  never render the same as one that died. */
+export function describeApiError(ex) {
+  if (!ex) return null;
+  const status = ex.response?.status;
+  const detail = ex.response?.data?.detail;
+
+  if (ex.code === "ECONNABORTED" || /timeout/i.test(ex.message || "")) {
+    return { kind: "timeout",
+             message: "The server took too long to answer. It may be under load — this is not an "
+                      + "empty result." };
+  }
+  if (!ex.response) {
+    if (ex.isAxiosError !== true && !ex.request) {
+      return { kind: "client", message: `The page hit an error: ${ex.message || ex}` };
+    }
+    return { kind: "unreachable",
+             message: "Couldn't reach the server, so there is no result to show — this is not the "
+                      + "same as having no data." };
+  }
+  if ([502, 503, 504].includes(status)) {
+    return { kind: "backend_down",
+             message: `The API returned HTTP ${status} — the backend is down or restarting.` };
+  }
+  if (status === 403) {
+    return { kind: "forbidden", message: detail || "You don't have access to this." };
+  }
+  if (status === 404) {
+    return { kind: "missing", message: detail || "Not found." };
+  }
+  if (status >= 500) {
+    return { kind: "server_error",
+             message: `The server errored (HTTP ${status}). ${detail || "Check the backend logs."}` };
+  }
+  return { kind: "error", message: detail || `Request failed (HTTP ${status}).` };
+}

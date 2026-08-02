@@ -22,17 +22,29 @@ OPEN = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
 
 
 @router.get("/v1/findings/corroboration/summary")
-async def summary(user: dict = Depends(get_current_user)):
+async def summary(refresh: bool = False, user: dict = Depends(get_current_user)):
     """How much of the backlog is independently confirmed.
 
     A high corroboration rate means the backlog is trustworthy. A low one is not
     automatically bad -- it usually means the scanners cover different assets,
     which the coverage split below distinguishes from genuine disagreement.
     """
+    # Same reasoning as /v1/mitre/coverage: a whole-backlog statistic that used to
+    # be recomputed on every request, walking every open finding and doing one
+    # identifier lookup per distinct asset. Cached, and served stale-while-
+    # refreshing rather than making anyone wait for it.
+    from aggregate_cache import get_or_compute, invalidate
+    if refresh:
+        await invalidate(db, "corroboration_summary")
+    return await get_or_compute(db, "corroboration_summary", _compute_summary,
+                                 is_empty=lambda v: not v.get("findings_total"))
+
+
+async def _compute_summary():
     findings = await db.findings.find(
         {"status": {"$in": OPEN}},
         {"_id": 0, "id": 1, "asset_id": 1, "sources": 1, "severity": 1,
-         "source_tool": 1, "title": 1, "cve": 1}).to_list(None)
+         "source_tool": 1, "title": 1, "cve": 1}).to_list(50000)
 
     covering_cache: dict = {}
     counts = {"corroborated": 0, "single_source_disputed": 0,
