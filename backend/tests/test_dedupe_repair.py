@@ -351,3 +351,92 @@ with contextlib.redirect_stdout(buf):
 assert "qualys vmdr check 90001" in buf.getvalue()
 print("PASS: a finding with no CVE is described by its scanner and check id, so the report is "
       "readable for configuration findings too — which is most of the backlog")
+
+
+# ============ purging: delete only what nothing points at ============
+
+reset()
+run(db.tickets.delete_many({}))
+run(db.ir_cases.delete_many({}))
+
+run(db.findings.insert_many([
+    {"id": "keeper", "cve": "CVE-100", "asset_id": "a1", "status": "New",
+     "first_seen_at": "2026-01-01T00:00:00Z"},
+    # Three duplicates from the bad sync.
+    {"id": "dup-free", "cve": "CVE-100", "asset_id": "a1", "status": "New",
+     "first_seen_at": "2026-08-01T18:29:00Z"},
+    {"id": "dup-ticketed", "cve": "CVE-101", "asset_id": "a1", "status": "New",
+     "first_seen_at": "2026-08-01T18:29:00Z"},
+    {"id": "keeper-101", "cve": "CVE-101", "asset_id": "a1", "status": "New",
+     "first_seen_at": "2026-01-01T00:00:00Z"},
+    {"id": "dup-in-case", "cve": "CVE-102", "asset_id": "a1", "status": "New",
+     "first_seen_at": "2026-08-01T18:29:00Z"},
+    {"id": "keeper-102", "cve": "CVE-102", "asset_id": "a1", "status": "New",
+     "first_seen_at": "2026-01-01T00:00:00Z"},
+]))
+# Someone opened a ticket against one of the duplicates, and an IR case cites another.
+run(db.tickets.insert_one({"id": "t1", "finding_id": "dup-ticketed"}))
+run(db.ir_cases.insert_one({"id": "c1", "finding_ids": ["dup-in-case", "other"]}))
+
+run(dr.repair(db, dry_run=False))
+assert run(db.findings.count_documents({"status": "Superseded"})) == 3
+
+preview = run(dr.purge_superseded(db, dry_run=True))
+assert preview["candidates"] == 3
+assert preview["deletable"] == 1, preview
+assert preview["kept_because_referenced"] == 2
+assert run(db.findings.count_documents({})) == 6, "dry run deleted something"
+print("PASS: the purge finds 3 superseded duplicates but marks only 1 deletable — the other two "
+      "are referenced by a ticket and an IR case, and a dangling id turns a working case into one "
+      "that silently drops a row")
+
+refs = {r["id"]: r["referenced_by"] for r in preview["referenced_examples"]}
+assert "tickets.finding_id" in refs["dup-ticketed"]
+assert "ir_cases.finding_ids" in refs["dup-in-case"]
+print("PASS: each kept row names exactly what still points at it, so the decision is checkable "
+      "rather than a bare count")
+
+result = run(dr.purge_superseded(db, dry_run=False))
+assert result["deleted"] == 1
+assert run(db.findings.find_one({"id": "dup-free"})) is None
+assert run(db.findings.find_one({"id": "dup-ticketed"}))["status"] == "Superseded"
+assert run(db.findings.find_one({"id": "keeper"}))["status"] == "New"
+print("PASS: only the unreferenced duplicate is deleted; the referenced ones stay as tombstones "
+      "and the originals are untouched")
+
+
+# ============ the purge cannot touch a human's own supersede ============
+
+reset()
+run(db.findings.insert_one({
+    "id": "human-superseded", "cve": "CVE-200", "asset_id": "a1", "status": "Superseded",
+    "superseded_by": "something", "superseded_reason": "Merged by an analyst during triage",
+    "first_seen_at": "2026-08-01T18:29:00Z"}))
+result = run(dr.purge_superseded(db, dry_run=True))
+assert result["candidates"] == 0, "a human's supersede was treated as machine-generated"
+print("PASS: only rows superseded BY THIS REPAIR are eligible — a finding an analyst superseded "
+      "themselves is never swept up by a cleanup they did not ask for")
+
+
+# ============ scoping to the one bad run ============
+
+reset()
+run(db.findings.insert_many([
+    {"id": "old-dup", "cve": "CVE-300", "asset_id": "a1", "status": "Superseded",
+     "superseded_reason": "Duplicate created when the finding key changed from hostname-based "
+                           "to asset-id-based without a migration path. Folded into the original.",
+     "first_seen_at": "2025-06-01T00:00:00Z"},
+    {"id": "new-dup", "cve": "CVE-301", "asset_id": "a1", "status": "Superseded",
+     "superseded_reason": "Duplicate created when the finding key changed from hostname-based "
+                           "to asset-id-based without a migration path. Folded into the original.",
+     "first_seen_at": "2026-08-01T18:29:00Z"},
+]))
+scoped = run(dr.purge_superseded(db, dry_run=True, created_after="2026-08-01T18:00:00Z"))
+assert scoped["candidates"] == 1 and scoped["deletable"] == 1
+assert scoped["scope"]["created_after"] == "2026-08-01T18:00:00Z"
+print("PASS: --since scopes the purge to a single sync window, so cleaning up one bad run cannot "
+      "quietly reach back through all of history")
+
+unscoped = run(dr.purge_superseded(db, dry_run=True))
+assert unscoped["candidates"] == 2
+print("PASS: without --since every machine-folded duplicate is a candidate")

@@ -199,6 +199,110 @@ async def repair(db, *, dry_run: bool = True, include_closed: bool = False) -> d
     }
 
 
+# Every place a finding id can be referenced from. Checked before deleting
+# anything: a dangling id turns a working IR case or report into one that
+# silently drops a row, and that damage is discovered months later by someone who
+# has no idea why the numbers do not add up.
+#
+# (collection, field, is_array)
+REFERENCE_SITES = [
+    ("tickets", "finding_id", False),
+    ("comments", "finding_id", False),
+    ("observations", "finding_id", False),
+    ("mitigations", "finding_id", False),
+    ("exceptions", "finding_id", False),
+    ("exceptions", "finding_ids", True),
+    ("security_review_findings", "finding_id", False),
+    ("risk_register", "linked_finding_ids", True),
+    ("ir_cases", "finding_ids", True),
+    ("attack_paths", "breaking_finding_ids", True),
+    ("correlation_hits", "evidence.finding_ids", True),
+    ("activity_log", "finding_id", False),
+    ("notifications", "finding_id", False),
+]
+
+
+async def references_to(db, finding_ids: list) -> dict:
+    """Which of these finding ids are referenced from somewhere else.
+
+    Returns {finding_id: [ "collection.field", ... ]}. Only ids that appear here
+    are unsafe to delete.
+    """
+    if not finding_ids:
+        return {}
+    found: dict = {}
+    for coll, field, is_array in REFERENCE_SITES:
+        try:
+            q = {field: {"$in": finding_ids}}
+            async for doc in db[coll].find(q, {"_id": 0, field: 1}):
+                value = doc.get(field)
+                hits = value if isinstance(value, list) else [value]
+                for h in hits:
+                    if h in finding_ids:
+                        found.setdefault(h, []).append(f"{coll}.{field}")
+        except Exception:
+            # A collection that does not exist is not a reference.
+            continue
+    return found
+
+
+async def purge_superseded(db, *, dry_run: bool = True, created_after: str = None,
+                            only_from_key_migration: bool = True) -> dict:
+    """Permanently delete superseded duplicates that nothing points at.
+
+    Folding marks duplicates Superseded rather than deleting them, which is the
+    right default -- a finding id can appear in an IR case, a report or a ticket,
+    and a dangling reference is worse than a redirect.
+
+    But the rows created by the key-change bug are a specific, bounded population:
+    machine-generated hours ago, never triaged, and almost certainly referenced by
+    nothing. For those, deletion is honest housekeeping rather than data loss.
+
+    Three guards, all of which must pass per row:
+      * it is Superseded AND was superseded by this repair (not by a human)
+      * nothing anywhere references its id
+      * optionally, it was created after `created_after` -- so a purge can be
+        scoped to the one bad sync rather than to all history
+    """
+    q = {"status": "Superseded"}
+    if only_from_key_migration:
+        q["superseded_reason"] = {"$regex": "key changed from hostname-based"}
+    if created_after:
+        q["first_seen_at"] = {"$gte": created_after}
+
+    candidates = await db.findings.find(
+        q, {"_id": 0, "id": 1, "cve": 1, "title": 1, "first_seen_at": 1,
+            "superseded_by": 1}).to_list(200000)
+    ids = [c["id"] for c in candidates]
+    referenced = await references_to(db, ids)
+
+    deletable = [c for c in candidates if c["id"] not in referenced]
+    kept = [{**c, "referenced_by": referenced[c["id"]]}
+            for c in candidates if c["id"] in referenced]
+
+    deleted = 0
+    if not dry_run and deletable:
+        # Chunked, so one enormous $in does not build a multi-megabyte query.
+        batch = [c["id"] for c in deletable]
+        for i in range(0, len(batch), 1000):
+            res = await db.findings.delete_many({"id": {"$in": batch[i:i + 1000]}})
+            deleted += res.deleted_count
+
+    return {
+        "dry_run": dry_run,
+        "candidates": len(candidates),
+        "deletable": len(deletable),
+        "deleted": deleted,
+        "kept_because_referenced": len(kept),
+        "referenced_examples": kept[:10],
+        "scope": {"created_after": created_after,
+                   "only_from_key_migration": only_from_key_migration},
+        "note": ("Nothing was deleted." if dry_run else
+                  f"Deleted {deleted} superseded duplicate(s). Rows referenced from a ticket, "
+                  "case, exception or report were left in place as tombstones."),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Command-line entry point.
 #
@@ -249,10 +353,41 @@ def _print_report(result: dict) -> None:
     print()
 
 
-async def _main(apply: bool, include_closed: bool) -> None:
+def _print_purge(result: dict) -> None:
+    print("=" * 72)
+    print("PURGE SUPERSEDED DUPLICATES "
+          + ("(DRY RUN — nothing deleted)" if result["dry_run"] else "— DELETED"))
+    print("=" * 72)
+    scope = result["scope"]
+    if scope.get("created_after"):
+        print(f"  scoped to findings first seen on/after {scope['created_after']}")
+    print(f"  superseded duplicates found : {result['candidates']}")
+    print(f"  safe to delete              : {result['deletable']}")
+    print(f"  kept (referenced elsewhere) : {result['kept_because_referenced']}")
+    if not result["dry_run"]:
+        print(f"  actually deleted            : {result['deleted']}")
+    print()
+    if result["referenced_examples"]:
+        print("Kept as tombstones because something still points at them:")
+        for r in result["referenced_examples"]:
+            print(f"  {r['id']}  {r.get('cve') or r.get('title') or ''}")
+            print(f"      referenced by: {', '.join(r['referenced_by'])}")
+        print()
+    print(result["note"])
+    print()
+
+
+async def _main(apply: bool, include_closed: bool, purge: bool,
+                 since: str = None) -> None:
     from db import db
+
     result = await repair(db, dry_run=not apply, include_closed=include_closed)
     _print_report(result)
+
+    if purge:
+        purged = await purge_superseded(db, dry_run=not apply, created_after=since)
+        _print_purge(purged)
+
     if apply:
         try:
             from aggregate_cache import invalidate
@@ -267,10 +402,18 @@ if __name__ == "__main__":
     import asyncio
 
     parser = argparse.ArgumentParser(
-        description="Fold duplicate findings created by the canonical-key change.")
+        description="Fold, and optionally delete, duplicate findings created by the "
+                    "canonical-key change.")
     parser.add_argument("--apply", action="store_true",
                         help="actually make the changes (default is a dry run)")
     parser.add_argument("--include-closed", action="store_true",
                         help="also consider closed findings")
+    parser.add_argument("--purge", action="store_true",
+                        help="after folding, DELETE the superseded duplicates that nothing "
+                             "references. Without this they are kept as tombstones.")
+    parser.add_argument("--since", metavar="ISO8601",
+                        help="only purge findings first seen on/after this timestamp, e.g. "
+                             "2026-08-01T18:00:00Z -- use it to scope the purge to the one bad "
+                             "sync rather than to all history")
     args = parser.parse_args()
-    asyncio.run(_main(args.apply, args.include_closed))
+    asyncio.run(_main(args.apply, args.include_closed, args.purge, args.since))

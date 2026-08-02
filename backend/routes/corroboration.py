@@ -276,3 +276,26 @@ async def repair_duplicates(body: RepairBody,
         # Every cached backlog statistic is now wrong.
         await invalidate(db)
     return result
+
+
+class PurgeBody(BaseModel):
+    dry_run: bool = True
+    since: str = None
+
+
+@router.post("/v1/findings/duplicates/purge")
+async def purge_duplicates(body: PurgeBody, user: dict = Depends(require_role("admin"))):
+    """Delete superseded duplicates that nothing references.
+
+    Folding leaves tombstones on purpose. This removes the ones that are provably
+    unreferenced -- checked against every place a finding id can appear, so a
+    ticket, IR case, exception or risk-register entry can never be left pointing
+    at a row that no longer exists.
+    """
+    import dedupe_repair
+    from aggregate_cache import invalidate
+    result = await dedupe_repair.purge_superseded(
+        db, dry_run=body.dry_run, created_after=body.since)
+    if not body.dry_run:
+        await invalidate(db)
+    return result
