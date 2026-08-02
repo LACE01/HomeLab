@@ -166,3 +166,53 @@ async def correlation_triage(hit_id: str, body: dict,
     if not res.matched_count:
         raise HTTPException(404, "No such hit")
     return {"updated": True, "status": status}
+
+
+# ---------------------------------------------------------------------------
+# Blast radius / point-in-time posture / change feed
+# ---------------------------------------------------------------------------
+@router.get("/v1/assets/{asset_id}/blast-radius")
+async def blast_radius(asset_id: str, user: dict = Depends(get_current_user)):
+    """If this asset is compromised or taken down, what else is affected."""
+    import posture_history as ph
+    result = await ph.blast_radius(db, asset_id)
+    if result is None:
+        raise HTTPException(404, "No such asset")
+    return result
+
+
+@router.get("/v1/posture/changes")
+async def posture_changes(since: str = None, to: str = None,
+                           user: dict = Depends(get_current_user)):
+    """What changed. Defaults to the last 24 hours."""
+    import posture_history as ph
+    from datetime import datetime, timezone, timedelta
+    since = since or (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    return await ph.changes_between(db, since, to)
+
+
+@router.get("/v1/posture/snapshot")
+async def posture_snapshot(day: str = None, user: dict = Depends(get_current_user)):
+    """Posture on a given day. Falls back to the nearest earlier snapshot."""
+    import posture_history as ph
+    from datetime import datetime, timezone
+    day = day or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    snap = await ph.snapshot_for(db, day)
+    if not snap:
+        raise HTTPException(404, "No snapshot on or before that date")
+    snap.pop("ids", None)   # the id lists are for diffing, not for display
+    return snap
+
+
+@router.get("/v1/posture/history")
+async def posture_history_list(days: int = 90, user: dict = Depends(get_current_user)):
+    """The trend line, for charting."""
+    rows = await db.posture_snapshots.find(
+        {}, {"_id": 0, "ids": 0}).sort("day", -1).to_list(days)
+    return {"items": list(reversed(rows))}
+
+
+@router.post("/v1/posture/snapshot")
+async def take_posture_snapshot(user: dict = Depends(require_role("admin"))):
+    import posture_history as ph
+    return await ph.take_snapshot(db)
