@@ -197,3 +197,80 @@ async def repair(db, *, dry_run: bool = True, include_closed: bool = False) -> d
                   "Duplicates are marked Superseded with a pointer to the survivor, never "
                   "deleted -- a finding id can appear in an IR case, a report or a ticket."),
     }
+
+
+# ---------------------------------------------------------------------------
+# Command-line entry point.
+#
+#     docker compose exec backend python dedupe_repair.py          # dry run
+#     docker compose exec backend python dedupe_repair.py --apply  # do it
+#
+# Runs in-process against the database rather than over HTTP, which removes the
+# two things that make a one-off repair annoying at exactly the wrong moment:
+# needing an admin token, and needing the API to have finished booting. A repair
+# you cannot run because the thing you are repairing is unhealthy is not much of
+# a repair.
+# ---------------------------------------------------------------------------
+def _print_report(result: dict) -> None:
+    print()
+    print("=" * 72)
+    print("DUPLICATE FINDINGS " + ("(DRY RUN — nothing changed)" if result["dry_run"]
+                                    else "— CHANGES APPLIED"))
+    print("=" * 72)
+    print(f"  duplicate groups : {result['duplicate_groups']}")
+    print(f"  findings folded  : {result['findings_folded']}")
+    print(f"  conflicts        : {result['conflict_count']}")
+    print()
+
+    if result["examples"]:
+        print("Examples (keeping <- folding):")
+        for ex in result["examples"][:10]:
+            ident = ex["identity"]
+            label = ident[1] if ident[0] == "cve" else f"{ident[1]} check {ident[2]}"
+            keep = ex["keeping"]
+            print(f"  {label} on asset {ident[-1]}")
+            print(f"      keep   {keep['id']}  status={keep['status']}  "
+                  f"first_seen={keep['first_seen_at']}")
+            for d in ex["folding"]:
+                print(f"      fold   {d['id']}  status={d['status']}  "
+                      f"first_seen={d['first_seen_at']}")
+        print()
+
+    if result["conflicts"]:
+        print("NOT MERGED — these carry conflicting human decisions, so a machine")
+        print("should not pick which one to discard. Resolve them by hand:")
+        for c in result["conflicts"][:10]:
+            print(f"  {c['identity']}")
+            for f in c["findings"]:
+                print(f"      {f['id']}  status={f['status']}")
+        print()
+
+    print(result["note"])
+    print()
+
+
+async def _main(apply: bool, include_closed: bool) -> None:
+    from db import db
+    result = await repair(db, dry_run=not apply, include_closed=include_closed)
+    _print_report(result)
+    if apply:
+        try:
+            from aggregate_cache import invalidate
+            await invalidate(db)
+            print("Cached backlog statistics cleared; they will recompute on next view.")
+        except Exception as e:
+            print(f"(could not clear the aggregate cache: {e})")
+
+
+if __name__ == "__main__":
+    import argparse
+    import asyncio
+
+    parser = argparse.ArgumentParser(
+        description="Fold duplicate findings created by the canonical-key change.")
+    parser.add_argument("--apply", action="store_true",
+                        help="actually make the changes (default is a dry run)")
+    parser.add_argument("--include-closed", action="store_true",
+                        help="also consider closed findings")
+    args = parser.parse_args()
+    asyncio.run(_main(args.apply, args.include_closed))

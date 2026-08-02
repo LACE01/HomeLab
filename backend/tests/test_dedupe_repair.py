@@ -298,3 +298,56 @@ outcomes = [run(qs._upsert_finding(db, d, KB)) for d in DET]
 assert run(db.findings.count_documents({})) == 2 and "created" not in outcomes
 print("PASS: a third sync creates nothing — the steady state is 'updated', which is what the "
       "fourteen healthy runs before the regression looked like")
+
+
+# ============ the CLI entry point ============
+
+# The HTTP endpoints need an admin token and a booted API. A repair you cannot
+# run because the thing you are repairing is unhealthy is not much of a repair,
+# so the same logic is reachable from the command line inside the container.
+import subprocess, sys as _sys, os as _os
+
+proc = subprocess.run(
+    [_sys.executable, "dedupe_repair.py", "--help"],
+    capture_output=True, text=True, cwd=_os.getcwd())
+assert proc.returncode == 0, proc.stderr
+assert "--apply" in proc.stdout and "dry run" in proc.stdout
+print("PASS: dedupe_repair.py runs as a script and documents that --apply is required to change "
+      "anything")
+
+# the report renders every section without needing a database
+import io, contextlib
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    dr._print_report({
+        "dry_run": True, "duplicate_groups": 2, "findings_folded": 3, "conflict_count": 1,
+        "examples": [{"identity": ["cve", "CVE-1", "a1"],
+                       "keeping": {"id": "k", "status": "Risk accepted",
+                                    "first_seen_at": "2026-01-01"},
+                       "folding": [{"id": "d", "status": "New",
+                                     "first_seen_at": "2026-08-02"}],
+                       "tools_after_merge": ["Qualys VMDR"]}],
+        "conflicts": [{"identity": ["cve", "CVE-9", "a1"], "reason": "r",
+                        "findings": [{"id": "a", "status": "Risk accepted"},
+                                      {"id": "b", "status": "False positive"}]}],
+        "note": "Nothing was changed."})
+out = buf.getvalue()
+assert "DRY RUN" in out and "nothing changed" in out
+assert "keep   k" in out and "fold   d" in out
+assert "NOT MERGED" in out and "Resolve them by hand" in out
+print("PASS: the printed report shows which row is kept, which are folded, and lists conflicts "
+      "separately as needing a human — the decision is visible before it is made, not after")
+
+# a non-CVE group is labelled by its scanner and check id rather than a bare tuple
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    dr._print_report({"dry_run": True, "duplicate_groups": 1, "findings_folded": 1,
+                       "conflict_count": 0,
+                       "examples": [{"identity": ["native", "qualys vmdr", "90001", "a1"],
+                                      "keeping": {"id": "k", "status": "New",
+                                                   "first_seen_at": "2026-01-01"},
+                                      "folding": [], "tools_after_merge": []}],
+                       "conflicts": [], "note": "n"})
+assert "qualys vmdr check 90001" in buf.getvalue()
+print("PASS: a finding with no CVE is described by its scanner and check id, so the report is "
+      "readable for configuration findings too — which is most of the backlog")
