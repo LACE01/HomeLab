@@ -23,6 +23,8 @@ from seed import seed_all
 from routes.auth import router as auth_router
 from routes.findings import router as findings_router
 from routes.corroboration import router as corroboration_router
+from routes.jobs import router as jobs_router
+from routes.platform_health import router as platform_health_router
 from routes.identity import router as identity_router
 from routes.inventory import router as inventory_router
 from routes.workflows import router as workflows_router
@@ -92,6 +94,8 @@ api.include_router(auth_router)
 # is what prevents it.
 api.include_router(identity_router)
 api.include_router(corroboration_router)
+api.include_router(jobs_router)
+api.include_router(platform_health_router)
 api.include_router(findings_router)
 api.include_router(inventory_router)
 api.include_router(workflows_router)
@@ -232,10 +236,12 @@ async def on_startup():
     # process stopped answering everything", and that ambiguity is expensive.
     from correlation_loop import correlation_loop
     from posture_loop import posture_snapshot_loop
+    from selfcheck_loop import self_check_loop
     from blocking_io import loop_lag_monitor
     _a.create_task(loop_lag_monitor())
     _a.create_task(correlation_loop(db, interval_hours=6))
     _a.create_task(posture_snapshot_loop(db, interval_hours=24))
+    _a.create_task(self_check_loop(db, interval_hours=1))
     _a.create_task(nightly_loop(db, interval_hours=24))
     # KEV / EPSS / active-attacks sync loop (12h) — was previously manual-trigger only
     _a.create_task(threat_intel_loop(db, interval_hours=12))

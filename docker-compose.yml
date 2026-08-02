@@ -72,6 +72,39 @@ services:
       - vulnops_ir_artifacts:/app/ir_artifacts
     # Not published to the host — only nginx (frontend) talks to it.
 
+  # Scans run HERE, not in the API process.
+  #
+  # nmap sweeps, nikto runs, trivy image scans and EASM enumeration used to be
+  # asyncio.create_task(...) inside the container that serves requests -- so they
+  # competed with request handling for one event loop, and a single wedged scan
+  # took the whole product down (including the login page). A separate process
+  # means a scan that hangs, leaks or gets OOM-killed takes down scanning and
+  # nothing else, and its job is requeued when the lease expires.
+  #
+  # Same image and same environment as the backend; only the command differs.
+  worker:
+    build: ./backend
+    command: python worker.py
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      DB_NAME: ${DB_NAME:-vulnops}
+      JWT_SECRET: ${JWT_SECRET}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      # Leave WORKER_KINDS unset to handle every job kind. Set it to run a
+      # dedicated worker for slow scan types, e.g. WORKER_KINDS=nmap_scan,easm_scan
+      WORKER_KINDS: ${WORKER_KINDS:-}
+      NVD_API_KEY: ${NVD_API_KEY:-}
+    volumes:
+      - vulnops_backups:/app/backups
+      - vulnops_ir_artifacts:/app/ir_artifacts
+
   frontend:
     build:
       context: ./frontend

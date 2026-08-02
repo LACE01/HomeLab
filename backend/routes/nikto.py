@@ -117,8 +117,18 @@ async def run_scan_now(config_id: str, user: dict = Depends(require_role("admin"
     if cfg.get("status") == "running":
         return {"status": "running", "message": "This scan is already in progress"}
     await db.nikto_scan_configs.update_one({"id": config_id}, {"$set": {"status": "running"}})
-    asyncio.create_task(_execute_scan(config_id))
-    return {"status": "running", "message": "Scan started -- poll GET /v1/admin/nikto/configs for status"}
+    # Enqueued, not create_task'd. Running a scanner inside the API process means
+    # it competes with request handling for one event loop, and a wedged scan
+    # takes the whole product down -- which is exactly what happened. A queued job
+    # also survives a deploy: the worker picks it up again instead of the scan
+    # silently never finishing. See jobqueue.py.
+    from jobqueue import enqueue
+    import job_handlers  # noqa: F401 -- registers the handler so the kind validates
+    job = await enqueue(db, "nikto_scan", {"config_id": config_id},
+                         requested_by=user.get("email") or user.get("id"))
+    return {"status": "queued", "job_id": job["id"], "deduped": job.get("deduped", False),
+            "message": ("This scan was already queued." if job.get("deduped")
+                         else "Scan queued -- poll GET /v1/jobs/{} for progress".format(job["id"]))}
 
 
 async def run_due_scheduled_scans(db) -> dict:
