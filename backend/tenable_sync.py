@@ -251,10 +251,10 @@ async def _upsert_finding(db, asset: dict, vuln: dict, plugin: dict, scan_name: 
     # Keyed on the resolved asset id -- see corroboration.py. With a CVE this
     # deliberately produces the SAME key Qualys produces, so the two scanners
     # corroborate one finding instead of racing to overwrite each other.
-    from corroboration import canonical_key as _ckey
-    canonical = _ckey(asset_id=asset["id"], cve=primary_cve,
-                       native_id=plugin_id, tool="Tenable Nessus")
-    existing = await db.findings.find_one({"canonical_key": canonical}, {"_id": 0})
+    from corroboration import find_existing as _find_existing
+    existing, canonical = await _find_existing(
+        db, asset_id=asset["id"], hostname=asset["hostname"], cve=primary_cve,
+        native_id=plugin_id, tool="Tenable Nessus")
 
     base = {
         "source_tool": "Tenable Nessus",

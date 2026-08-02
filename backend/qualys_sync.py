@@ -336,9 +336,14 @@ async def _upsert_finding(db, det: dict, kb: dict, nvd_cache: dict | None = None
     # same CVE on the same machine collided (silently overwriting source_tool) or
     # duplicated came down to nothing but how each tool spelled the host. See
     # corroboration.py.
-    from corroboration import canonical_key as _ckey
-    canonical = _ckey(asset_id=asset["id"], cve=cve, native_id=qid, tool="Qualys VMDR")
-    existing = await db.findings.find_one({"canonical_key": canonical}, {"_id": 0})
+    # Look up by the current key, falling back to the historical hostname-based
+    # ones and migrating on the way. Without the fallback the first sync after the
+    # key change found nothing and created 7,361 duplicate findings in a single
+    # run. See corroboration.find_existing.
+    from corroboration import find_existing as _find_existing
+    existing, canonical = await _find_existing(
+        db, asset_id=asset["id"], hostname=asset["hostname"], cve=cve,
+        native_id=qid, tool="Qualys VMDR")
 
     # Strip HTML from Qualys KB fields for nicer display
     def _strip(s: str | None) -> str | None:
@@ -499,8 +504,15 @@ async def _reconcile_fixed_detections(db, endpoint: str, username: str, password
             skipped_still_active += 1
             continue
         cve = (kb.get(qid) or {}).get("cve")
-        canonical = f"{cve or qid}::{det['hostname']}"
-        existing = await db.findings.find_one({"canonical_key": canonical}, {"_id": 0})
+        # Same lookup as the upsert path. This was still using the v1 key format
+        # after the upsert moved to the new one, so auto-close silently stopped
+        # matching anything -- findings Qualys had confirmed fixed stayed open.
+        from corroboration import find_existing as _find_existing
+        _asset_doc = await db.assets.find_one({"hostname": det["hostname"]},
+                                              {"_id": 0, "id": 1}) or {}
+        existing, canonical = await _find_existing(
+            db, asset_id=_asset_doc.get("id"), hostname=det["hostname"], cve=cve,
+            native_id=qid, tool="Qualys VMDR")
         if not existing or existing["status"] not in OPEN_LIKE_STATUSES:
             continue
         when = det.get("last_found") or _now_iso()

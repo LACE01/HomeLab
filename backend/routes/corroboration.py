@@ -228,3 +228,51 @@ async def posture_history_list(days: int = 90, user: dict = Depends(get_current_
 async def take_posture_snapshot(user: dict = Depends(require_role("admin"))):
     import posture_history as ph
     return await ph.take_snapshot(db)
+
+
+# ---------------------------------------------------------------------------
+# Duplicate repair
+# ---------------------------------------------------------------------------
+@router.get("/v1/findings/duplicates")
+async def duplicate_findings(include_closed: bool = False,
+                              user: dict = Depends(get_current_user)):
+    """Findings that describe the same vulnerability on the same asset."""
+    import dedupe_repair
+    found = await dedupe_repair.find_duplicates(db, include_closed=include_closed)
+    groups = [{
+        "identity": list(k),
+        "count": len(v),
+        "findings": [{"id": f.get("id"), "title": f.get("title"), "cve": f.get("cve"),
+                       "status": f.get("status"), "severity": f.get("severity"),
+                       "source_tool": f.get("source_tool"),
+                       "first_seen_at": f.get("first_seen_at"),
+                       "canonical_key": f.get("canonical_key")} for f in v],
+    } for k, v in found["groups"].items()]
+    groups.sort(key=lambda g: -g["count"])
+    return {"groups": groups[:200], "group_count": len(groups),
+             "extra_findings": sum(g["count"] - 1 for g in groups),
+             "total_findings_scanned": found["total_findings"]}
+
+
+class RepairBody(BaseModel):
+    dry_run: bool = True
+    include_closed: bool = False
+
+
+@router.post("/v1/findings/duplicates/repair")
+async def repair_duplicates(body: RepairBody,
+                             user: dict = Depends(require_role("admin"))):
+    """Fold duplicate findings into the original.
+
+    Dry-runs by default. Groups where more than one copy carries a DIFFERENT
+    human decision are reported as conflicts and left untouched -- a machine
+    should not choose which triage decision to discard.
+    """
+    import dedupe_repair
+    from aggregate_cache import invalidate
+    result = await dedupe_repair.repair(db, dry_run=body.dry_run,
+                                         include_closed=body.include_closed)
+    if not body.dry_run:
+        # Every cached backlog statistic is now wrong.
+        await invalidate(db)
+    return result

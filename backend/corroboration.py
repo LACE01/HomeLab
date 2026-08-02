@@ -76,6 +76,78 @@ def canonical_key(*, asset_id: str, cve: Optional[str] = None,
     return f"{(tool or 'unknown').lower().replace(' ', '-')}:{native_id}::{asset_id}"
 
 
+def legacy_keys(*, hostname: str, cve: Optional[str] = None,
+                 native_id=None, tool: Optional[str] = None) -> list:
+    """Every canonical_key format this codebase has used, oldest first.
+
+    WHY THIS HAS TO EXIST
+
+    Changing the key format without this was a data-integrity failure, and it
+    happened in production: the first sync after the change looked up findings by
+    the NEW key, found nothing, and created 7,361 duplicates in one run --
+    against a backlog where the previous fourteen syncs had created zero.
+
+    A canonical key is not an implementation detail. It is the identity of a
+    row that already exists in a live database, so changing it is a MIGRATION,
+    and a migration needs to be able to recognise the old shape. Anything that
+    changes this format in future must add its predecessor here.
+
+    Historical formats:
+      v1  f"{cve or qid}::{hostname}"                    (Qualys)
+      v1  f"{cve or 'NESSUS-' + plugin_id}::{hostname}"  (Nessus)
+    """
+    keys = []
+    if not hostname:
+        return keys
+    if cve:
+        keys.append(f"{cve}::{hostname}")
+        keys.append(f"{cve.upper()}::{hostname}")
+    if native_id is not None:
+        keys.append(f"{native_id}::{hostname}")
+        if (tool or "").lower().startswith("tenable"):
+            keys.append(f"NESSUS-{native_id}::{hostname}")
+    # dedupe, preserve order
+    seen, out = set(), []
+    for k in keys:
+        if k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out
+
+
+async def find_existing(db, *, asset_id: str, hostname: str, cve: Optional[str] = None,
+                         native_id=None, tool: Optional[str] = None) -> tuple:
+    """Locate a finding by its current key, falling back to historical ones.
+
+    Returns (document_or_None, current_key). When a document is found under a
+    legacy key its canonical_key is MIGRATED in place, so the fallback runs once
+    per finding rather than forever.
+
+    This is the whole fix for the duplicate storm: the sync now recognises the
+    row it already wrote under the old scheme instead of writing a second one.
+    """
+    key = canonical_key(asset_id=asset_id, cve=cve, native_id=native_id, tool=tool)
+    doc = await db.findings.find_one({"canonical_key": key}, {"_id": 0})
+    if doc:
+        return doc, key
+
+    for legacy in legacy_keys(hostname=hostname, cve=cve, native_id=native_id, tool=tool):
+        doc = await db.findings.find_one({"canonical_key": legacy}, {"_id": 0})
+        if not doc:
+            continue
+        # Migrate. Guarded against colliding with a row that already holds the
+        # new key -- if one exists we would be creating a duplicate index entry,
+        # and the caller's next lookup would be ambiguous.
+        clash = await db.findings.find_one({"canonical_key": key}, {"_id": 0, "id": 1})
+        if not clash:
+            await db.findings.update_one({"id": doc["id"]}, {"$set": {
+                "canonical_key": key, "canonical_key_migrated_from": legacy}})
+            doc["canonical_key"] = key
+        return doc, key
+
+    return None, key
+
+
 def make_source(*, tool: str, native_id: Optional[str], severity: Optional[str],
                  title: Optional[str] = None, first_seen: Optional[str] = None,
                  evidence: Optional[str] = None) -> dict:

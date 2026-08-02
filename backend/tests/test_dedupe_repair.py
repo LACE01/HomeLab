@@ -1,0 +1,300 @@
+"""Changing a canonical key is a MIGRATION, and I shipped it without one.
+
+The evidence, from the user's Engagements page: fourteen consecutive Qualys syncs
+created 0 findings and updated ~7,467. The first sync after my key change created
+7,361 and updated 105. It looked up every finding by the new key, found nothing,
+and wrote a second copy of the entire backlog.
+
+Two things are tested here: that a sync can no longer do this, and that the
+damage already done can be repaired without destroying anything a human put into
+those findings.
+"""
+import os, sys, asyncio
+from datetime import datetime, timezone, timedelta
+os.environ["MONGO_URL"] = "mongodb://localhost:27017"
+os.environ["DB_NAME"] = "test_dedupe_repair"
+os.environ["JWT_SECRET"] = "testsecret"
+sys.path.insert(0, ".")
+
+from mongomock_motor import AsyncMongoMockClient
+import db as db_module
+db_module.client = AsyncMongoMockClient()
+db_module.db = db_module.client["test_dedupe_repair"]
+db = db_module.db
+
+import corroboration as corr
+import dedupe_repair as dr
+
+run = lambda c: asyncio.get_event_loop().run_until_complete(c)
+now = datetime.now(timezone.utc)
+
+
+def reset():
+    run(db.findings.delete_many({}))
+    run(db.assets.delete_many({}))
+
+
+# ============ the sync recognises a finding written under the OLD key ============
+
+reset()
+run(db.assets.insert_one({"id": "asset-1", "hostname": "web-1", "status": "active"}))
+# Exactly as it existed before the key change.
+run(db.findings.insert_one({
+    "id": "legacy-1", "canonical_key": "CVE-2024-1234::web-1", "cve": "CVE-2024-1234",
+    "asset_id": "asset-1", "status": "Valid", "severity": "High",
+    "source_tool": "Qualys VMDR", "source_native_id": "38173",
+    "first_seen_at": "2026-01-01T00:00:00Z", "owner_notes": "assigned to Infra"}))
+
+doc, key = run(corr.find_existing(db, asset_id="asset-1", hostname="web-1",
+                                   cve="CVE-2024-1234", native_id="38173",
+                                   tool="Qualys VMDR"))
+assert doc is not None, "the legacy-keyed finding was not found — this is the duplicate storm"
+assert doc["id"] == "legacy-1"
+assert key == "CVE-2024-1234::asset-1"
+print("PASS: a finding stored under the OLD hostname-based key is found by the new lookup — this "
+      "single fallback is what stops a sync writing a second copy of the whole backlog")
+
+# and the key is migrated, so the fallback runs once per finding rather than forever
+migrated = run(db.findings.find_one({"id": "legacy-1"}, {"_id": 0}))
+assert migrated["canonical_key"] == "CVE-2024-1234::asset-1"
+assert migrated["canonical_key_migrated_from"] == "CVE-2024-1234::web-1"
+print("PASS: the key is migrated in place and records what it was migrated from — the fallback is "
+      "a one-time cost per finding, and the change is auditable")
+
+# a genuinely new finding is still created
+doc, key = run(corr.find_existing(db, asset_id="asset-1", hostname="web-1",
+                                   cve="CVE-2099-0001", native_id="99999",
+                                   tool="Qualys VMDR"))
+assert doc is None and key == "CVE-2099-0001::asset-1"
+print("PASS: a vulnerability that genuinely has no existing record still returns None, so real new "
+      "findings are not suppressed by the fallback")
+
+
+# ============ the migration must not create a collision ============
+
+reset()
+run(db.assets.insert_one({"id": "a1", "hostname": "h1", "status": "active"}))
+run(db.findings.insert_many([
+    {"id": "old", "canonical_key": "CVE-1::h1", "cve": "CVE-1", "asset_id": "a1",
+     "status": "New", "first_seen_at": "2026-01-01T00:00:00Z"},
+    {"id": "new", "canonical_key": "CVE-1::a1", "cve": "CVE-1", "asset_id": "a1",
+     "status": "New", "first_seen_at": "2026-08-01T00:00:00Z"},
+]))
+doc, key = run(corr.find_existing(db, asset_id="a1", hostname="h1", cve="CVE-1"))
+assert doc["id"] == "new", "the new-key row should win the direct lookup"
+assert run(db.findings.find_one({"id": "old"}))["canonical_key"] == "CVE-1::h1", \
+    "the legacy row must not be re-keyed onto a key another row already holds"
+print("PASS: when both an old-key and a new-key row exist, the migration does NOT collide them — "
+      "two rows sharing a canonical key would make every later lookup ambiguous")
+
+
+# ============ legacy key formats are all recognised ============
+
+keys = corr.legacy_keys(hostname="web-1", cve="CVE-2024-1", native_id="38173",
+                        tool="Qualys VMDR")
+assert "CVE-2024-1::web-1" in keys and "38173::web-1" in keys
+keys = corr.legacy_keys(hostname="web-1", native_id="12345", tool="Tenable Nessus")
+assert "NESSUS-12345::web-1" in keys, "Nessus' own historical prefix must be recognised"
+print("PASS: every historical key format is enumerated, including Nessus' NESSUS-<id> prefix — a "
+      "future format change has one place to add its predecessor")
+
+
+# ============ repairing the duplicates already written ============
+
+reset()
+run(db.assets.insert_one({"id": "a1", "hostname": "h1", "status": "active"}))
+run(db.findings.insert_many([
+    # The original, triaged by a human months ago.
+    {"id": "orig", "canonical_key": "CVE-9::h1", "cve": "CVE-9", "asset_id": "a1",
+     "status": "Risk accepted", "severity": "High", "source_tool": "Qualys VMDR",
+     "source_native_id": "111", "first_seen_at": "2026-01-01T00:00:00Z",
+     "reopened_count": 2, "exception_id": "exc-1"},
+    # The copy the broken sync created this morning.
+    {"id": "dupe", "canonical_key": "CVE-9::a1", "cve": "CVE-9", "asset_id": "a1",
+     "status": "New", "severity": "Critical", "source_tool": "Qualys VMDR",
+     "source_native_id": "111", "first_seen_at": "2026-08-02T18:29:00Z"},
+    # An unrelated finding that must not be touched.
+    {"id": "other", "canonical_key": "CVE-8::a1", "cve": "CVE-8", "asset_id": "a1",
+     "status": "New", "severity": "Low", "first_seen_at": "2026-05-01T00:00:00Z"},
+]))
+
+preview = run(dr.repair(db, dry_run=True))
+assert preview["duplicate_groups"] == 1 and preview["findings_folded"] == 1
+assert preview["examples"][0]["keeping"]["id"] == "orig"
+assert run(db.findings.find_one({"id": "dupe"}))["status"] == "New", "dry run mutated data"
+assert "Nothing was changed" in preview["note"]
+print("PASS: the repair dry-runs by default and shows exactly which row it would keep — this "
+      "rewrites a live backlog, so seeing it first is the difference between a migration and a "
+      "second accident")
+
+result = run(dr.repair(db, dry_run=False))
+assert result["findings_folded"] == 1
+
+kept = run(db.findings.find_one({"id": "orig"}, {"_id": 0}))
+# Everything a human or time put on the original survives.
+assert kept["status"] == "Risk accepted", "a human's triage decision was discarded"
+assert kept["reopened_count"] == 2 and kept["exception_id"] == "exc-1"
+assert kept["first_seen_at"] == "2026-01-01T00:00:00Z", "the SLA clock was reset"
+assert kept["canonical_key"] == "CVE-9::a1", "the survivor should carry the CURRENT key"
+print("PASS: the ORIGINAL survives with its accepted-risk decision, exception link, reopen count "
+      "and first_seen intact — 'delete the newer row' would have thrown all of that away")
+
+folded = run(db.findings.find_one({"id": "dupe"}, {"_id": 0}))
+assert folded["status"] == "Superseded" and folded["superseded_by"] == "orig"
+assert "without a migration path" in folded["superseded_reason"]
+print("PASS: the duplicate is marked Superseded with a pointer and the reason, not deleted — its "
+      "id may already appear in a report, a ticket or an IR case")
+
+assert run(db.findings.find_one({"id": "other"}))["status"] == "New"
+print("PASS: an unrelated finding is untouched")
+
+
+# ============ a triaged duplicate wins over an older untriaged one ============
+
+reset()
+run(db.findings.insert_many([
+    {"id": "older-untouched", "cve": "CVE-7", "asset_id": "a1", "status": "New",
+     "first_seen_at": "2026-01-01T00:00:00Z"},
+    {"id": "newer-triaged", "cve": "CVE-7", "asset_id": "a1", "status": "False positive",
+     "first_seen_at": "2026-07-01T00:00:00Z"},
+]))
+run(dr.repair(db, dry_run=False))
+assert run(db.findings.find_one({"id": "newer-triaged"}))["status"] == "False positive"
+assert run(db.findings.find_one({"id": "older-untouched"}))["status"] == "Superseded"
+survivor = run(db.findings.find_one({"id": "newer-triaged"}, {"_id": 0}))
+assert survivor["first_seen_at"] == "2026-01-01T00:00:00Z", \
+    "the earliest observation date should carry over to the survivor"
+print("PASS: a triaged copy beats an older untriaged one, and still inherits the earliest "
+      "first_seen — losing a false-positive decision is worse than losing a few days of age, and "
+      "neither has to be lost")
+
+
+# ============ two conflicting decisions are NOT merged ============
+
+reset()
+run(db.findings.insert_many([
+    {"id": "accepted", "cve": "CVE-6", "asset_id": "a1", "status": "Risk accepted",
+     "first_seen_at": "2026-01-01T00:00:00Z"},
+    {"id": "fp", "cve": "CVE-6", "asset_id": "a1", "status": "False positive",
+     "first_seen_at": "2026-02-01T00:00:00Z"},
+]))
+result = run(dr.repair(db, dry_run=False))
+assert result["conflict_count"] == 1
+assert result["findings_folded"] == 0
+assert "would silently discard one" in result["conflicts"][0]["reason"]
+assert run(db.findings.find_one({"id": "fp"}))["status"] == "False positive"
+assert run(db.findings.find_one({"id": "accepted"}))["status"] == "Risk accepted"
+print("PASS: when two copies carry DIFFERENT human decisions the repair refuses to choose and "
+      "reports the conflict — automatically discarding one of two triage decisions is exactly the "
+      "kind of quiet damage this whole exercise is about")
+
+
+# ============ two tools' proprietary ids are not the same finding ============
+
+reset()
+run(db.findings.insert_many([
+    {"id": "q", "asset_id": "a1", "status": "New", "source_tool": "Qualys VMDR",
+     "source_native_id": "999", "first_seen_at": "2026-01-01T00:00:00Z"},
+    {"id": "n", "asset_id": "a1", "status": "New", "source_tool": "Tenable Nessus",
+     "source_native_id": "999", "first_seen_at": "2026-01-02T00:00:00Z"},
+]))
+result = run(dr.repair(db, dry_run=True))
+assert result["findings_folded"] == 0, \
+    "two different scanners' check ids were merged just because the numbers matched"
+print("PASS: QID 999 and Nessus plugin 999 are not merged — with no CVE, a check id is only "
+      "comparable within the scanner that issued it")
+
+
+# ============ routes ============
+
+import server, auth_utils
+from routes import corroboration as corr_route
+corr_route.db = db
+from fastapi.testclient import TestClient
+
+admin = {"id": "u1", "email": "a@x.com", "role": "admin", "name": "A", "teams": []}
+server.app.dependency_overrides[auth_utils.get_current_user] = lambda: admin
+client = TestClient(server.app)
+
+reset()
+run(db.findings.insert_many([
+    {"id": "o", "cve": "CVE-5", "asset_id": "a1", "status": "New", "title": "dup",
+     "first_seen_at": "2026-01-01T00:00:00Z"},
+    {"id": "d", "cve": "CVE-5", "asset_id": "a1", "status": "New", "title": "dup",
+     "first_seen_at": "2026-08-02T00:00:00Z"},
+]))
+
+r = client.get("/api/v1/findings/duplicates")
+assert r.status_code == 200, r.text
+body = r.json()
+assert body["group_count"] == 1 and body["extra_findings"] == 1
+assert len(body["groups"][0]["findings"]) == 2
+print("PASS: GET /v1/findings/duplicates reports the groups and how many EXTRA findings exist — "
+      "the number that tells you how inflated the backlog is")
+
+r = client.post("/api/v1/findings/duplicates/repair", json={})
+assert r.json()["dry_run"] is True and r.json()["findings_folded"] == 1
+assert run(db.findings.find_one({"id": "d"}))["status"] == "New"
+
+r = client.post("/api/v1/findings/duplicates/repair", json={"dry_run": False})
+assert r.json()["findings_folded"] == 1
+assert run(db.findings.find_one({"id": "d"}))["status"] == "Superseded"
+print("PASS: the repair endpoint dry-runs unless explicitly told otherwise")
+
+
+# ============ the actual regression: a sync must not double the backlog ============
+
+# The scenario that produced 7,361 duplicates, driven through the real
+# _upsert_finding rather than a stand-in.
+reset()
+import qualys_sync as qs
+
+KB = {"38173": {"title": "OpenSSL vuln", "cve": "CVE-2024-1234", "cvss": 7.5,
+                "cwe": "CWE-119", "category": "General remote services",
+                "consequence": "c", "diagnosis": "d", "solution": "s"},
+      "90001": {"title": "Config check", "cve": None, "cvss": None, "cwe": None,
+                "category": "Windows", "consequence": "c", "diagnosis": "d", "solution": "s"}}
+
+DET = [{"qid": "38173", "hostname": "web-1", "ip": "10.0.0.5", "os": "Linux",
+        "severity": "4", "first_found": "2026-01-01T00:00:00Z",
+        "qualys_host_id": "Q1"},
+       {"qid": "90001", "hostname": "web-1", "ip": "10.0.0.5", "os": "Linux",
+        "severity": "2", "first_found": "2026-01-01T00:00:00Z",
+        "qualys_host_id": "Q1"}]
+
+# First sync: creates the findings, under whatever key the code writes today.
+outcomes = [run(qs._upsert_finding(db, d, KB)) for d in DET]
+assert outcomes.count("created") == 2, outcomes
+after_first = run(db.findings.count_documents({}))
+assert after_first == 2
+
+# Now rewrite their keys to the v1 hostname-based format, which is what every
+# finding in the live database actually looks like.
+for f in run(db.findings.find({}, {"_id": 0}).to_list(10)):
+    legacy = f"{f.get('cve') or f.get('qid')}::web-1"
+    run(db.findings.update_one({"id": f["id"]}, {"$set": {"canonical_key": legacy}}))
+
+# Second sync -- the one that created 7,361 duplicates in production.
+outcomes = [run(qs._upsert_finding(db, d, KB)) for d in DET]
+after_second = run(db.findings.count_documents({}))
+
+assert after_second == 2, (
+    f"the sync created {after_second - after_first} duplicate finding(s) — this is the exact "
+    "failure that produced 7,361 new findings in one run")
+assert "created" not in outcomes, outcomes
+print("PASS: running the REAL Qualys upsert against findings stored under the old key format "
+      "updates them instead of duplicating them — driven end to end, because the unit-level "
+      "lookup passing is not the same as the sync being fixed")
+
+# and the keys were migrated on the way through
+for f in run(db.findings.find({}, {"_id": 0}).to_list(10)):
+    assert "::web-1" not in f["canonical_key"], f["canonical_key"]
+    assert f.get("canonical_key_migrated_from")
+print("PASS: both findings were migrated to the current key format during that sync, so the "
+      "legacy fallback is not paid again on every future run")
+
+# a third sync is a plain no-op
+outcomes = [run(qs._upsert_finding(db, d, KB)) for d in DET]
+assert run(db.findings.count_documents({})) == 2 and "created" not in outcomes
+print("PASS: a third sync creates nothing — the steady state is 'updated', which is what the "
+      "fourteen healthy runs before the regression looked like")
