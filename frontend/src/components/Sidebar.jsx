@@ -95,6 +95,12 @@ export default function Sidebar() {
         </div>
       </div>
 
+      <button
+        onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }))}
+        className="mx-2 mt-3 mb-1 flex items-center justify-between gap-2 px-3 py-1.5 rounded-md border border-[#30363D] text-slate-500 hover:text-slate-300 hover:border-slate-600 transition-colors">
+        <span className="flex items-center gap-2 text-[12.5px]"><MagnifyingGlass size={14}/> Search…</span>
+        <kbd className="text-[10px] font-mono border border-[#30363D] rounded px-1">⌘K</kbd>
+      </button>
       <nav ref={navRef} onScroll={(e) => sessionStorage.setItem(SCROLL_KEY, String(e.currentTarget.scrollTop))} className="flex-1 overflow-y-auto py-3 px-2">
         <Group title="Overview" collapsed={!!collapsed["Overview"]} onToggle={()=>toggleGroup("Overview")}>
           <NavItem to="/" icon={ChartLineUp} label="Dashboard" testid="nav-dashboard" />

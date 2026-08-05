@@ -1,8 +1,12 @@
 import Sidebar from "./Sidebar";
+import CommandPalette from "./CommandPalette";
 
 export default function Layout({ children, title, subtitle, actions }) {
   return (
     <div className="flex min-h-screen bg-[#090C10] text-slate-100">
+      {/* Global Cmd-K jump-to-page. Rendered once here so it's available on every
+          screen without each page wiring it up. */}
+      <CommandPalette />
       <Sidebar />
       <main className="flex-1 min-w-0">
         <header className="border-b border-[#30363D] bg-[#0D1117]/60 backdrop-blur sticky top-0 z-10">
