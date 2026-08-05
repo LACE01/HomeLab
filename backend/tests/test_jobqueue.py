@@ -234,3 +234,53 @@ assert compose["services"]["worker"]["command"] == "python worker.py"
 assert compose["services"]["worker"]["build"] == "./backend", "worker should share the API image"
 print("PASS: docker-compose runs a separate worker process from the same image — the process "
       "boundary is the entire point, so a wedged scan takes down scanning and nothing else")
+
+
+# ============ every heavy scan runs on the worker, not in the API process ============
+#
+# The backend was OOM-killed when a scan was triggered manually. The first pass at
+# Tier 5 #18 only moved nmap and nikto; recon-ng, EASM, secrets and container
+# scanning still ran inside the API process -- EASM and container even AWAITED the
+# scan directly in the request handler. This pins that every one of them is now
+# enqueued.
+
+for path, kind in [
+    ("routes/easm.py", "easm_scan"),
+    ("routes/container_scan.py", "container_scan"),
+    ("routes/secrets_scan.py", "secrets_scan"),
+    ("routes/reconng.py", "recon_run"),
+    ("routes/nmap.py", "nmap_scan"),
+    ("routes/nikto.py", "nikto_scan"),
+]:
+    src = open(path).read()
+    assert f'enqueue(db, "{kind}"' in src, f"{path} does not enqueue {kind}"
+    # the run-now handler must not await the scan inline any more
+    assert "asyncio.create_task(_execute_run" not in src, f"{path} still create_tasks the scan"
+print("PASS: every heavy scan route (nmap, nikto, recon-ng, EASM, secrets, container) enqueues to "
+      "the worker instead of running the scanner inside the API process")
+
+# the EASM and container routes specifically must no longer AWAIT the scan
+easm = open("routes/easm.py").read()
+assert "await run_easm_scan(db" not in easm, \
+    "EASM still awaits the scan in the request handler — that is what OOM-killed the backend"
+container = open("routes/container_scan.py").read()
+assert "await scan_container_image(db, t[" not in container, \
+    "container scan still awaits the trivy pull in the request handler"
+print("PASS: the EASM and container 'scan now' handlers no longer AWAIT the scan inline — trivy "
+      "image pulls and crt.sh enumeration happen in the worker, so they can't spike the API's "
+      "memory")
+
+# and every enqueued kind has a handler, so none of them will fail at run time
+import job_handlers  # noqa: F401
+for kind in ("easm_scan", "container_scan", "secrets_scan", "recon_run"):
+    assert kind in jq.registered_kinds(), f"{kind} has no worker handler"
+print("PASS: each newly-enqueued scan kind has a registered worker handler")
+
+# the compose file caps memory on both the backend and the worker
+import yaml
+compose = yaml.safe_load(open("../docker-compose.yml"))
+assert compose["services"]["backend"].get("mem_limit"), "backend has no memory ceiling"
+assert compose["services"]["worker"].get("mem_limit"), "worker has no memory ceiling"
+print("PASS: both the backend and the worker have a memory ceiling, so a runaway scan is killed in "
+      "its own container and requeued rather than the kernel OOM-killing an arbitrary process on "
+      "the host")

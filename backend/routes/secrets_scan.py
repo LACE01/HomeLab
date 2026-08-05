@@ -83,24 +83,19 @@ async def delete_repo_target(target_id: str, user: dict = Depends(require_role("
 
 @router.post("/v1/admin/secrets-scan/targets/{target_id}/scan-now")
 async def scan_repo_now(target_id: str, user: dict = Depends(require_role("admin"))):
-    from secrets_scan import run_repo_scan
+    # Enqueued, not awaited. detect-secrets clones the whole repo, which is heavy;
+    # doing it in the API process risks OOM-killing the backend. See
+    # job_handlers._secrets.
     t = await db.secrets_scan_targets.find_one({"id": target_id}, {"_id": 0})
     if not t:
         raise HTTPException(404, "Watch target not found")
-    started = now_iso()
-    try:
-        result = await run_repo_scan(db, t["repo_url"], t.get("branch"), t.get("token"), t.get("asset_id"), t.get("label"))
-    except ValueError as e:
-        await record_engagement(db, name=t.get("label") or t["repo_url"], scanner="Secrets Scan (detect-secrets)",
-                                 scan_type="manual", scan_method="git_clone", status="failed",
-                                 started_at=started, error=str(e))
-        raise HTTPException(400, str(e))
-    await record_engagement(
-        db, name=t.get("label") or t["repo_url"], scanner="Secrets Scan (detect-secrets)", scan_type="manual",
-        scan_method="git_clone", status="completed", findings_created=result.get("findings_created", 0),
-        findings_updated=result.get("findings_updated", 0), started_at=started,
-    )
-    return result
+    from jobqueue import enqueue
+    import job_handlers  # noqa: F401
+    job = await enqueue(db, "secrets_scan", {"target_id": target_id},
+                         requested_by=user.get("email") or user.get("id"))
+    return {"status": "queued", "job_id": job["id"], "deduped": job.get("deduped", False),
+            "message": ("This repo scan was already queued." if job.get("deduped")
+                         else "Repo scan queued — poll GET /v1/jobs/{} for progress".format(job["id"]))}
 
 
 @router.post("/v1/admin/secrets-scan/scan-all")

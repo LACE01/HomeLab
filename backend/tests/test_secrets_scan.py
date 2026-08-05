@@ -208,14 +208,24 @@ stored = run(db.secrets_scan_targets.find_one({"id": created["id"]}, {"_id": 0})
 assert stored["token"] == "realtoken123"
 print("PASS: the real token is still stored server-side (needed for scheduled re-scans), only masked in API responses")
 
+# scan-now enqueues to the worker rather than cloning the repo inside the API
+# process -- a git clone in the request handler is heavy enough to contribute to
+# the OOM crash. The route returns a job id; the worker handler does the work.
 r3 = client.post(f"/api/v1/admin/secrets-scan/targets/{created['id']}/scan-now")
 assert r3.status_code == 200, r3.text
-print("PASS: POST /v1/admin/secrets-scan/targets/{id}/scan-now runs a real scan through the route")
+assert r3.json()["status"] == "queued" and r3.json()["job_id"]
+print("PASS: POST /v1/admin/secrets-scan/targets/{id}/scan-now ENQUEUES instead of cloning the "
+      "repo inline")
 
+import job_handlers as _jh
+_job = run(db.jobs.find_one({"id": r3.json()["job_id"]}, {"_id": 0}))
+async def _nohb(progress=None):
+    return None
+run(_jh._secrets(db, _job["payload"], _nohb))
 r4 = client.get("/api/v1/admin/secrets-scan/targets")
 item = next(t for t in r4.json()["items"] if t["id"] == created["id"])
 assert item["latest"] is not None and item["latest"]["repo_url"] == "https://github.com/org/app.git"
-print("PASS: GET /v1/admin/secrets-scan/targets merges each target with its latest scan result")
+print("PASS: the worker handler performs the real scan and records the latest result")
 
 # updating without changing the token (masked placeholder echoed back) must keep the real token
 r5 = client.put(f"/api/v1/admin/secrets-scan/targets/{created['id']}", json={

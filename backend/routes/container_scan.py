@@ -70,25 +70,19 @@ async def delete_image_target(target_id: str, user: dict = Depends(require_role(
 
 @router.post("/v1/admin/container-scan/targets/{target_id}/scan-now")
 async def scan_image_now(target_id: str, user: dict = Depends(require_role("admin"))):
-    from container_scan import scan_container_image
+    # Enqueued, not awaited. trivy pulls the entire container image (often
+    # hundreds of MB) -- doing that in the API process is a memory spike that can
+    # OOM-kill the backend. See job_handlers._container.
     t = await db.container_image_watch_targets.find_one({"id": target_id}, {"_id": 0})
     if not t:
         raise HTTPException(404, "Watch target not found")
-    started = now_iso()
-    try:
-        result = await scan_container_image(db, t["image_ref"], t.get("asset_id"), t.get("label"))
-    except ValueError as e:
-        await record_engagement(db, name=t.get("label") or t["image_ref"], scanner="Container Image Scan",
-                                 scan_type="manual", scan_method="trivy_sbom", status="failed",
-                                 started_at=started, error=str(e))
-        raise HTTPException(400, str(e))
-    await record_engagement(
-        db, name=t.get("label") or t["image_ref"], scanner="Container Image Scan", scan_type="manual",
-        scan_method="trivy_sbom", status="completed", assets_scanned=result.get("components_parsed", 0),
-        findings_created=result.get("findings_created", 0), findings_updated=result.get("findings_updated", 0),
-        started_at=started,
-    )
-    return result
+    from jobqueue import enqueue
+    import job_handlers  # noqa: F401
+    job = await enqueue(db, "container_scan", {"target_id": target_id},
+                         requested_by=user.get("email") or user.get("id"))
+    return {"status": "queued", "job_id": job["id"], "deduped": job.get("deduped", False),
+            "message": ("This image scan was already queued." if job.get("deduped")
+                         else "Image scan queued — poll GET /v1/jobs/{} for progress".format(job["id"]))}
 
 
 @router.post("/v1/admin/container-scan/scan-all")

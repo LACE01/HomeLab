@@ -151,8 +151,13 @@ async def start_run(body: RunBody, user: dict = Depends(require_role("admin", "m
         "triggered_by": user["email"], "scheduled": False,
     }
     await db.recon_runs.insert_one(doc)
-    asyncio.create_task(_execute_run(run_id))
-    return {"id": run_id, "status": "running"}
+    # Enqueued to the worker. recon-ng spawns module subprocesses; running them in
+    # the API process contributed to the OOM crash. See job_handlers._recon.
+    from jobqueue import enqueue
+    import job_handlers  # noqa: F401
+    await enqueue(db, "recon_run", {"run_id": run_id},
+                  requested_by=user.get("email") or user.get("id"))
+    return {"id": run_id, "status": "queued"}
 
 
 @router.get("/v1/recon/runs")

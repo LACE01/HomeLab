@@ -57,26 +57,19 @@ async def delete_domain(domain_id: str, user: dict = Depends(require_role("admin
 
 @router.post("/v1/admin/easm/domains/{domain_id}/scan-now")
 async def scan_domain_now(domain_id: str, user: dict = Depends(require_role("admin"))):
-    from easm import run_easm_scan
-    from routes.common import record_engagement, now_iso
+    # Enqueued to the worker, not awaited here. EASM enumeration is heavy, and
+    # running it in the API process is what OOM-killed the backend when a scan was
+    # triggered manually. See job_handlers._easm.
     d = await db.easm_domains.find_one({"id": domain_id}, {"_id": 0})
     if not d:
         raise HTTPException(404, "Watch domain not found")
-    started = now_iso()
-    try:
-        result = await run_easm_scan(db, d["domain"])
-        await record_engagement(
-            db, name=f"EASM sweep — {d['domain']}", scanner="EASM (crt.sh)", scan_type="on_demand",
-            scan_method="passive_discovery", status="completed",
-            assets_scanned=result.get("hostnames_found", 0), findings_created=0,
-            findings_updated=result.get("new_candidates", 0), started_at=started,
-        )
-        return result
-    except ValueError as e:
-        await record_engagement(db, name=f"EASM sweep — {d['domain']}", scanner="EASM (crt.sh)",
-                                 scan_type="on_demand", scan_method="passive_discovery", status="failed",
-                                 started_at=started, error=str(e))
-        raise HTTPException(502, str(e))
+    from jobqueue import enqueue
+    import job_handlers  # noqa: F401 -- registers the handler
+    job = await enqueue(db, "easm_scan", {"domain_id": domain_id},
+                         requested_by=user.get("email") or user.get("id"))
+    return {"status": "queued", "job_id": job["id"], "deduped": job.get("deduped", False),
+            "message": ("This EASM sweep was already queued." if job.get("deduped")
+                         else "EASM sweep queued — poll GET /v1/jobs/{} for progress".format(job["id"]))}
 
 
 @router.get("/v1/admin/easm/candidates")

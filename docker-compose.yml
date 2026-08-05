@@ -61,6 +61,13 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
+    # Memory ceiling. The backend was OOM-killed when a heavy scan ran inside it;
+    # scans now run in the worker, but this is the backstop -- a runaway request
+    # is killed here instead of the kernel picking an arbitrary victim across the
+    # host (which on a home server is often mongo or the backend itself). Tune to
+    # your host: 1g suits a small deployment, raise it if you have the RAM.
+    mem_limit: ${BACKEND_MEM_LIMIT:-1g}
+    mem_reservation: 512m
     volumes:
       # Backups must live on a volume, not the container's own filesystem -- the
       # container gets recreated on every deploy/update and would take the backup
@@ -101,6 +108,11 @@ services:
       # dedicated worker for slow scan types, e.g. WORKER_KINDS=nmap_scan,easm_scan
       WORKER_KINDS: ${WORKER_KINDS:-}
       NVD_API_KEY: ${NVD_API_KEY:-}
+    # The heavy scans run here, so the cap lives here. Blowing it kills the worker
+    # (and requeues the job), not the API. Give it more than the backend -- trivy
+    # image pulls and recon-ng are the memory-hungry parts of the whole system.
+    mem_limit: ${WORKER_MEM_LIMIT:-1536m}
+    mem_reservation: 512m
     volumes:
       - vulnops_backups:/app/backups
       - vulnops_ir_artifacts:/app/ir_artifacts
