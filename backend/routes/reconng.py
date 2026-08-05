@@ -160,6 +160,19 @@ async def start_run(body: RunBody, user: dict = Depends(require_role("admin", "m
     return {"id": run_id, "status": "queued"}
 
 
+@router.get("/v1/recon/preflight")
+async def recon_preflight(user: dict = Depends(get_current_user),
+                          _rbac: dict = Depends(require_module("/admin/recon-osint"))):
+    """Whether recon-ng is actually installed and which modules are present.
+
+    Turns the long-standing 'first run is a smoke test' caveat into an
+    observable status: the page can show 'recon-ng ready, 8/9 modules installed'
+    or 'recon-cli not found' instead of failing a run with a confusing error.
+    """
+    from reconng import preflight
+    return await preflight()
+
+
 @router.get("/v1/recon/runs")
 async def list_runs(user: dict = Depends(get_current_user)):
     items = await db.recon_runs.find({}, {"_id": 0}).sort("started_at", -1).to_list(200)

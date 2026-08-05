@@ -569,6 +569,53 @@ async def run_hibp_lookup(target: str, kind: str) -> list:
     }]
 
 
+async def preflight(timeout_sec: int = 30) -> dict:
+    """Is recon-ng actually installed and usable, and which catalogued modules are
+    really present?
+
+    This module has always carried a caveat in its own header: 'the subprocess
+    execution here has only been verified with a mocked recon-cli, not a real
+    one'. That uncertainty should be OBSERVABLE, not a comment -- a native tool
+    that silently isn't there fails every run with a confusing error. This turns
+    'first run is a smoke test' into a status the UI and the self-check can read.
+
+    Never raises. If recon-cli is missing, that IS the answer.
+    """
+    import shutil
+    result = {"tool": "recon-cli", "available": False, "version": None,
+              "installed_modules": [], "missing_modules": [], "error": None}
+
+    if not shutil.which("recon-cli"):
+        result["error"] = ("recon-cli is not on PATH in this container. The worker image installs "
+                            "recon-ng; if this is the API container, that is expected -- recon runs "
+                            "on the worker.")
+        return result
+    result["available"] = True
+
+    # Version. recon-cli has no clean --version, so read it from the marketplace
+    # banner, which prints the framework version. Best-effort.
+    try:
+        out = await _run_recon_cli(["-C", "marketplace search"], timeout_sec=timeout_sec)
+        import re as _re
+        m = _re.search(r"recon-ng\s+v?([\d.]+)", out, _re.I)
+        if m:
+            result["version"] = m.group(1)
+        # Which of OUR catalogued recon-ng modules the marketplace lists as
+        # installed. Only the modules that are actually recon-ng modules -- the
+        # OpenCTI/GreyNoise entries aren't and are handled elsewhere.
+        recon_modules = [m for m in MODULE_CATALOG
+                         if m.get("module")]  # real recon-ng modules only; module=None is a native-Python source
+        for mod in recon_modules:
+            path = mod["module"]
+            # marketplace search output marks installed modules with a '*'
+            installed = _re.search(r"\*\s+" + _re.escape(path), out) is not None
+            (result["installed_modules"] if installed
+             else result["missing_modules"]).append(path)
+    except Exception as e:
+        result["error"] = f"recon-cli is present but a preflight command failed: {e}"
+    return result
+
+
 async def run_module(db, module_id: str, target: str, timeout_sec: int = 300) -> dict:
     """Runs one recon-ng module (or, for source="opencti" entries, a direct OpenCTI
     lookup) against `target`, routes the results, and returns a summary dict. Raises
