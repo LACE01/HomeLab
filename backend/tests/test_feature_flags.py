@@ -41,8 +41,15 @@ print("PASS: unknown flag key fails open (enabled), doesn't silently disable")
 
 all_flags = run(feature_flags.get_all_flags(db))
 assert len(all_flags) == len(feature_flags.FLAG_REGISTRY)
-assert all(f["enabled"] is True for f in all_flags)
-print("PASS: get_all_flags returns full registry, all default-enabled")
+# Each flag reflects its OWN registry default. Most default True; the
+# active-validation kill switch defaults False on purpose, so a blanket
+# "all enabled" assertion is wrong now.
+defaults = {f["key"]: f.get("default", True) for f in feature_flags.FLAG_REGISTRY}
+assert all(f["enabled"] is defaults[f["key"]] for f in all_flags)
+assert any(f["key"] == "active_validation_enabled" and f["enabled"] is False for f in all_flags), \
+    "the active-validation capability must default to OFF"
+print("PASS: get_all_flags returns the full registry with each flag at its own default — and the "
+      "active-validation kill switch defaults OFF")
 
 # --- set_flag ---
 result = run(feature_flags.set_flag(db, "vendor_detect_findings", False, "admin@x.com"))

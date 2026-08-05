@@ -14,6 +14,17 @@ is_enabled(), nothing else needs to change.
 from datetime import datetime, timezone
 
 FLAG_REGISTRY = [
+    # Active single-finding validation. DEFAULT FALSE and treated as a kill switch:
+    # the exploit_authorization control plane reads this with its OWN fail-CLOSED
+    # check (not is_enabled, which fails open), so turning this off truly disables
+    # the whole workflow. Leaving it off is the correct state unless the
+    # organization has a standing authorization to actively validate findings.
+    {"key": "active_validation_enabled", "group": "Active Validation", "default": False,
+     "label": "Enable active single-finding validation (OFF by default)",
+     "description": "Master switch for the authorized, dual-control, allowlist-gated validation "
+                    "workflow. Off means the entire workflow -- requesting, approving, running -- "
+                    "is unavailable. Even when on, nothing runs without a registered executor, "
+                    "which the platform does not ship."},
     {"key": "vendor_detect_hardware", "group": "Vendor Detection", "default": True,
      "label": "Detect vendors from asset hardware",
      "description": "Suggests a vendor candidate from each asset's hardware_info manufacturer (e.g. \"HP\", \"Dell\")."},
