@@ -162,15 +162,48 @@ async def import_nikto_results(db, target_url: str, parsed: dict, source_label: 
     findings_created = 0
     seen_titles = set()
 
+    from corroboration import make_source, merge_source, reconcile_severity
+    reopened = 0
     for v in parsed.get("vulnerabilities", []):
         severity, cwe, title = _classify(v.get("msg", ""))
-        canonical_key = f"nikto:{asset['id']}:{title}:{v.get('url','')}"
+        # Keyed on the RESOLVED asset id, not the transient asset dict, and stable
+        # across re-scans -- the same issue at the same URL is the same finding.
+        # This is the same lesson as the Qualys/Nessus duplicate storm: an
+        # ad-hoc hostname/title key can neither reopen nor corroborate. The URL is
+        # part of the key because Nikto reports per-path, so /admin and /backup of
+        # the same issue are genuinely different findings.
+        native = v.get("id") or "n/a"
+        canonical_key = f"nikto:{native}:{v.get('url','/')}::{asset['id']}"
         seen_titles.add(title)
-        if await _dedup_finding(db, asset["id"], canonical_key):
-            continue
         now = _now_iso()
+
+        existing = await db.findings.find_one({"canonical_key": canonical_key}, {"_id": 0})
+        if existing:
+            # Re-scan saw it again. Reopen if it had been closed (the old code
+            # created a DUPLICATE here), otherwise just refresh + add our source.
+            sources = merge_source(
+                existing.get("sources") or ([make_source(
+                    tool=existing.get("source_tool") or "Nikto",
+                    native_id=existing.get("source_native_id"),
+                    severity=existing.get("severity"),
+                    first_seen=existing.get("first_seen_at"))] if existing.get("source_tool") else []),
+                make_source(tool="Nikto", native_id=native, severity=severity, title=title))
+            patch = {"sources": sources, "source_count": len({x["tool"] for x in sources}),
+                      "last_seen_at": now}
+            if existing.get("status") in ("Fixed validated", "Closed administratively"):
+                patch["status"] = "Reopened"
+                patch["reopened_count"] = (existing.get("reopened_count") or 0) + 1
+                patch["last_changed_at"] = now
+                patch["verification_note"] = (
+                    f"Reopened by a Nikto re-scan on {now[:10]} — the issue is present again.")
+                reopened += 1
+            await db.findings.update_one({"canonical_key": canonical_key}, {"$set": patch})
+            continue
+
         finding = {
             "id": str(uuid.uuid4()), "canonical_key": canonical_key,
+            "sources": [make_source(tool="Nikto", native_id=native, severity=severity, title=title)],
+            "source_count": 1,
             "source_tool": "Nikto", "source_observation_id": v.get("id"), "source_native_id": v.get("id"),
             "qid": None, "plugin_id": v.get("id"),
             "title": title, "description": f"{v.get('msg','').strip()} (Detected on {v.get('method','GET')} {v.get('url','/')})",
@@ -214,5 +247,6 @@ async def import_nikto_results(db, target_url: str, parsed: dict, source_label: 
     return {
         "asset_id": asset["id"], "hostname": asset["hostname"],
         "issues_found": len(parsed.get("vulnerabilities", [])),
-        "findings_created": findings_created, "distinct_issue_types": len(seen_titles),
+        "findings_created": findings_created, "findings_reopened": reopened,
+        "distinct_issue_types": len(seen_titles),
     }
