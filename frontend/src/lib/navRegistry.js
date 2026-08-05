@@ -36,6 +36,7 @@ export const NAV = [
   { group: "Detection & Response", label: "Security Alerts", to: "/alerts", keywords: "alerts events detections siem" },
   { group: "Detection & Response", label: "Threat Intel Watchlist", to: "/admin/threat-intel", keywords: "ioc indicator threatfox watchlist opencti" },
   { group: "Detection & Response", label: "Albert Network Monitoring", to: "/admin/albert", keywords: "albert ids ms-isac network sensor" },
+  { group: "Detection & Response", label: "World Monitor", to: "/world-monitor", keywords: "world monitor global events situational awareness ransomware kev news geopolitical board" },
   { group: "Detection & Response", label: "Triage Wizard", to: "/ir/wizard", keywords: "incident triage wizard classify" },
   { group: "Detection & Response", label: "IR Cases", to: "/ir/cases", keywords: "incident response case investigation" },
   { group: "Detection & Response", label: "IR Setup", to: "/admin/ir-setup", keywords: "incident response configuration playbook" },

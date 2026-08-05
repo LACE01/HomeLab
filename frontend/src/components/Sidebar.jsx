@@ -126,6 +126,7 @@ export default function Sidebar() {
           <NavItem to="/alerts" icon={Siren} label="Security Alerts" testid="nav-alerts" />
           <NavItem to="/admin/threat-intel" icon={Binoculars} label="Threat Intel Watchlist" testid="nav-threat-intel" />
           <NavItem to="/admin/albert" icon={Broadcast} label="Albert Network Monitoring" testid="nav-albert" />
+          <NavItem to="/world-monitor" icon={Globe} label="World Monitor" testid="nav-world-monitor" />
           <NavItem to="/ir/wizard" icon={FirstAidKit} label="Triage Wizard" testid="nav-ir-wizard" />
           <NavItem to="/ir/cases" icon={Siren} label="IR Cases" testid="nav-ir-cases" />
           <NavItem to="/admin/ir-setup" icon={SlidersHorizontal} label="IR Setup" testid="nav-ir-setup" />

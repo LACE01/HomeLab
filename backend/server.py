@@ -26,6 +26,7 @@ from routes.corroboration import router as corroboration_router
 from routes.jobs import router as jobs_router
 from routes.platform_health import router as platform_health_router
 from routes.wstg import router as wstg_router
+from routes.world_monitor import router as world_monitor_router
 from routes.identity import router as identity_router
 from routes.inventory import router as inventory_router
 from routes.workflows import router as workflows_router
@@ -98,6 +99,7 @@ api.include_router(corroboration_router)
 api.include_router(jobs_router)
 api.include_router(platform_health_router)
 api.include_router(wstg_router)
+api.include_router(world_monitor_router)
 api.include_router(findings_router)
 api.include_router(inventory_router)
 api.include_router(workflows_router)
