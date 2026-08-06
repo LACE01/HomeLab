@@ -194,6 +194,33 @@ assert "Nothing in the last window is linked to your environment" in b["headline
 print("PASS: with nothing collected, the board says so plainly rather than looking broken")
 
 
+# ============ REGRESSION: mixed naive/aware timestamps must not 500 the board ============
+#
+# The real data has KEV date_added as a bare date ('2026-08-01', which parses to a
+# NAIVE datetime) alongside CTI timestamps that carry an offset (aware). Sorting a
+# mix raised 'can't compare offset-naive and offset-aware' and 500'd the whole
+# page. mongomock happened to store uniform strings, so the original tests missed
+# it -- this one forces the mix.
+
+reset()
+run(db.findings.insert_one({"id": "f", "cve": "CVE-2026-0001", "status": "New", "internet_facing": True}))
+run(db.kev_catalog.insert_one({"cve_id": "CVE-2026-0001", "name": "ours",
+                                "date_added": "2026-08-01"}))              # bare date -> naive
+run(db.security_events.insert_one({"id": "e", "status": "open", "severity": "High",
+                                    "title": "Detection", "source": "x",
+                                    "last_seen_at": now.isoformat()}))     # aware
+run(db.cti_articles.insert_one({"id": "a", "title": "News", "summary": "",
+                                 "published_at": now.strftime("%Y-%m-%dT%H:%M:%S")}))  # no tz -> naive
+
+b = run(wm.board(db, days=3650))   # wide window so the bare 2026-08-01 date is included
+assert len(b["events"]) >= 2, "the board should contain events from mixed-timestamp sources"
+# it must be sorted without raising, and the KEV that affects us leads
+assert b["events"][0]["relevance"] == "affects_us"
+assert wm._parse("2026-08-01").tzinfo is not None, "bare dates must parse to an aware datetime"
+print("PASS: a board built from a MIX of naive (bare-date KEV) and aware (CTI/detection) timestamps "
+      "sorts without raising — the 'offset-naive vs offset-aware' crash that 500'd the page is fixed")
+
+
 # ============ route ============
 
 import server, auth_utils

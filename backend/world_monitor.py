@@ -55,12 +55,28 @@ def _iso(dt=None):
 
 
 def _parse(ts):
+    """Parse a timestamp to an ALWAYS-timezone-aware datetime (assume UTC if the
+    stored value has none).
+
+    This is load-bearing: the sources have mixed formats -- KEV's date_added is
+    date-only ('2026-08-01', which parses NAIVE) while CTI timestamps carry an
+    offset (aware). Sorting a mix of naive and aware datetimes raises
+    'can't compare offset-naive and offset-aware', which 500'd the whole board.
+    Normalizing every parsed value to aware makes them comparable.
+    """
     if not ts:
         return None
     try:
-        return datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
     except Exception:
-        return None
+        # Also accept a bare date like '2026-08-01'.
+        try:
+            dt = datetime.strptime(str(ts)[:10], "%Y-%m-%d")
+        except Exception:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def _event(*, id, when, category, severity, title, summary="", source="",
