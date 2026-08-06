@@ -54,7 +54,7 @@ jobs:
             tests/test_cf_diagnostics.py tests/test_opencti_client.py tests/test_login_diagnostics.py tests/test_blocking_io.py tests/test_mitre_signals.py tests/test_entity_resolution.py \
             tests/test_identity_routes.py tests/test_connector_identity.py \
             tests/test_corroboration.py tests/test_corroboration_e2e.py tests/test_finding_context.py tests/test_correlation.py tests/test_posture_history.py \
-            tests/test_jobqueue.py tests/test_platform_health.py tests/test_no_blocking_endpoints.py tests/test_wstg.py tests/test_nikto_findings.py tests/test_recon_preflight.py tests/test_world_monitor.py tests/test_exploit_authorization.py tests/test_dedupe_repair.py \
+            tests/test_jobqueue.py tests/test_platform_health.py tests/test_no_blocking_endpoints.py tests/test_wstg.py tests/test_nikto_findings.py tests/test_recon_preflight.py tests/test_world_monitor.py tests/test_exploit_authorization.py tests/test_backup_encryption.py tests/test_dedupe_repair.py \
             tests/test_cti.py \
             tests/test_secrets_scan.py \
             tests/test_domain_email_security.py \

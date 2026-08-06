@@ -60,14 +60,22 @@ export default function Backups() {
 
   useEffect(() => { load(); loadOffsiteStatus(); loadDbSize(); }, []);
 
+  const [encrypt, setEncrypt] = useState(false);
+  const [oneTimePass, setOneTimePass] = useState(null);   // shown once, then cleared
+  const [restorePass, setRestorePass] = useState("");
+
   const createNow = async () => {
     setCreating(true);
     try {
-      const r = await api.post("/v1/admin/backups", {});
+      const r = await api.post("/v1/admin/backups", { encrypt });
       const bits = [`${r.data.documents} document(s)`, fmtBytes(r.data.size_bytes)];
       bits.push(r.data.verified ? "verified ✓" : "verification FAILED");
+      if (r.data.encrypted) bits.push("encrypted 🔒");
       if (r.data.offsite_attempted) bits.push(r.data.offsite_ok ? "off-site ✓" : "off-site upload failed");
       toast.success(`Backup created: ${bits.join(", ")}`);
+      // The passphrase is in this response and nowhere else. Show it in a modal
+      // the user must dismiss deliberately, so it isn't lost to a toast timeout.
+      if (r.data.passphrase) setOneTimePass(r.data.passphrase);
       load();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Backup failed");
@@ -128,9 +136,10 @@ export default function Backups() {
       const fd = new FormData();
       fd.append("file", restoreFile);
       fd.append("confirm", confirmText);
+      if (restorePass) fd.append("passphrase", restorePass);
       const r = await api.post("/v1/admin/backups/restore", fd, { headers: { "Content-Type": "multipart/form-data" } });
       toast.success(`Restored ${r.data.documents_restored} document(s) across ${r.data.collections_restored} collection(s)`);
-      setRestoreFile(null); setConfirmText("");
+      setRestoreFile(null); setConfirmText(""); setRestorePass("");
       if (fileRef.current) fileRef.current.value = "";
     } catch (e) {
       toast.error(e.response?.data?.detail || "Restore failed");
@@ -139,6 +148,29 @@ export default function Backups() {
 
   return (
     <Layout title="Backups" subtitle="Manual and scheduled database backups — the container itself is disposable, this is what isn't">
+      {oneTimePass && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
+             onClick={(e) => e.stopPropagation()}>
+          <div className="w-full max-w-lg bg-[#0D1117] border border-amber-500/40 rounded-lg p-5">
+            <div className="text-[15px] text-amber-200 font-medium mb-1">Copy this passphrase now</div>
+            <div className="text-[12px] text-slate-400 mb-3 leading-relaxed">
+              It is shown <b>once</b> and is not stored anywhere on the server. This backup can only be
+              restored with it — if you lose it, the backup is permanently unrecoverable.
+            </div>
+            <div className="flex items-center gap-2 mb-4">
+              <code className="flex-1 bg-[#161B22] border border-[#30363D] rounded px-3 py-2 text-[13px] font-mono text-slate-100 break-all select-all">
+                {oneTimePass}
+              </code>
+              <button onClick={() => { navigator.clipboard?.writeText(oneTimePass); toast.success("Copied"); }}
+                className="h-9 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded shrink-0">Copy</button>
+            </div>
+            <button onClick={() => setOneTimePass(null)}
+              className="h-9 px-4 text-[12.5px] bg-slate-700 hover:bg-slate-600 text-slate-100 rounded">
+              I've saved it — close
+            </button>
+          </div>
+        </div>
+      )}
       {dbSize && <DbSizePanel data={dbSize} onRefresh={loadDbSize}/>}
 
       <div className="grid grid-cols-2 gap-5 max-w-5xl mb-5">
@@ -153,9 +185,19 @@ export default function Backups() {
             .env to also run this nightly (last 14 kept automatically). Every backup is automatically integrity-checked
             and, when off-site storage is configured below, uploaded there too.
           </p>
+          <label className="flex items-center gap-2 text-[12px] text-slate-400 mb-3 cursor-pointer">
+            <input type="checkbox" checked={encrypt} onChange={(e) => setEncrypt(e.target.checked)}/>
+            Encrypt this backup with a one-time passphrase
+          </label>
+          {encrypt && (
+            <p className="text-[11px] text-amber-300/80 mb-3 leading-relaxed">
+              A strong passphrase is generated and shown <b>once</b> after the backup completes.
+              It is never stored — copy it somewhere safe. Without it, the backup cannot be restored.
+            </p>
+          )}
           <button onClick={createNow} disabled={creating}
             className="h-9 px-4 text-[12.5px] bg-blue-500 hover:bg-blue-400 disabled:opacity-40 text-white rounded inline-flex items-center gap-1.5">
-            {creating ? <CircleNotch size={15} className="animate-spin"/> : <CloudArrowUp size={15}/>} Backup now
+            {creating ? <CircleNotch size={15} className="animate-spin"/> : <CloudArrowUp size={15}/>} {encrypt ? "Backup now (encrypted)" : "Backup now"}
           </button>
         </div>
 
@@ -168,8 +210,14 @@ export default function Backups() {
             Replaces every current collection's contents with what's in the chosen backup file. There's no undo —
             take a fresh backup first if you want to keep current data around.
           </p>
-          <input ref={fileRef} type="file" accept=".gz" onChange={(e) => setRestoreFile(e.target.files?.[0] || null)}
+          <input ref={fileRef} type="file" accept=".gz,.enc" onChange={(e) => setRestoreFile(e.target.files?.[0] || null)}
             className="w-full text-[11.5px] text-slate-300 mb-2.5"/>
+          {restoreFile?.name?.endsWith(".enc") && (
+            <input value={restorePass} onChange={(e) => setRestorePass(e.target.value)}
+              placeholder="Passphrase for this encrypted backup"
+              type="password"
+              className="w-full h-9 bg-[#161B22] border border-amber-500/30 rounded px-3 text-[12.5px] text-slate-100 mb-2.5"/>
+          )}
           <input value={confirmText} onChange={(e) => setConfirmText(e.target.value)}
             placeholder="Type RESTORE to confirm"
             className="w-full h-9 bg-[#161B22] border border-red-500/30 rounded px-3 text-[12.5px] text-slate-100 mb-2.5"/>

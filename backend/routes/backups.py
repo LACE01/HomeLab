@@ -15,6 +15,7 @@ router = APIRouter()
 
 class BackupBody(BaseModel):
     label: Optional[str] = None
+    encrypt: bool = False
 
 
 @router.get("/v1/admin/backups")
@@ -27,7 +28,9 @@ async def list_backups(user: dict = Depends(require_role("admin")), _rbac: dict 
 @router.post("/v1/admin/backups")
 async def create_backup_now(body: BackupBody, user: dict = Depends(require_role("admin"))):
     from backup import create_backup
-    return await create_backup(db, label=body.label)
+    # When encrypt=true the response carries a one-time `passphrase`. It is never
+    # stored; this is the only time it exists in an API response.
+    return await create_backup(db, label=body.label, encrypt=body.encrypt)
 
 
 @router.get("/v1/admin/backups/{backup_id}/download")
@@ -171,16 +174,19 @@ async def upload_offsite_endpoint(backup_id: str, user: dict = Depends(require_r
 async def restore_backup_endpoint(
     file: UploadFile = File(...),
     confirm: str = Form(...),
+    passphrase: str = Form(""),
     user: dict = Depends(require_role("admin")),
 ):
     """Restoring replaces the entire database contents -- requires typing the literal
     word RESTORE in the confirm field as a lightweight guard against fat-fingering
-    this from the UI (there's no undo)."""
+    this from the UI (there's no undo). An encrypted backup additionally requires
+    the passphrase shown when it was created; a wrong passphrase fails BEFORE
+    anything is deleted."""
     if confirm != "RESTORE":
         raise HTTPException(400, "Type RESTORE (all caps) to confirm -- this replaces all current data")
     from backup import restore_backup
     content = await file.read()
     try:
-        return await restore_backup(db, content)
+        return await restore_backup(db, content, passphrase=passphrase or None)
     except ValueError as e:
         raise HTTPException(400, str(e))

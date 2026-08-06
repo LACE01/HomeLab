@@ -129,10 +129,99 @@ def verify_backup(content: bytes, expected_collections: int | None = None,
     return result
 
 
-async def create_backup(db, label: str | None = None) -> dict:
+# ---------------------------------------------------------------------------
+# Optional at-rest encryption.
+#
+# When a backup is encrypted, a strong passphrase is generated server-side, used
+# to derive the key, and SHOWN EXACTLY ONCE in the create response. It is never
+# stored -- not in the backup record, not on disk, nowhere. That is the security
+# property: a backup file stolen from the volume (or from off-site storage) is
+# useless without a passphrase that exists only wherever the operator pasted it.
+#
+# The unavoidable corollary, which the UI must state plainly: lose the passphrase
+# and the backup is unrecoverable. There is no reset, because a resettable
+# passphrase is not encryption.
+ENC_MAGIC = "NIGHTWATCH-ENC-BACKUP"
+ENC_VERSION = 1
+KDF_ITERATIONS = 600_000   # PBKDF2-HMAC-SHA256, OWASP-recommended floor
+
+
+def generate_passphrase() -> str:
+    """A strong, human-copyable one-time passphrase. Never stored."""
+    import secrets
+    # ~180 bits. Grouped for legibility when copied by hand.
+    raw = secrets.token_urlsafe(30)
+    return "-".join(raw[i:i + 6] for i in range(0, len(raw), 6))
+
+
+def _derive_key(passphrase: str, salt: bytes) -> bytes:
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+    import base64
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt,
+                     iterations=KDF_ITERATIONS)
+    return base64.urlsafe_b64encode(kdf.derive(passphrase.encode("utf-8")))
+
+
+def encrypt_payload(payload: bytes, passphrase: str) -> bytes:
+    """Wrap the gzip payload in an authenticated-encryption envelope.
+
+    The envelope is plain JSON (magic, kdf params, salt, ciphertext) so a restore
+    can read the header WITHOUT the key and tell the operator 'this is encrypted,
+    a passphrase is required' rather than failing with a gzip error.
+    """
+    import os as _os, base64, json
+    from cryptography.fernet import Fernet
+    salt = _os.urandom(16)
+    token = Fernet(_derive_key(passphrase, salt)).encrypt(payload)
+    envelope = {
+        "magic": ENC_MAGIC, "version": ENC_VERSION,
+        "kdf": "pbkdf2-sha256", "iterations": KDF_ITERATIONS,
+        "salt": base64.b64encode(salt).decode(),
+        "ciphertext": base64.b64encode(token).decode(),
+    }
+    return json.dumps(envelope).encode("utf-8")
+
+
+def is_encrypted(content: bytes) -> bool:
+    """Cheap peek: is this an encrypted-backup envelope?"""
+    head = content[:64].lstrip()
+    if not head.startswith(b"{"):
+        return False
+    try:
+        import json
+        return json.loads(content.decode("utf-8", "replace")).get("magic") == ENC_MAGIC
+    except Exception:
+        return False
+
+
+def decrypt_payload(content: bytes, passphrase: str) -> bytes:
+    """Recover the gzip payload from an encrypted envelope. Raises ValueError on a
+    wrong passphrase or tampering (Fernet authenticates, so a modified ciphertext
+    is rejected, not silently returned as garbage)."""
+    import base64, json
+    from cryptography.fernet import Fernet, InvalidToken
+    try:
+        env = json.loads(content.decode("utf-8"))
+    except Exception as e:
+        raise ValueError(f"Not an encrypted VulnOps backup: {e}")
+    if env.get("magic") != ENC_MAGIC:
+        raise ValueError("Not an encrypted VulnOps backup.")
+    if not passphrase:
+        raise ValueError("This backup is encrypted; a passphrase is required to restore it.")
+    salt = base64.b64decode(env["salt"])
+    key = _derive_key(passphrase, salt)
+    try:
+        return Fernet(key).decrypt(base64.b64decode(env["ciphertext"]))
+    except InvalidToken:
+        raise ValueError("Wrong passphrase, or the backup file has been tampered with.")
+
+
+async def create_backup(db, label: str | None = None, *, encrypt: bool = False) -> dict:
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    filename = f"vulnops-backup-{ts}.json.gz"
+    suffix = ".json.gz.enc" if encrypt else ".json.gz"
+    filename = f"vulnops-backup-{ts}{suffix}"
     path = _safe_path(filename)
 
     collection_names = [c for c in await db.list_collection_names() if c != "backup_history"]
@@ -144,20 +233,31 @@ async def create_backup(db, label: str | None = None) -> dict:
         total_docs += len(docs)
 
     payload = json_util.dumps({"created_at": ts, "collections": dump}).encode("utf-8")
-    with gzip.open(path, "wb") as f:
-        f.write(payload)
+    gz = gzip.compress(payload)
 
-    # Read the actual bytes written to disk back (not the in-memory payload) so
-    # verification and off-site upload both operate on exactly what a real
-    # restore would read, catching a truncated/corrupt write too.
+    # Verify the PLAINTEXT round-trips BEFORE we encrypt it. An encrypted file
+    # can't be structurally verified without the key, so we verify the gzip
+    # payload here (real doc counts) and only then encrypt -- the record's
+    # verified=True is honest.
+    verification = verify_backup(gz, expected_collections=len(collection_names),
+                                 expected_documents=total_docs)
+
+    passphrase = None
+    if encrypt:
+        passphrase = generate_passphrase()
+        to_write = encrypt_payload(gz, passphrase)
+    else:
+        to_write = gz
+    path.write_bytes(to_write)
+
     written = path.read_bytes()
-    verification = verify_backup(written, expected_collections=len(collection_names), expected_documents=total_docs)
     offsite = upload_offsite(filename, written)
 
     record = {
         "id": str(uuid.uuid4()), "filename": filename, "label": label,
         "collections": len(collection_names), "documents": total_docs,
         "size_bytes": path.stat().st_size, "created_at": _now_iso(),
+        "encrypted": encrypt,
         "verified": verification["valid"], "verification_error": verification.get("error"),
         "verified_at": verification["verified_at"],
         "offsite_attempted": offsite["attempted"], "offsite_ok": offsite["ok"],
@@ -165,7 +265,15 @@ async def create_backup(db, label: str | None = None) -> dict:
         "offsite_error": offsite.get("error"), "offsite_uploaded_at": offsite.get("uploaded_at"),
     }
     await db.backup_history.insert_one(dict(record))
-    return record
+    # The passphrase is returned HERE and only here. It is never stored. Surface
+    # it to the caller so the UI can show it once; after this response it is gone
+    # from the server forever.
+    out = dict(record)
+    if passphrase:
+        out["passphrase"] = passphrase
+        out["passphrase_notice"] = ("Copy this passphrase now. It is shown once and never stored — "
+                                     "without it, this backup cannot be restored.")
+    return out
 
 
 async def verify_backup_by_id(db, backup_id: str) -> dict:
@@ -216,9 +324,16 @@ def read_backup_file(filename: str) -> bytes:
     return path.read_bytes()
 
 
-async def restore_backup(db, content: bytes) -> dict:
+async def restore_backup(db, content: bytes, passphrase: str | None = None) -> dict:
     """DESTRUCTIVE: replaces each collection's contents with what's in the backup.
-    Meant for disaster recovery, not merging -- there's no partial/dry-run mode."""
+    Meant for disaster recovery, not merging -- there's no partial/dry-run mode.
+
+    An encrypted backup requires the passphrase that was shown when it was
+    created. A wrong or missing passphrase fails cleanly BEFORE anything is
+    deleted -- the destructive part only runs once the file has decrypted and
+    parsed."""
+    if is_encrypted(content):
+        content = decrypt_payload(content, passphrase)   # raises ValueError on bad passphrase
     try:
         raw = gzip.decompress(content)
         data = json_util.loads(raw.decode("utf-8"))
