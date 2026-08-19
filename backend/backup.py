@@ -217,6 +217,70 @@ def decrypt_payload(content: bytes, passphrase: str) -> bytes:
         raise ValueError("Wrong passphrase, or the backup file has been tampered with.")
 
 
+async def _stream_gzip_dump(db, collection_names, out_fileobj, ts) -> int:
+    """Write gzip(json_util.dumps({"created_at":..,"collections":{name:[docs]}}))
+    to out_fileobj ONE document at a time.
+
+    The old create_backup materialized the entire database as Python objects, then
+    a single giant JSON string, then a gzip blob -- several full copies of a
+    200MB+ database resident at once. That OOM-killed the worker (mem_limit 1536m)
+    on a large database and put it in a requeue/crash loop. Streaming keeps peak
+    memory to a single document plus the gzip window, regardless of DB size.
+
+    Returns the total number of documents written.
+    """
+    total_docs = 0
+    gz = gzip.GzipFile(fileobj=out_fileobj, mode="wb")
+    def w(s: str):
+        gz.write(s.encode("utf-8"))
+    try:
+        w('{"created_at": ')
+        w(json_util.dumps(ts))
+        w(', "collections": {')
+        for ci, name in enumerate(collection_names):
+            if ci:
+                w(',')
+            w(json_util.dumps(name))
+            w(': [')
+            first = True
+            # motor streams the cursor in batches, so only a batch is resident.
+            async for doc in db[name].find({}):
+                w('' if first else ',')
+                w(json_util.dumps(doc))
+                first = False
+                total_docs += 1
+            w(']')
+        w('}}')
+    finally:
+        gz.close()
+    return total_docs
+
+
+def _verify_gzip_file(path: "Path", expected_documents=None, expected_collections=None) -> dict:
+    """Integrity-verify a freshly written archive by streaming it through the
+    gzip decoder in chunks -- never holding the whole thing in memory. gzip's
+    trailing CRC and length are checked as the stream ends, so a truncated or
+    corrupt file (disk full, crash mid-write) is caught. The document/collection
+    counts are authoritative from the write itself, so they can't disagree with
+    what was dumped; this confirms the bytes on disk are sound."""
+    try:
+        decompressed = 0
+        with gzip.open(path, "rb") as fh:
+            while True:
+                chunk = fh.read(1 << 20)
+                if not chunk:
+                    break
+                decompressed += len(chunk)
+        if decompressed == 0:
+            return {"valid": False, "error": "Archive decompressed to nothing",
+                    "verified_at": _now_iso()}
+    except Exception as e:
+        return {"valid": False, "error": f"Archive is corrupt or unreadable: {e}",
+                "verified_at": _now_iso()}
+    return {"valid": True, "collections": expected_collections,
+            "documents": expected_documents, "verified_at": _now_iso()}
+
+
 async def create_backup(db, label: str | None = None, *, encrypt: bool = False) -> dict:
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -225,38 +289,50 @@ async def create_backup(db, label: str | None = None, *, encrypt: bool = False) 
     path = _safe_path(filename)
 
     collection_names = [c for c in await db.list_collection_names() if c != "backup_history"]
-    dump = {}
-    total_docs = 0
-    for name in collection_names:
-        docs = await db[name].find({}).to_list(length=None)
-        dump[name] = docs
-        total_docs += len(docs)
 
-    payload = json_util.dumps({"created_at": ts, "collections": dump}).encode("utf-8")
-    gz = gzip.compress(payload)
+    # Stream the dump to a temp gzip file on the backup volume, one document at a
+    # time -- see _stream_gzip_dump. This is the fix for the worker being
+    # OOM-killed (and crash-looping) when backing up a large database inline.
+    import tempfile
+    tmp = tempfile.NamedTemporaryFile(prefix="vulnops-bak-", suffix=".gz",
+                                      dir=str(BACKUP_DIR), delete=False)
+    tmp_path = Path(tmp.name)
+    try:
+        total_docs = await _stream_gzip_dump(db, collection_names, tmp, ts)
+        tmp.flush()
+        tmp.close()
 
-    # Verify the PLAINTEXT round-trips BEFORE we encrypt it. An encrypted file
-    # can't be structurally verified without the key, so we verify the gzip
-    # payload here (real doc counts) and only then encrypt -- the record's
-    # verified=True is honest.
-    verification = verify_backup(gz, expected_collections=len(collection_names),
-                                 expected_documents=total_docs)
+        # Verify the PLAINTEXT archive round-trips BEFORE we encrypt it (an
+        # encrypted file can't be structurally verified without the key), and do
+        # it by streaming so verification is memory-bounded too.
+        verification = _verify_gzip_file(tmp_path, expected_documents=total_docs,
+                                         expected_collections=len(collection_names))
 
-    passphrase = None
-    if encrypt:
-        passphrase = generate_passphrase()
-        to_write = encrypt_payload(gz, passphrase)
+        passphrase = None
+        if encrypt:
+            passphrase = generate_passphrase()
+            gz_bytes = tmp_path.read_bytes()   # the COMPRESSED archive is small
+            path.write_bytes(encrypt_payload(gz_bytes, passphrase))
+        else:
+            os.replace(str(tmp_path), str(path))   # atomic move -- no extra copy
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+    size_bytes = path.stat().st_size
+
+    # Read the file back ONLY when off-site is actually configured -- otherwise
+    # we'd pull the whole archive into RAM for nothing (and the archive can be
+    # large). This was one of the redundant full-file copies behind the OOM.
+    if offsite_configured():
+        offsite = upload_offsite(filename, path.read_bytes())
     else:
-        to_write = gz
-    path.write_bytes(to_write)
-
-    written = path.read_bytes()
-    offsite = upload_offsite(filename, written)
+        offsite = {"attempted": False, "ok": False, "reason": "not configured"}
 
     record = {
         "id": str(uuid.uuid4()), "filename": filename, "label": label,
         "collections": len(collection_names), "documents": total_docs,
-        "size_bytes": path.stat().st_size, "created_at": _now_iso(),
+        "size_bytes": size_bytes, "created_at": _now_iso(),
         "encrypted": encrypt,
         "verified": verification["valid"], "verification_error": verification.get("error"),
         "verified_at": verification["verified_at"],

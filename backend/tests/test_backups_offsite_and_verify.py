@@ -163,11 +163,19 @@ r = client.get("/api/v1/admin/backups/offsite-status")
 assert r.status_code == 200 and r.json()["configured"] is False
 print("PASS: GET /v1/admin/backups/offsite-status reports unconfigured")
 
+# The route ENQUEUES now (inline backups 520'd through Cloudflare on a large
+# DB). It returns a job id; the worker runs the backup. Drive the worker handler
+# directly here, then read the created record off backup_history.
+import job_handlers
 r2 = client.post("/api/v1/admin/backups", json={"label": "via-route"})
 assert r2.status_code == 200, r2.text
-new_id = r2.json()["id"]
-assert r2.json()["verified"] is True
-print("PASS: POST /v1/admin/backups creates a backup and the response includes verification status")
+assert r2.json()["status"] == "queued" and r2.json()["job_id"]
+_job = run(db.jobs.find_one({"id": r2.json()["job_id"]}, {"_id": 0}))
+async def _hb(progress=None): return None
+_rec = run(job_handlers._backup(db, _job["payload"], _hb))
+new_id = _rec["id"]
+assert _rec["verified"] is True
+print("PASS: POST /v1/admin/backups enqueues a job; the worker runs the backup and it verifies")
 
 r3 = client.get("/api/v1/admin/backups")
 assert r3.status_code == 200
