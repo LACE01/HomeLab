@@ -500,28 +500,61 @@ function CertsTab({ overview, onChange }) {
 
 function TyposquatTab({ overview, onChange }) {
   const [items, setItems] = useState([]);
+  // "" is the sentinel for the all/grouped view. Otherwise it's a specific
+  // owned domain, which is passed to the list query so results are actually
+  // scoped -- the previous version listed EVERY stored lookalike regardless of
+  // the dropdown, which is why eaglecounty.us showed Verizon squats.
   const [domain, setDomain] = useState("");
   const [scanning, setScanning] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  const load = () => api.get("/v1/cti/typosquats").then(r => setItems(r.data.items || []));
-  useEffect(() => { load(); }, []);
-  useEffect(() => { if (!domain && overview?.owned_domains?.length) setDomain(overview.owned_domains[0]); }, [overview, domain]);
+  const load = (d) => {
+    setLoading(true);
+    const params = d ? { domain: d } : {};   // no param == all domains (grouped)
+    return api.get("/v1/cti/typosquats", { params })
+      .then(r => setItems(r.data.items || []))
+      .finally(() => setLoading(false));
+  };
+  // Re-list whenever the selected domain changes. THIS is the wiring that was
+  // missing -- load() never took the domain into account before.
+  useEffect(() => { load(domain); }, [domain]);
 
   const scan = async () => {
-    if (!domain) { toast.error("Pick a domain"); return; }
+    if (!domain) { toast.error("Pick a specific domain to scan (the All view is read-only)"); return; }
     setScanning(true);
     try {
       const r = await api.post("/v1/cti/typosquats/scan", { domain });
       toast.success(`${r.data.checked} permutations checked — ${r.data.registered} registered, ${r.data.new} newly discovered`);
-      load(); onChange();
+      load(domain); onChange();
     } catch (e) { toast.error(e.response?.data?.detail || "Scan failed"); }
     finally { setScanning(false); }
   };
 
   const setStatus = async (s, status) => {
     await api.patch(`/v1/cti/typosquats/${s.id}`, { status });
-    load(); onChange();
+    load(domain); onChange();
   };
+
+  const Row = (s) => (
+    <div key={s.id} className="px-4 py-2.5 flex items-center gap-3 flex-wrap">
+      <Warning size={13} className={s.status === "malicious" ? "text-red-400" : "text-amber-400"}/>
+      <span className="font-mono text-[12.5px] text-slate-200">{s.domain_candidate}</span>
+      <span className="text-[11px] text-slate-500">→ {(s.ips || []).join(", ")}</span>
+      <span className="text-[11px] text-slate-600">lookalike of {s.domain}</span>
+      <div className="flex gap-1 ml-auto">
+        {["new", "monitoring", "benign", "malicious"].map(st => (
+          <button key={st} onClick={() => setStatus(s, st)}
+            className={`h-6 px-2 text-[10.5px] rounded border capitalize ${s.status === st
+              ? (st === "malicious" ? "bg-red-500/15 border-red-500/40 text-red-300" : "bg-blue-500/15 border-blue-500/40 text-blue-300")
+              : "border-[#30363D] text-slate-500"}`}>{st}</button>
+        ))}
+      </div>
+    </div>
+  );
+
+  // In the All view, group the flat list by base owned domain so it's readable.
+  const grouped = {};
+  if (!domain) for (const s of items) (grouped[s.domain] = grouped[s.domain] || []).push(s);
 
   return (
     <div className="space-y-3">
@@ -530,37 +563,43 @@ function TyposquatTab({ overview, onChange }) {
         prefix/suffix) and resolves each — only REGISTERED lookalikes are recorded, because a permutation nobody
         owns isn't a threat. A newly-registered one raises a High security alert.
       </div>
-      <div className="flex gap-2">
+      <div className="text-[11px] text-slate-500 leading-relaxed">
+        Monitored domains come from the owned-domain list under <span className="text-slate-400">Email Authentication</span>.
+        Add or remove domains there, and tie each to its owning entity, so a lookalike hit lands on the right team.
+      </div>
+      <div className="flex gap-2 items-center">
         <select value={domain} onChange={e => setDomain(e.target.value)}
           className="h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-200">
+          <option value="">All monitored domains (grouped)</option>
           {(overview?.owned_domains || []).map(d => <option key={d} value={d}>{d}</option>)}
-          {(overview?.owned_domains || []).length === 0 && <option value="">No owned domains registered</option>}
         </select>
         <button onClick={scan} disabled={scanning || !domain}
+          title={!domain ? "Pick a specific domain to scan" : ""}
           className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-white rounded inline-flex items-center gap-1.5">
           <Globe size={13}/> {scanning ? "Scanning…" : "Scan for lookalikes"}
         </button>
+        {domain && <span className="text-[11px] text-slate-500">Showing lookalikes of <span className="font-mono text-slate-300">{domain}</span></span>}
       </div>
-      {items.length === 0 ? (
+      {loading ? (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md py-10 text-center text-[12px] text-slate-500">Loading…</div>
+      ) : items.length === 0 ? (
         <div className="border border-[#30363D] bg-[#0D1117] rounded-md py-10 text-center text-[12.5px] text-slate-500">
-          No registered lookalike domains found yet.
+          {domain ? <>No registered lookalikes of <span className="font-mono">{domain}</span> yet.</>
+                  : "No registered lookalike domains found yet."}
+        </div>
+      ) : domain ? (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md divide-y divide-[#30363D]">
+          {items.map(Row)}
         </div>
       ) : (
-        <div className="border border-[#30363D] bg-[#0D1117] rounded-md divide-y divide-[#30363D]">
-          {items.map(s => (
-            <div key={s.id} className="px-4 py-2.5 flex items-center gap-3 flex-wrap">
-              <Warning size={13} className={s.status === "malicious" ? "text-red-400" : "text-amber-400"}/>
-              <span className="font-mono text-[12.5px] text-slate-200">{s.domain_candidate}</span>
-              <span className="text-[11px] text-slate-500">→ {(s.ips || []).join(", ")}</span>
-              <span className="text-[11px] text-slate-600">lookalike of {s.domain}</span>
-              <div className="flex gap-1 ml-auto">
-                {["new", "monitoring", "benign", "malicious"].map(st => (
-                  <button key={st} onClick={() => setStatus(s, st)}
-                    className={`h-6 px-2 text-[10.5px] rounded border capitalize ${s.status === st
-                      ? (st === "malicious" ? "bg-red-500/15 border-red-500/40 text-red-300" : "bg-blue-500/15 border-blue-500/40 text-blue-300")
-                      : "border-[#30363D] text-slate-500"}`}>{st}</button>
-                ))}
+        <div className="space-y-3">
+          {Object.entries(grouped).sort((a, b) => b[1].length - a[1].length).map(([base, rows]) => (
+            <div key={base} className="border border-[#30363D] bg-[#0D1117] rounded-md">
+              <div className="px-4 py-2 border-b border-[#30363D] flex items-center justify-between">
+                <span className="font-mono text-[12px] text-slate-300">{base}</span>
+                <span className="text-[10.5px] text-slate-600">{rows.length} lookalike{rows.length === 1 ? "" : "s"}</span>
               </div>
+              <div className="divide-y divide-[#30363D]">{rows.map(Row)}</div>
             </div>
           ))}
         </div>

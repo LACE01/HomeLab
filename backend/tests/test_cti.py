@@ -326,6 +326,32 @@ assert r.json()["registered"] == 2 and r.json()["new"] == 0
 assert run(db.security_events.count_documents({"event_type": "typosquat_registered"})) == 2
 print("PASS: typosquat scan records only REGISTERED lookalikes, alerts once on first discovery, no duplicate alerts on re-scan")
 
+# ============ typosquat LIST is scoped by domain (the #47 bug) ============
+# The frontend dropdown wasn't passing the domain, so eaglecounty.us showed
+# lookalikes of every domain (e.g. Verizon squats). The backend filter must
+# actually scope, and the frontend must use it -- this pins the backend half.
+run(db.cti_typosquats.insert_one({
+    "id": "sq-verizon", "domain": "verizon.com", "domain_candidate": "verlzon.com",
+    "resolves": True, "ips": ["203.0.113.9"], "status": "new", "first_seen_at": "2026-01-01T00:00:00Z"}))
+
+# no domain param -> everything (the All/grouped view)
+all_items = client.get("/api/v1/cti/typosquats").json()["items"]
+bases_all = {i["domain"] for i in all_items}
+assert "eaglecounty.com" in bases_all and "verizon.com" in bases_all
+print("PASS: GET /v1/cti/typosquats with no domain returns lookalikes of ALL owned domains (the "
+      "grouped view)")
+
+# domain param -> only that domain's lookalikes
+scoped = client.get("/api/v1/cti/typosquats", params={"domain": "eaglecounty.com"}).json()["items"]
+bases_scoped = {i["domain"] for i in scoped}
+assert bases_scoped == {"eaglecounty.com"}, bases_scoped
+assert not any(i["domain"] == "verizon.com" for i in scoped), \
+    "a scoped query leaked another domain's lookalikes -- the exact #47 bug"
+print("PASS: GET /v1/cti/typosquats?domain=eaglecounty.com returns ONLY eaglecounty lookalikes -- "
+      "no Verizon squats bleeding in, which was the reported bug")
+# Clean up the extra domain so downstream overview counts are unaffected.
+run(db.cti_typosquats.delete_one({"id": "sq-verizon"}))
+
 squat = run(db.cti_typosquats.find_one({"domain_candidate": "eaglecounty.net"}, {"_id": 0}))
 r = client.patch(f"/api/v1/cti/typosquats/{squat['id']}", json={"status": "malicious"})
 assert r.status_code == 200 and r.json()["status"] == "malicious"
