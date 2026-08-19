@@ -199,12 +199,55 @@ async def restore_backup_endpoint(
     word RESTORE in the confirm field as a lightweight guard against fat-fingering
     this from the UI (there's no undo). An encrypted backup additionally requires
     the passphrase shown when it was created; a wrong passphrase fails BEFORE
-    anything is deleted."""
+    anything is deleted.
+
+    ENQUEUED, not run inline. Restoring a large database inline blew past
+    Cloudflare's ~100s proxy timeout (520) and could OOM the API -- the mirror of
+    the create-backup bug. The upload is streamed to the shared backups volume,
+    the worker runs the restore, and the client polls GET /v1/jobs/{job_id}. The
+    passphrase (if any) goes to a read-once vault so it never lands on the job
+    row."""
     if confirm != "RESTORE":
         raise HTTPException(400, "Type RESTORE (all caps) to confirm -- this replaces all current data")
-    from backup import restore_backup
-    content = await file.read()
+    import uuid
+    from backup import BACKUP_DIR, _safe_path, stash_passphrase
+    from jobqueue import enqueue
+    import job_handlers  # noqa: F401 -- registers the handler
+
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    restore_id = uuid.uuid4().hex
+    stash_path = _safe_path(f".restore-{restore_id}.bin")
+    # Stream the upload to disk in chunks -- don't pull the whole (potentially
+    # large) file into the API's memory.
+    size = 0
     try:
-        return await restore_backup(db, content, passphrase=passphrase or None)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
+        with open(stash_path, "wb") as out:
+            while True:
+                chunk = await file.read(1 << 20)
+                if not chunk:
+                    break
+                out.write(chunk)
+                size += len(chunk)
+    except Exception:
+        try:
+            stash_path.unlink()
+        except OSError:
+            pass
+        raise
+    if size == 0:
+        try:
+            stash_path.unlink()
+        except OSError:
+            pass
+        raise HTTPException(400, "The uploaded backup file is empty")
+
+    has_passphrase = bool(passphrase)
+    if has_passphrase:
+        await stash_passphrase(db, restore_id, passphrase)
+
+    job = await enqueue(db, "backup_restore",
+                        {"restore_file": str(stash_path), "restore_id": restore_id,
+                         "has_passphrase": has_passphrase},
+                        requested_by=user.get("email") or user.get("id"))
+    return {"status": "queued", "job_id": job["id"],
+            "message": "Restore queued — poll GET /v1/jobs/{} for progress.".format(job["id"])}

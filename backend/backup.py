@@ -430,6 +430,63 @@ async def restore_backup(db, content: bytes, passphrase: str | None = None) -> d
     return {"collections_restored": len(collections), "documents_restored": sum(restored.values()), "detail": restored}
 
 
+RESTORE_BATCH = 2000
+
+
+async def restore_from_path(db, path, passphrase: str | None = None,
+                            batch_size: int = RESTORE_BATCH) -> dict:
+    """Memory-bounded, worker-side restore (see the backup_restore handler).
+
+    The old restore endpoint read the whole upload into RAM, json-parsed the
+    ENTIRE database into Python objects, and inserted each collection whole --
+    inline in the 1g API process, behind Cloudflare's ~100s proxy timeout. On a
+    large database that either OOM-killed the API or 520'd through the proxy: the
+    exact mirror of the create-backup bug, on the restore path. This runs in the
+    worker, frees each collection's memory as it inserts it, and writes in
+    batches instead of one giant insert_many.
+
+    Destructive-safety is preserved: a wrong or missing passphrase (or a corrupt
+    file) raises BEFORE any collection is touched -- the deletes only start once
+    the archive has decrypted and parsed.
+    """
+    p = Path(path)
+    if not p.exists():
+        raise ValueError(f"Restore file not found: {path}")
+    content = p.read_bytes()
+    if is_encrypted(content):
+        content = decrypt_payload(content, passphrase)   # raises before any delete
+    try:
+        raw = gzip.decompress(content)
+        del content
+        data = json_util.loads(raw.decode("utf-8"))
+        del raw
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(f"Not a valid VulnOps backup file: {e}")
+
+    collections = data.get("collections")
+    if collections is None or not isinstance(collections, dict):
+        raise ValueError("Not a valid VulnOps backup file (missing 'collections' key)")
+
+    names = list(collections.keys())
+    restored = {}
+    total = 0
+    for name in names:
+        docs = collections.pop(name)      # drop from the parsed dict -> freed as we go
+        await db[name].delete_many({})
+        n = 0
+        for i in range(0, len(docs), batch_size):
+            chunk = docs[i:i + batch_size]
+            if chunk:
+                await db[name].insert_many(chunk)
+                n += len(chunk)
+        restored[name] = n
+        total += n
+        del docs
+    return {"collections_restored": len(names), "documents_restored": total, "detail": restored}
+
+
 async def prune_old_backups(db, retention: int = DEFAULT_RETENTION) -> dict:
     records = await db.backup_history.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
     to_prune = records[retention:]

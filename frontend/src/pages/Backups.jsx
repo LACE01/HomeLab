@@ -162,8 +162,22 @@ export default function Backups() {
       fd.append("file", restoreFile);
       fd.append("confirm", confirmText);
       if (restorePass) fd.append("passphrase", restorePass);
+      // Restore now runs as a background JOB (inline restore 520'd through
+      // Cloudflare on a large database, same as inline backup). Enqueue, then
+      // poll until the worker finishes.
       const r = await api.post("/v1/admin/backups/restore", fd, { headers: { "Content-Type": "multipart/form-data" } });
-      toast.success(`Restored ${r.data.documents_restored} document(s) across ${r.data.collections_restored} collection(s)`);
+      if (!r.data.job_id) {
+        // legacy synchronous response (older backend)
+        toast.success(`Restored ${r.data.documents_restored} document(s) across ${r.data.collections_restored} collection(s)`);
+        setRestoreFile(null); setConfirmText(""); setRestorePass("");
+        if (fileRef.current) fileRef.current.value = "";
+        return;
+      }
+      toast.message("Restore running in the background…");
+      const rec = await pollJob(r.data.job_id);
+      if (!rec) { toast.error("Restore did not complete — check the Jobs view"); return; }
+      if (rec.ok === false || rec.error) { toast.error(rec.error || "Restore failed"); return; }
+      toast.success(`Restored ${rec.documents_restored} document(s) across ${rec.collections_restored} collection(s)`);
       setRestoreFile(null); setConfirmText(""); setRestorePass("");
       if (fileRef.current) fileRef.current.value = "";
     } catch (e) {

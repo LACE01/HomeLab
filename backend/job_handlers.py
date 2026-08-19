@@ -149,6 +149,48 @@ async def _backup(db, payload, heartbeat):
     return rec
 
 
+@handler("backup_restore")
+async def _restore(db, payload, heartbeat):
+    """Restore a database backup in the worker, off the request path.
+
+    Inline restore had the same failure as inline backup: on a large database it
+    exceeded Cloudflare's ~100s proxy timeout (520) and could OOM the 1g API. The
+    API stashes the uploaded file on the shared backups volume and enqueues this;
+    the worker restores it and the API polls the job.
+
+    The restore passphrase (for an encrypted backup) is user-supplied and must not
+    be persisted on the job row, so it rides the same read-once vault the create
+    path uses, keyed by restore_id. A user-caused failure (wrong passphrase, bad
+    file) is returned as a terminal {ok: False, error} result rather than raised,
+    so the queue doesn't pointlessly retry an unrecoverable input.
+    """
+    import os
+    from backup import restore_from_path, claim_passphrase, memory_snapshot
+    restore_file = payload.get("restore_file")
+    restore_id = payload.get("restore_id")
+    passphrase = None
+    if payload.get("has_passphrase") and restore_id:
+        got = await claim_passphrase(db, restore_id)
+        passphrase = got.get("passphrase") if got.get("available") else None
+    await heartbeat({"stage": "restoring", "memory": memory_snapshot()})
+    try:
+        result = await restore_from_path(db, restore_file, passphrase=passphrase)
+        result["ok"] = True
+    except ValueError as e:
+        # bad passphrase / corrupt or invalid file -- terminal, do not retry
+        result = {"ok": False, "error": str(e)}
+    finally:
+        # the stashed upload is a full transient copy of the database -- never
+        # leave it on the volume after the attempt, success or failure
+        try:
+            if restore_file and os.path.exists(restore_file):
+                os.remove(restore_file)
+        except OSError:
+            pass
+    result["memory"] = memory_snapshot()
+    return result
+
+
 @handler("correlation_run")
 async def _correlation(db, payload, heartbeat):
     import correlation as cx
