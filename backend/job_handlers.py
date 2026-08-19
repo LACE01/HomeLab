@@ -124,6 +124,31 @@ async def _recon(db, payload, heartbeat):
     return {"ok": True, "run_id": payload.get("run_id")}
 
 
+@handler("backup_create")
+async def _backup(db, payload, heartbeat):
+    """Create a database backup in the worker, off the request path.
+
+    Inline backups 500'd/520'd on a large database: dumping every collection took
+    longer than Cloudflare's ~100s proxy timeout. This runs it in the worker and
+    the API polls the job.
+
+    The passphrase for an encrypted backup is moved into the read-once vault and
+    stripped from the returned result -- the result is persisted on the job row,
+    and the passphrase must never be.
+    """
+    from backup import create_backup, stash_passphrase, memory_snapshot
+    await heartbeat({"stage": "starting", "memory": memory_snapshot()})
+    rec = await create_backup(db, label=payload.get("label"),
+                              encrypt=bool(payload.get("encrypt")))
+    passphrase = rec.pop("passphrase", None)
+    rec.pop("passphrase_notice", None)
+    if passphrase:
+        await stash_passphrase(db, rec["id"], passphrase)
+        rec["passphrase_available"] = True   # a flag, never the value
+    rec["memory"] = memory_snapshot()
+    return rec
+
+
 @handler("correlation_run")
 async def _correlation(db, payload, heartbeat):
     import correlation as cx

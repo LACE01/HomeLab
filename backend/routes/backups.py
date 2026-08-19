@@ -27,10 +27,28 @@ async def list_backups(user: dict = Depends(require_role("admin")), _rbac: dict 
 
 @router.post("/v1/admin/backups")
 async def create_backup_now(body: BackupBody, user: dict = Depends(require_role("admin"))):
-    from backup import create_backup
-    # When encrypt=true the response carries a one-time `passphrase`. It is never
-    # stored; this is the only time it exists in an API response.
-    return await create_backup(db, label=body.label, encrypt=body.encrypt)
+    # ENQUEUED, not run inline. On a large database, dumping every collection took
+    # longer than Cloudflare's ~100s proxy timeout, so an inline backup 520'd. The
+    # worker runs it; the client polls GET /v1/jobs/{job_id}. For an encrypted
+    # backup the passphrase lands in a read-once vault; fetch it once from
+    # /v1/admin/backups/{backup_id}/passphrase after the job completes.
+    from jobqueue import enqueue
+    import job_handlers  # noqa: F401 -- registers the handler
+    job = await enqueue(db, "backup_create",
+                        {"label": body.label, "encrypt": body.encrypt},
+                        requested_by=user.get("email") or user.get("id"))
+    return {"status": "queued", "job_id": job["id"], "deduped": job.get("deduped", False),
+            "encrypt": body.encrypt,
+            "message": ("A backup is already in progress." if job.get("deduped")
+                         else "Backup queued — poll GET /v1/jobs/{} for progress.".format(job["id"]))}
+
+
+@router.get("/v1/admin/backups/{backup_id}/passphrase")
+async def get_backup_passphrase(backup_id: str, user: dict = Depends(require_role("admin"))):
+    """Read the one-time passphrase for an encrypted async backup. Returns it
+    ONCE and deletes it -- after this call it is gone from the server."""
+    from backup import claim_passphrase
+    return await claim_passphrase(db, backup_id)
 
 
 @router.get("/v1/admin/backups/{backup_id}/download")

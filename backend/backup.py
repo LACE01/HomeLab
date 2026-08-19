@@ -414,3 +414,100 @@ async def backup_loop(db, interval_hours: int = 24, retention: int = DEFAULT_RET
             ok, detail["error"] = False, str(e)
         await record_heartbeat(db, "backup_loop", "ok" if ok else "error", detail)
         await asyncio.sleep(interval_hours * 3600)
+
+
+# ---------------------------------------------------------------------------
+# Async backups: the passphrase across a job boundary.
+#
+# A synchronous backup returns the passphrase in its HTTP response and never
+# stores it. An ASYNC backup runs in the worker; the passphrase can't ride back
+# in the poll response (the worker finished long before the poll arrives) and it
+# MUST NOT be written into the job result, which is persisted. So it goes into a
+# read-once vault: stored just long enough for the operator to fetch it exactly
+# once, then deleted. It's weaker than the sync path (which never persists it),
+# so it is auto-expired as a backstop and read-once on retrieval.
+# ---------------------------------------------------------------------------
+PASSPHRASE_TTL_MINUTES = 30
+
+
+async def stash_passphrase(db, backup_id: str, passphrase: str) -> None:
+    await db.backup_secrets.insert_one({
+        "backup_id": backup_id, "passphrase": passphrase, "created_at": _now_iso()})
+
+
+async def claim_passphrase(db, backup_id: str) -> dict:
+    """Return the passphrase ONCE and delete it. After this, it's gone."""
+    doc = await db.backup_secrets.find_one_and_delete({"backup_id": backup_id})
+    if not doc:
+        return {"available": False,
+                "message": ("No passphrase is available for this backup. It is shown exactly once "
+                             "and is deleted the moment it's retrieved — if this was already viewed, "
+                             "or the backup wasn't encrypted, there is nothing to show, and an "
+                             "encrypted backup whose passphrase was never captured is unrecoverable.")}
+    # opportunistically purge any that were never claimed and have aged out
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=PASSPHRASE_TTL_MINUTES)).isoformat()
+    await db.backup_secrets.delete_many({"created_at": {"$lt": cutoff}})
+    return {"available": True, "passphrase": doc["passphrase"]}
+
+
+def memory_snapshot() -> dict:
+    """Best-effort available/used memory, for reporting whether the origin has
+    room to run a large backup. Degrades to nothing rather than failing."""
+    info = {}
+    try:
+        import shutil
+        # cgroup v2 memory (what the container is actually limited to)
+        for path, key in (("/sys/fs/cgroup/memory.max", "limit_bytes"),
+                          ("/sys/fs/cgroup/memory.current", "used_bytes")):
+            try:
+                with open(path) as f:
+                    v = f.read().strip()
+                    info[key] = None if v == "max" else int(v)
+            except Exception:
+                pass
+        if info.get("limit_bytes") and info.get("used_bytes") is not None:
+            info["available_bytes"] = info["limit_bytes"] - info["used_bytes"]
+    except Exception:
+        pass
+    return info
+
+
+# ---------------------------------------------------------------------------
+# Run-on-host interim unblock.
+#
+#   docker compose exec backend python backup.py            # plain backup
+#   docker compose exec backend python backup.py --encrypt  # encrypted; prints passphrase
+#
+# Bypasses HTTP entirely, so it is immune to the Cloudflare proxy timeout that
+# 520'd inline backups. Useful before pulling the async fix, or any time you want
+# a backup without touching the UI.
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    import argparse, asyncio as _asyncio
+
+    parser = argparse.ArgumentParser(description="Create a database backup directly (no HTTP).")
+    parser.add_argument("--encrypt", action="store_true",
+                        help="encrypt the backup; the passphrase is printed ONCE — copy it.")
+    parser.add_argument("--label", default="host-cli")
+    args = parser.parse_args()
+
+    async def _main():
+        from db import db
+        mem = memory_snapshot()
+        if mem.get("available_bytes") is not None:
+            print(f"Container memory: {mem['available_bytes'] // (1024*1024)} MB available "
+                  f"of {mem.get('limit_bytes', 0) // (1024*1024)} MB limit.")
+        print("Creating backup…")
+        rec = await create_backup(db, label=args.label, encrypt=args.encrypt)
+        print(f"Backup: {rec['filename']}  ({rec['documents']} docs, "
+              f"{rec['size_bytes'] // 1024} KB, verified={rec['verified']})")
+        if rec.get("passphrase"):
+            print()
+            print("=" * 60)
+            print("PASSPHRASE (shown once, not stored — copy it now):")
+            print("   " + rec["passphrase"])
+            print("Without it, this backup cannot be restored.")
+            print("=" * 60)
+
+    _asyncio.run(_main())

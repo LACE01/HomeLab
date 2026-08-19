@@ -64,18 +64,43 @@ export default function Backups() {
   const [oneTimePass, setOneTimePass] = useState(null);   // shown once, then cleared
   const [restorePass, setRestorePass] = useState("");
 
+  // Poll a job to completion. Backups run in the worker now, so the create call
+  // returns a job id immediately and we wait here instead of holding the request.
+  const pollJob = async (jobId) => {
+    for (let i = 0; i < 150; i++) {   // ~5 min ceiling at 2s
+      await new Promise(r => setTimeout(r, 2000));
+      try {
+        const j = await api.get(`/v1/jobs/${jobId}`);
+        if (j.data.status === "done") return j.data.result;
+        if (j.data.status === "failed") { toast.error(j.data.error || "Backup failed"); return null; }
+      } catch { /* transient; keep polling */ }
+    }
+    return null;
+  };
+
   const createNow = async () => {
     setCreating(true);
     try {
-      const r = await api.post("/v1/admin/backups", { encrypt });
-      const bits = [`${r.data.documents} document(s)`, fmtBytes(r.data.size_bytes)];
-      bits.push(r.data.verified ? "verified ✓" : "verification FAILED");
-      if (r.data.encrypted) bits.push("encrypted 🔒");
-      if (r.data.offsite_attempted) bits.push(r.data.offsite_ok ? "off-site ✓" : "off-site upload failed");
+      // The backup now runs as a background JOB (inline backups 520'd through
+      // Cloudflare on a large database). Enqueue, then poll until it finishes.
+      const q = await api.post("/v1/admin/backups", { encrypt });
+      if (!q.data.job_id) { toast.success("Backup queued"); load(); return; }
+      toast.message("Backup running in the background…");
+      const rec = await pollJob(q.data.job_id);
+      if (!rec) { toast.error("Backup did not complete — check the Jobs view"); return; }
+      const bits = [`${rec.documents} document(s)`, fmtBytes(rec.size_bytes)];
+      bits.push(rec.verified ? "verified ✓" : "verification FAILED");
+      if (rec.encrypted) bits.push("encrypted 🔒");
+      if (rec.offsite_attempted) bits.push(rec.offsite_ok ? "off-site ✓" : "off-site upload failed");
       toast.success(`Backup created: ${bits.join(", ")}`);
-      // The passphrase is in this response and nowhere else. Show it in a modal
-      // the user must dismiss deliberately, so it isn't lost to a toast timeout.
-      if (r.data.passphrase) setOneTimePass(r.data.passphrase);
+      // For an encrypted async backup the passphrase is in a read-once vault --
+      // fetch it exactly once, then it's gone from the server.
+      if (rec.passphrase_available) {
+        try {
+          const pw = await api.get(`/v1/admin/backups/${rec.id}/passphrase`);
+          if (pw.data.available) setOneTimePass(pw.data.passphrase);
+        } catch { /* if it can't be fetched, the modal simply doesn't show */ }
+      }
       load();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Backup failed");
