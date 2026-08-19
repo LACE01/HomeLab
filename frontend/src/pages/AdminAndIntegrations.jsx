@@ -262,6 +262,9 @@ export function Integrations() {
       client_secret: "",  // never prefill — masked
       domain: i.config?.domain || "",
       region: i.config?.region || "",
+      zone_id: i.config?.zone_id || "",
+      account_id: i.config?.account_id || "",
+      api_email: i.config?.api_email || "",
     });
   };
 
@@ -551,6 +554,36 @@ export function Integrations() {
                     Security group / RDS / EBS checks only look at this one region. IAM and S3 checks always cover the whole account regardless of what's set here.
                   </div>
                 </div>
+              )}
+              {editing.name === "Cloudflare" && (
+                <>
+                  <div>
+                    <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Zone ID</label>
+                    <input data-testid="cfg-zone-id" value={form.zone_id} onChange={(e)=>setForm({...form, zone_id:e.target.value})}
+                      placeholder="the 32-char zone id from the zone's Overview page"
+                      className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
+                    <div className="text-[10.5px] text-slate-500 mt-1">
+                      Cloudflare dashboard → your domain → Overview → right sidebar → Zone ID. Required.
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Account ID (optional)</label>
+                    <input data-testid="cfg-account-id" value={form.account_id} onChange={(e)=>setForm({...form, account_id:e.target.value})}
+                      placeholder="only needed for account-scoped queries"
+                      className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Account email (only for a Global API Key)</label>
+                    <input data-testid="cfg-api-email" value={form.api_email} onChange={(e)=>setForm({...form, api_email:e.target.value})}
+                      placeholder="leave blank if using a scoped API token (recommended)"
+                      className="w-full mt-1 h-9 bg-[#161B22] border border-[#30363D] rounded px-2 text-[13px] text-slate-200 font-mono"/>
+                    <div className="text-[10.5px] text-slate-500 mt-1">
+                      Recommended: create a scoped <b>API token</b> with <span className="font-mono">Analytics:Read</span> on this zone,
+                      paste it in the API Key field above, and leave this blank. Only fill this in if you're using a
+                      legacy account-wide <b>Global API Key</b> — then this is the account email that pairs with it.
+                    </div>
+                  </div>
+                </>
               )}
               {editing.name === "HaveIBeenPwned" && (
                 <div>

@@ -73,6 +73,12 @@ class IntegrationConfig(BaseModel):
     # AWS region for AWS CSPM (EC2/RDS/EBS checks are single-region; IAM/S3 are
     # global regardless of what's set here -- see aws_cspm.py's module docstring)
     region: Optional[str] = None
+    # Cloudflare telemetry: zone_id identifies the zone; account_id is optional
+    # (some account-scoped queries need it). api_email, when set, switches auth
+    # from a scoped API token (Bearer) to a global API key (X-Auth-Email/X-Auth-Key).
+    zone_id: Optional[str] = None
+    account_id: Optional[str] = None
+    api_email: Optional[str] = None
 
 
 # Cloudflare's own service-token detail page (and most API docs, including OpenCTI's
@@ -123,10 +129,14 @@ async def update_integration(integration_id: str, body: IntegrationConfig, user:
     # AWS CSPM has no "endpoint" concept at all (boto3 resolves per-service AWS
     # endpoints from the region) -- gate its status lift on region + key pair
     # instead of the generic endpoint+has_creds check every other connector uses.
-    is_configured = (
-        (cfg.get("region") and cfg.get("api_key") and cfg.get("api_secret")) if integration["name"] == "AWS CSPM"
-        else (cfg.get("endpoint") and has_creds)
-    )
+    if integration["name"] == "AWS CSPM":
+        is_configured = cfg.get("region") and cfg.get("api_key") and cfg.get("api_secret")
+    elif integration["name"] == "Cloudflare":
+        # No endpoint to configure (it defaults to Cloudflare's GraphQL URL); what
+        # it needs is a credential and a zone id.
+        is_configured = cfg.get("api_key") and cfg.get("zone_id")
+    else:
+        is_configured = cfg.get("endpoint") and has_creds
     if is_configured and new_status == "not_configured":
         new_status = "healthy"
     await db.integrations.update_one({"id": integration_id}, {"$set": {"config": cfg, "status": new_status, "last_changed_at": now_iso()}})
@@ -186,6 +196,13 @@ async def test_integration(integration_id: str, user: dict = Depends(require_rol
         if name == "OpenCTI":
             from routes.findings import opencti_ping
             result = await opencti_ping(cfg)
+        elif name == "Cloudflare":
+            # A REAL query, not a bare-GET reachability probe. Cloudflare's GraphQL
+            # endpoint answers HTTP 400 to a GET, and the generic check reported
+            # that 400 as success -- so the test passed with no valid token. See
+            # attack_telemetry.test_connection.
+            from attack_telemetry import test_connection as _cf_test
+            result = await _cf_test(cfg)
         else:
             result = await _generic_reachability_check(cfg)
 

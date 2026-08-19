@@ -215,9 +215,108 @@ async def _cf_config(db) -> dict:
     return cfg
 
 
+def cf_auth_headers(cfg: dict) -> dict:
+    """Cloudflare accepts two auth schemes; support both.
+
+      * API TOKEN (recommended, scoped): Authorization: Bearer <token>. Set
+        `api_key` to the token.
+      * GLOBAL API KEY (account-wide, legacy): X-Auth-Email + X-Auth-Key. Set
+        `api_email` and `api_key` to the global key.
+
+    The presence of api_email is what disambiguates: with an email, treat api_key
+    as the global key; without, treat it as a scoped token.
+    """
+    headers = {"Content-Type": "application/json"}
+    key = cfg.get("api_key")
+    email = cfg.get("api_email") or cfg.get("email")
+    if email and key:
+        headers["X-Auth-Email"] = email
+        headers["X-Auth-Key"] = key
+    elif key:
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
+
+
+TEST_QUERY = """
+query TestConnection($zoneTag: String!) {
+  viewer {
+    zones(filter: {zoneTag: $zoneTag}) { zoneTag }
+  }
+}
+"""
+
+
+async def test_connection(cfg: dict) -> dict:
+    """A REAL Cloudflare test: run an actual GraphQL query and validate the
+    response, rather than treating any HTTP reply as success.
+
+    Cloudflare's GraphQL endpoint returns HTTP 400 to a bare GET (it requires a
+    POST with a query), so the old generic 'any HTTP response = reachable' probe
+    reported 'reachable (HTTP 400)' as SUCCESS even with no valid credentials.
+    This POSTs a minimal zone query and checks:
+      * the config is present (auth + zone id),
+      * the HTTP status,
+      * AND the GraphQL `errors` array -- Cloudflare returns 200 with errors on an
+        auth or permission failure, so status alone is not enough,
+      * that the configured zone actually came back.
+    """
+    import httpx
+    key = cfg.get("api_key")
+    if not key:
+        return {"ok": False, "message": ("No Cloudflare credential configured. Set an API token "
+                                          "(recommended, needs Analytics:Read on the zone) in api_key, "
+                                          "or a global API key plus api_email.")}
+    zone = cfg.get("zone_id")
+    if not zone:
+        return {"ok": False, "message": ("No Zone ID configured. Find it on the zone's Overview page "
+                                          "in the Cloudflare dashboard (right-hand sidebar).")}
+
+    endpoint = cfg.get("endpoint") or CF_GRAPHQL_URL
+    headers = cf_auth_headers(cfg)
+    auth_mode = "global API key" if headers.get("X-Auth-Key") else "API token"
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.post(endpoint, headers=headers,
+                             json={"query": TEST_QUERY, "variables": {"zoneTag": zone}})
+    except httpx.TimeoutException:
+        return {"ok": False, "message": "Connection to the Cloudflare GraphQL API timed out."}
+    except httpx.HTTPError as e:
+        return {"ok": False, "message": f"Could not reach the Cloudflare GraphQL API: {e}"}
+
+    if r.status_code == 401:
+        return {"ok": False, "message": (f"Cloudflare rejected the {auth_mode} (HTTP 401). "
+                                          "For an API token, it must have Analytics:Read on this zone. "
+                                          "For a global key, check api_email matches the account.")}
+    if r.status_code == 403:
+        return {"ok": False, "message": (f"Cloudflare denied the request (HTTP 403). The {auth_mode} "
+                                          "authenticated but lacks permission on this zone.")}
+    if r.status_code != 200:
+        return {"ok": False, "message": f"Cloudflare GraphQL returned HTTP {r.status_code}: {r.text[:400]}"}
+
+    try:
+        data = r.json()
+    except Exception:
+        return {"ok": False, "message": ("Cloudflare returned a non-JSON response — the endpoint may "
+                                          "be wrong. Expected " + CF_GRAPHQL_URL)}
+
+    # THE key check the old test skipped: a 200 with an errors[] array is a
+    # FAILURE (bad token scope, unknown zone, malformed query), not success.
+    if data.get("errors"):
+        msg = data["errors"][0].get("message") if isinstance(data["errors"], list) else str(data["errors"])
+        return {"ok": False, "message": f"Cloudflare GraphQL error: {msg}"}
+
+    zones = (((data.get("data") or {}).get("viewer") or {}).get("zones")) or []
+    if not zones:
+        return {"ok": False, "message": (f"Authenticated with the {auth_mode}, but Zone ID '{zone}' "
+                                          "returned no zone — the ID is wrong, or the credential can't "
+                                          "see this zone.")}
+    return {"ok": True, "message": (f"Connected to Cloudflare via {auth_mode}; zone '{zone}' is "
+                                     "visible and Analytics is queryable.")}
+
+
 async def _graphql(cfg: dict, query: str, variables: dict) -> dict:
     import httpx
-    headers = {"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"}
+    headers = cf_auth_headers(cfg)   # supports API token OR global key
     endpoint = cfg.get("endpoint") or CF_GRAPHQL_URL
     async with httpx.AsyncClient(timeout=45) as c:
         r = await c.post(endpoint, headers=headers, json={"query": query, "variables": variables})
