@@ -70,7 +70,7 @@ def _kv_paragraph(doc, label, value):
     return p
 
 
-def _band_cell(table, row, col, label, band):
+def _band_cell(table, row, col, label, band, adjusted_from=None):
     cell = table.cell(row, col)
     cell.text = ""
     p = cell.paragraphs[0]
@@ -79,6 +79,10 @@ def _band_cell(table, row, col, label, band):
     p2 = cell.add_paragraph()
     p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
     _run(p2, band or "Not scored", bold=True, size=18, color=BAND_COLOR.get(band, "64748B"))
+    if adjusted_from:
+        p3 = cell.add_paragraph()
+        p3.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _run(p3, f"adjusted from {adjusted_from}", size=7, italic=True, color="94A3B8")
     _shade(cell, BAND_COLOR.get(band, "E5E7EB") + "" if False else "F8FAFC")
 
 
@@ -170,16 +174,20 @@ def _blk_what_reviewed(doc, data, block):
 def _blk_risk_verdict(doc, data, block):
     review = data["review"]
     doc.add_heading(_title(block, "Risk verdict"), level=2)
-    inherent = (review.get("inherent_risk") or {}).get("band")
-    residual = (review.get("residual_risk") or {}).get("band")
+    inherent_r = review.get("inherent_risk") or {}
+    residual_r = review.get("residual_risk") or {}
+    inherent = inherent_r.get("band")
+    residual = residual_r.get("band")
+    inherent_adj = inherent_r.get("calculated_band") if inherent_r.get("overridden") else None
+    residual_adj = residual_r.get("calculated_band") if residual_r.get("overridden") else None
     not_adopting = (review.get("risk_of_not_adopting") or {}).get("band")
     show_na = (block.get("options") or {}).get("show_not_adopting", True) and not_adopting
     cols = 3 if show_na else 2
     vt = doc.add_table(rows=1, cols=cols)
     vt.alignment = WD_TABLE_ALIGNMENT.CENTER
     vt.style = "Table Grid"
-    _band_cell(vt, 0, 0, "Risk if adopted as-is", inherent)
-    _band_cell(vt, 0, 1, "Risk with required controls", residual)
+    _band_cell(vt, 0, 0, "Risk if adopted as-is", inherent, adjusted_from=inherent_adj)
+    _band_cell(vt, 0, 1, "Risk with required controls", residual, adjusted_from=residual_adj)
     if show_na:
         _band_cell(vt, 0, 2, "Risk of NOT adopting", not_adopting)
     if review.get("analyst_override_justification"):

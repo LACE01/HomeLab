@@ -15,12 +15,14 @@ import {
 
 const RISK_PRINT = { Low: "#3b82f6", Medium: "#f59e0b", High: "#f97316", Critical: "#ef4444" };
 
-function Badge({ label, band }) {
+function Badge({ label, band, rating }) {
+  const adjustedFrom = rating?.overridden ? rating.calculated_band : null;
   return (
     <div className="text-center px-7 py-4 rounded-lg border-2"
       style={{ borderColor: RISK_PRINT[band] || "#94a3b8", background: (RISK_PRINT[band] || "#94a3b8") + "18" }}>
       <div className="text-[10px] uppercase tracking-wide text-slate-600">{label}</div>
       <div className="text-[26px] font-extrabold" style={{ color: RISK_PRINT[band] || "#64748b" }}>{band || "Not scored"}</div>
+      {adjustedFrom && <div className="text-[9px] uppercase tracking-wide text-slate-500 mt-0.5">adjusted from {adjustedFrom}</div>}
     </div>
   );
 }
@@ -120,9 +122,9 @@ function renderBlock(block, data) {
       return (
         <div className="my-5">
           <div className="flex items-center justify-center gap-4">
-            <Badge label="Risk if adopted as-is" band={review.inherent_risk?.band}/>
+            <Badge label="Risk if adopted as-is" band={review.inherent_risk?.band} rating={review.inherent_risk}/>
             <div className="text-[26px] text-slate-400">→</div>
-            <Badge label="Risk with required controls" band={review.residual_risk?.band}/>
+            <Badge label="Risk with required controls" band={review.residual_risk?.band} rating={review.residual_risk}/>
             {o.show_not_adopting !== false && review.risk_of_not_adopting?.band && (
               <div className="text-center px-4 py-2.5 rounded-lg border"
                 style={{ borderColor: RISK_PRINT[review.risk_of_not_adopting.band] }}>

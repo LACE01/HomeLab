@@ -13,7 +13,7 @@ from rbac import require_module
 from routes.common import now_iso, team_scope_filter
 from security_reviews import (
     REVIEW_TYPES, DATA_CLASSIFICATIONS, REVIEW_STATUSES, STEP_STATUSES,
-    DECISION_OUTCOMES, URGENCIES, IMPACT_DIMENSIONS,
+    DECISION_OUTCOMES, URGENCIES, IMPACT_DIMENSIONS, RISK_BANDS,
     ensure_seeded, next_review_number, audit, review_is_closed, score_rating,
     latest_playbook_for_type, latest_questionnaire, instantiate_steps,
     upsert_reviewed_entity, prior_reviews_lookup,
@@ -143,6 +143,12 @@ class RiskScoreBody(BaseModel):
     not_adopting_likelihood: Optional[int] = None
     not_adopting_impacts: Optional[dict] = None
     override_justification: str = ""
+    # Item 52: an analyst may set the final band DIRECTLY, overriding the value the
+    # 5x5 (likelihood x impact) computes -- e.g. bump a calculated High to Critical
+    # for a system of record, or down for a compensated edge case. Leave null to use
+    # the calculated band. Overriding requires a justification (enforced below).
+    inherent_override_band: Optional[str] = None
+    residual_override_band: Optional[str] = None
 
 
 class ReviewFindingBody(BaseModel):
@@ -1001,6 +1007,32 @@ async def set_risk_score(review_id: str, body: RiskScoreBody,
     not_adopting = None
     if body.not_adopting_likelihood and body.not_adopting_impacts:
         not_adopting = score_rating(body.not_adopting_likelihood, body.not_adopting_impacts)
+
+    # Item 52: apply a manual band override on top of the calculated 5x5 band.
+    # The override records the original calculated band ("adjusted from ...") so the
+    # UI and report stay honest and auditable, and it requires a justification.
+    def _apply_override(rating, override_band, label):
+        if not rating or not override_band:
+            return False
+        if override_band not in RISK_BANDS:
+            raise HTTPException(400, f"{label} override band must be one of {', '.join(RISK_BANDS)}")
+        if override_band != rating["band"]:
+            rating["calculated_band"] = rating["band"]
+            rating["band"] = override_band
+            rating["overridden"] = True
+            return True
+        return False
+
+    inh_overridden = _apply_override(inherent, body.inherent_override_band, "Inherent")
+    res_overridden = _apply_override(residual, body.residual_override_band, "Residual")
+    if (inh_overridden or res_overridden) and not body.override_justification.strip():
+        parts = []
+        if inh_overridden:
+            parts.append(f"inherent adjusted from {inherent['calculated_band']} to {inherent['band']}")
+        if res_overridden:
+            parts.append(f"residual adjusted from {residual['calculated_band']} to {residual['band']}")
+        raise HTTPException(400, "A manual risk override (" + "; ".join(parts) +
+                                  ") differs from the calculated 5x5 score -- a justification is required.")
     await db.security_reviews.update_one({"id": review_id}, {"$set": {
         "inherent_risk": inherent, "residual_risk": residual, "risk_of_not_adopting": not_adopting,
         "compensating_controls": body.compensating_controls,

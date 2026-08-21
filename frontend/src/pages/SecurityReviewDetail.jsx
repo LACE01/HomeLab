@@ -14,6 +14,11 @@ import {
 } from "@phosphor-icons/react";
 
 const RISK_COLOR = { Low: "blue", Medium: "amber", High: "orange", Critical: "red" };
+// 5×5 banding, mirrors backend risk_band(): score = likelihood × impact (each 1-5).
+const calcBand = (likelihood, impact) => {
+  const score = Math.max(1, Math.min(5, likelihood || 1)) * Math.max(1, Math.min(5, impact || 1));
+  return score <= 4 ? "Low" : score <= 9 ? "Medium" : score <= 16 ? "High" : "Critical";
+};
 const RISK_BG = { Low: "bg-blue-500/15 border-blue-500/40 text-blue-300",
   Medium: "bg-amber-500/15 border-amber-500/40 text-amber-300",
   High: "bg-orange-500/15 border-orange-500/40 text-orange-300",
@@ -108,9 +113,9 @@ export default function SecurityReviewDetail() {
 
       {/* Header: risk badges + next-best-action */}
       <div className="flex items-stretch gap-3 mb-4 flex-wrap">
-        <RiskBadge label="Risk if adopted as-is" band={review.inherent_risk?.band}/>
+        <RiskBadge label="Risk if adopted as-is" band={review.inherent_risk?.band} rating={review.inherent_risk}/>
         <div className="flex items-center text-slate-600"><ArrowRight size={18}/></div>
-        <RiskBadge label="Risk with required controls" band={review.residual_risk?.band}/>
+        <RiskBadge label="Risk with required controls" band={review.residual_risk?.band} rating={review.residual_risk}/>
         {review.risk_of_not_adopting?.band && (
           <RiskBadge label="Risk of NOT adopting" band={review.risk_of_not_adopting.band} small/>
         )}
@@ -196,11 +201,17 @@ export default function SecurityReviewDetail() {
   );
 }
 
-function RiskBadge({ label, band, small }) {
+function RiskBadge({ label, band, small, rating }) {
+  const adjustedFrom = rating?.overridden ? rating.calculated_band : null;
   return (
     <div className={`border rounded-md px-4 ${small ? "py-1.5" : "py-2.5"} text-center min-w-[150px] ${band ? RISK_BG[band] : "border-[#30363D] bg-[#0D1117] text-slate-600"}`}>
       <div className="text-[10px] uppercase tracking-wider font-mono opacity-80">{label}</div>
       <div className={`${small ? "text-[16px]" : "text-[22px]"} font-bold mt-0.5`}>{band || "Not scored"}</div>
+      {adjustedFrom && (
+        <div className="text-[9.5px] uppercase tracking-wider font-mono opacity-70 mt-0.5" title="Manually overridden from the calculated 5×5 score">
+          adjusted from {adjustedFrom}
+        </div>
+      )}
     </div>
   );
 }
@@ -1367,6 +1378,8 @@ function RiskTab({ id, review, meta, closed, onChange }) {
   const [notImp, setNotImp] = useState({ ...blank, ...(review.risk_of_not_adopting?.impacts || {}) });
   const [controls, setControls] = useState(review.compensating_controls || "");
   const [override, setOverride] = useState(review.analyst_override_justification || "");
+  const [inhBand, setInhBand] = useState(review.inherent_risk?.overridden ? review.inherent_risk.band : "");
+  const [resBand, setResBand] = useState(review.residual_risk?.overridden ? review.residual_risk.band : "");
   const [saving, setSaving] = useState(false);
   const [suggestion, setSuggestion] = useState(null);
 
@@ -1395,6 +1408,7 @@ function RiskTab({ id, review, meta, closed, onChange }) {
         residual_likelihood: resLik || null, residual_impacts: resLik ? resImp : null,
         not_adopting_likelihood: notLik || null, not_adopting_impacts: notLik ? notImp : null,
         compensating_controls: controls, override_justification: override,
+        inherent_override_band: inhBand || null, residual_override_band: resBand || null,
       });
       toast.success("Risk scoring saved");
       onChange();
@@ -1449,7 +1463,29 @@ function RiskTab({ id, review, meta, closed, onChange }) {
               className="w-full px-3 py-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100 disabled:opacity-60"/>
           </div>
           <div>
-            <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500 mb-1">Override justification (required if final rating differs from suggested)</div>
+            <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500 mb-1">Manual band override (optional — overrides the calculated 5×5)</div>
+            <div className="grid grid-cols-2 gap-2">
+              {[["Inherent", inhLik, inhImp, inhBand, setInhBand],
+                ["Residual", resLik, resImp, resBand, setResBand]].map(([lbl, lik, imp, val, setter]) => {
+                const calc = (lik && maxOf(imp)) ? calcBand(lik, maxOf(imp)) : null;
+                return (
+                  <div key={lbl}>
+                    <div className="text-[10.5px] text-slate-500 mb-0.5">{lbl}{calc && <span className="text-slate-600"> · 5×5 = {calc}</span>}</div>
+                    <select value={val} onChange={e => setter(e.target.value)} disabled={closed}
+                      className="w-full h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100 disabled:opacity-60">
+                      <option value="">Use calculated{calc ? ` (${calc})` : ""}</option>
+                      {["Low", "Medium", "High", "Critical"].map(b => <option key={b} value={b}>{b}</option>)}
+                    </select>
+                    {val && calc && val !== calc && (
+                      <div className="text-[10px] text-amber-300 mt-0.5">adjusted from {calc} → {val}</div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div>
+            <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500 mb-1">Override justification (required if final rating differs from the suggested or calculated band)</div>
             <textarea rows={2} value={override} onChange={e => setOverride(e.target.value)} disabled={closed}
               className="w-full px-3 py-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100 disabled:opacity-60"/>
           </div>
