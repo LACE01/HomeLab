@@ -6,7 +6,7 @@ import {
   ShieldCheck, PlugsConnected, FileArrowDown, GearSix, SignOut, Database,
   UsersThree, Bell, ShareNetwork, BookOpen, Robot, Globe, Certificate, Package, MagnifyingGlass, ClipboardText, SlackLogo, Heartbeat, HardDrive, Notepad, Virus, FlowArrow,
   CaretDown, LockKey, CalendarBlank, FirstAidKit, Siren, SlidersHorizontal, Devices, Binoculars, Gauge, WebhooksLogo, Archive, Broadcast, Warning,
-  Buildings, At, CalendarX, Cube, Key,
+  Buildings, At, CalendarX, Cube, Key, Flask,
 } from "@phosphor-icons/react";
 
 const COLLAPSE_KEY = "vulnops.sidebar.collapsedGroups";
@@ -127,6 +127,7 @@ export default function Sidebar() {
           <NavItem to="/admin/threat-intel" icon={Binoculars} label="Threat Intel Watchlist" testid="nav-threat-intel" />
           <NavItem to="/admin/albert" icon={Broadcast} label="Albert Network Monitoring" testid="nav-albert" />
           <NavItem to="/world-monitor" icon={Globe} label="World Monitor" testid="nav-world-monitor" />
+          <NavItem to="/geo-forecast" icon={Flask} label="Geo-Forecast (Experimental)" testid="nav-geo-forecast" />
           <NavItem to="/ir/wizard" icon={FirstAidKit} label="Triage Wizard" testid="nav-ir-wizard" />
           <NavItem to="/ir/cases" icon={Siren} label="IR Cases" testid="nav-ir-cases" />
           <NavItem to="/admin/ir-setup" icon={SlidersHorizontal} label="IR Setup" testid="nav-ir-setup" />

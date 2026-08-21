@@ -70,6 +70,7 @@ import ThreatModeling from "@/pages/ThreatModeling";
 import ThreatModelDetail from "@/pages/ThreatModelDetail";
 import CtiHub from "@/pages/CtiHub";
 import WorldMonitor from "@/pages/WorldMonitor";
+import GeoForecastExperimental from "@/pages/GeoForecastExperimental";
 import AttackTelemetry from "@/pages/AttackTelemetry";
 import RiskDetail from "@/pages/RiskDetail";
 import VendorManagement from "@/pages/VendorManagement";
@@ -189,6 +190,7 @@ const AppRouter = () => {
       <Route path="/admin/recon-osint" element={<Protected module="/admin/recon-osint"><ReconOSINT/></Protected>}/>
       <Route path="/admin/cti" element={<Protected module="/admin/recon-osint"><CtiHub/></Protected>}/>
       <Route path="/world-monitor" element={<Protected module="/admin/cti"><WorldMonitor/></Protected>}/>
+      <Route path="/geo-forecast" element={<Protected module="/admin/cti"><GeoForecastExperimental/></Protected>}/>
       <Route path="/attack-telemetry" element={<Protected module="/attack-telemetry"><AttackTelemetry/></Protected>}/>
       <Route path="/admin/criticality-scoring" element={<Protected module="/admin/criticality-scoring"><CriticalityScoring/></Protected>}/>
       <Route path="/admin/web-scans" element={<Protected module="/admin/web-scans"><WebScansUpload/></Protected>}/>

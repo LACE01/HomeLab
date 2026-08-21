@@ -79,6 +79,72 @@ def _parse(ts):
     return dt
 
 
+# ---------------------------------------------------------------------------
+# Item 51 (PYTHIA, situational-awareness half): give each event that carries a
+# country a coarse map location, so the board can drive a global activity map /
+# globe. This is the ONLY half of PYTHIA folded in here, and it is built from the
+# country data the feeds ALREADY carry (e.g. ransomware.live victims) -- no new
+# external dependency, same principle as the rest of this board. The AI-forecasting
+# half is deliberately NOT here; it is walled off in geo_forecast.py as an
+# off-by-default experiment and must never be rendered next to this real data.
+#
+# Centroids are approximate country centers, only precise enough to place a dot on
+# a world map. Accepts ISO-3166 alpha-2 codes and common country names.
+COUNTRY_CENTROIDS = {
+    "US": (39.8, -98.6), "USA": (39.8, -98.6), "UNITED STATES": (39.8, -98.6),
+    "CA": (56.1, -106.3), "CANADA": (56.1, -106.3),
+    "MX": (23.6, -102.5), "MEXICO": (23.6, -102.5),
+    "BR": (-14.2, -51.9), "BRAZIL": (-14.2, -51.9),
+    "GB": (54.0, -2.0), "UK": (54.0, -2.0), "UNITED KINGDOM": (54.0, -2.0),
+    "FR": (46.2, 2.2), "FRANCE": (46.2, 2.2),
+    "DE": (51.2, 10.4), "GERMANY": (51.2, 10.4),
+    "ES": (40.5, -3.7), "SPAIN": (40.5, -3.7),
+    "IT": (41.9, 12.6), "ITALY": (41.9, 12.6),
+    "NL": (52.1, 5.3), "NETHERLANDS": (52.1, 5.3),
+    "SE": (60.1, 18.6), "SWEDEN": (60.1, 18.6),
+    "NO": (60.5, 8.5), "NORWAY": (60.5, 8.5),
+    "PL": (51.9, 19.1), "POLAND": (51.9, 19.1),
+    "UA": (48.4, 31.2), "UKRAINE": (48.4, 31.2),
+    "RU": (61.5, 105.3), "RUSSIA": (61.5, 105.3),
+    "TR": (38.9, 35.2), "TURKEY": (38.9, 35.2),
+    "IL": (31.0, 34.9), "ISRAEL": (31.0, 34.9),
+    "SA": (23.9, 45.1), "SAUDI ARABIA": (23.9, 45.1),
+    "AE": (23.4, 53.8), "UAE": (23.4, 53.8),
+    "IN": (22.6, 78.9), "INDIA": (22.6, 78.9),
+    "CN": (35.9, 104.2), "CHINA": (35.9, 104.2),
+    "JP": (36.2, 138.3), "JAPAN": (36.2, 138.3),
+    "KR": (35.9, 127.8), "SOUTH KOREA": (35.9, 127.8),
+    "KP": (40.3, 127.5), "NORTH KOREA": (40.3, 127.5),
+    "AU": (-25.3, 133.8), "AUSTRALIA": (-25.3, 133.8),
+    "NZ": (-41.8, 172.0), "NEW ZEALAND": (-41.8, 172.0),
+    "ZA": (-30.6, 22.9), "SOUTH AFRICA": (-30.6, 22.9),
+    "NG": (9.1, 8.7), "NIGERIA": (9.1, 8.7),
+    "EG": (26.8, 30.8), "EGYPT": (26.8, 30.8),
+    "AR": (-38.4, -63.6), "ARGENTINA": (-38.4, -63.6),
+    "CL": (-35.7, -71.5), "CHILE": (-35.7, -71.5),
+    "CO": (4.6, -74.3), "COLOMBIA": (4.6, -74.3),
+    "SG": (1.35, 103.8), "SINGAPORE": (1.35, 103.8),
+    "TW": (23.7, 121.0), "TAIWAN": (23.7, 121.0),
+    "ID": (-0.8, 113.9), "INDONESIA": (-0.8, 113.9),
+    "TH": (15.9, 100.9), "THAILAND": (15.9, 100.9),
+    "VN": (14.1, 108.3), "VIETNAM": (14.1, 108.3),
+    "IE": (53.4, -8.2), "IRELAND": (53.4, -8.2),
+    "CH": (46.8, 8.2), "SWITZERLAND": (46.8, 8.2),
+    "BE": (50.5, 4.5), "BELGIUM": (50.5, 4.5),
+}
+
+
+def geo_for(country):
+    """Coarse map location for a country name/ISO2 code, or None if unknown."""
+    if not country:
+        return None
+    key = str(country).strip().upper()
+    latlon = COUNTRY_CENTROIDS.get(key)
+    if not latlon:
+        return None
+    return {"country": country, "lat": latlon[0], "lon": latlon[1]}
+
+
 def _event(*, id, when, category, severity, title, summary="", source="",
            link=None, relevance=GLOBAL, why="", country=None, entities=None):
     return {
@@ -87,7 +153,7 @@ def _event(*, id, when, category, severity, title, summary="", source="",
         "severity": severity, "title": title, "summary": (summary or "")[:400],
         "source": source, "link": link,
         "relevance": relevance, "why": why,     # why it's relevant, in words
-        "country": country, "entities": entities or [],
+        "country": country, "geo": geo_for(country), "entities": entities or [],
     }
 
 
@@ -297,11 +363,19 @@ async def board(db, *, days: int = 7, categories=None, relevance=None, limit: in
     counts = {"affects_us": 0, "watched": 0, "global": 0}
     by_category = {}
     countries = {}
+    map_agg = {}   # country -> {lat, lon, count, affects_us}
     for e in events:
         counts[e["relevance"]] = counts.get(e["relevance"], 0) + 1
         by_category[e["category"]] = by_category.get(e["category"], 0) + 1
         if e.get("country"):
             countries[e["country"]] = countries.get(e["country"], 0) + 1
+        g = e.get("geo")
+        if g:
+            slot = map_agg.setdefault(g["country"], {"country": g["country"], "lat": g["lat"],
+                                                     "lon": g["lon"], "count": 0, "affects_us": 0})
+            slot["count"] += 1
+            if e["relevance"] == AFFECTS_US:
+                slot["affects_us"] += 1
 
     top = [e for e in events if e["relevance"] == AFFECTS_US][:5]
     return {
@@ -312,6 +386,9 @@ async def board(db, *, days: int = 7, categories=None, relevance=None, limit: in
         "by_category": by_category,
         "countries": [{"country": c, "count": n}
                        for c, n in sorted(countries.items(), key=lambda x: -x[1])],
+        # Item 51: located events for the global activity map (situational
+        # awareness only -- these are real observed events, never forecasts).
+        "map_points": sorted(map_agg.values(), key=lambda m: -m["count"]),
         "headline": _headline(counts, top),
         "priority": top,
     }
