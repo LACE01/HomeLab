@@ -742,8 +742,10 @@ function AssetsTab({ id, closed, onChange }) {
   const [bulkTeams, setBulkTeams] = useState(new Set());
   const [bulkTags, setBulkTags] = useState(new Set());
   const [busy, setBusy] = useState(false);
+  const [selRemove, setSelRemove] = useState(new Set());   // in-scope rows checked for mass-remove
 
-  const load = () => api.get(`/v1/security-reviews/${id}/assets`).then(r => setLinked(r.data.items || []));
+  const load = () => api.get(`/v1/security-reviews/${id}/assets`)
+    .then(r => { setLinked(r.data.items || []); setSelRemove(new Set()); });
   const loadPicker = (search) => api.get("/v1/security-reviews/asset-picker",
     { params: search ? { q: search } : {} }).then(r => setPicker(r.data));
   useEffect(() => { load(); loadPicker(); /* eslint-disable-next-line */ }, [id]);
@@ -773,10 +775,36 @@ function AssetsTab({ id, closed, onChange }) {
     finally { setBusy(false); }
   };
 
-  const unlink = async (a) => {
-    await api.post(`/v1/security-reviews/${id}/assets/unlink`, { asset_ids: [a.id] });
-    load(); onChange();
+  // "Remove" here means UNLINK from this review's scope only. It never deletes the
+  // host or its findings from inventory -- the backend only edits this review's
+  // linked_asset_ids. The confirm copy says so explicitly so no one mistakes the
+  // trash icon for a destructive delete.
+  const removeFromScope = async (ids, labels) => {
+    if (!ids.length) return;
+    const what = ids.length === 1
+      ? `"${labels[0]}"`
+      : `${ids.length} assets`;
+    if (!window.confirm(
+      `Remove ${what} from this review's scope?\n\n` +
+      `This only unlinks ${ids.length === 1 ? "it" : "them"} from this review — ` +
+      `the host and its findings stay in inventory and are not deleted.`)) return;
+    setBusy(true);
+    try {
+      const r = await api.post(`/v1/security-reviews/${id}/assets/unlink`, { asset_ids: ids });
+      toast.success(`${ids.length} asset(s) removed from scope — ${r.data.linked_total} still in scope`);
+      load(); onChange();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Remove failed");
+    } finally { setBusy(false); }
   };
+  const unlink = (a) => removeFromScope([a.id], [a.hostname]);
+  const removeSelected = () => {
+    const ids = linked.filter(a => selRemove.has(a.id)).map(a => a.id);
+    const labels = linked.filter(a => selRemove.has(a.id)).map(a => a.hostname);
+    removeFromScope(ids, labels);
+  };
+  const allChecked = linked.length > 0 && selRemove.size === linked.length;
+  const toggleAll = () => setSelRemove(allChecked ? new Set() : new Set(linked.map(a => a.id)));
 
   const totalCritHigh = linked.reduce((n, a) => n + (a.critical_high_findings || 0), 0);
 
@@ -786,6 +814,8 @@ function AssetsTab({ id, closed, onChange }) {
         Assets this review touches. Add them individually, or pull in a whole team&apos;s or tag&apos;s worth at once —
         bulk selections resolve to a fixed list at link time, so the scope stays reproducible even if someone
         re-tags a host later. This list is what the auto-fill hooks read for environment health.
+        <span className="block mt-1 text-blue-300/80">Removing an asset only takes it out of this review&apos;s scope —
+        it does not delete the host or its findings from inventory.</span>
       </div>
 
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -793,12 +823,20 @@ function AssetsTab({ id, closed, onChange }) {
           {linked.length} asset(s) in scope
           {totalCritHigh > 0 && <span className="text-red-300"> · {totalCritHigh} open Critical/High finding(s) across them</span>}
         </div>
-        {!closed && (
-          <button onClick={() => setOpen(!open)}
-            className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded inline-flex items-center gap-1.5">
-            <Plus size={13}/> Add assets
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {!closed && selRemove.size > 0 && (
+            <button onClick={removeSelected} disabled={busy}
+              className="h-8 px-3 text-[12px] bg-red-500/15 border border-red-500/40 text-red-300 hover:bg-red-500/25 disabled:opacity-50 rounded inline-flex items-center gap-1.5">
+              <Trash size={13}/> Remove {selRemove.size} from scope
+            </button>
+          )}
+          {!closed && (
+            <button onClick={() => setOpen(!open)}
+              className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded inline-flex items-center gap-1.5">
+              <Plus size={13}/> Add assets
+            </button>
+          )}
+        </div>
       </div>
 
       {open && picker && (
@@ -878,6 +916,10 @@ function AssetsTab({ id, closed, onChange }) {
           <table className="w-full text-[12.5px]">
             <thead>
               <tr className="border-b border-[#30363D] text-left text-slate-500 text-[11px] uppercase tracking-wider">
+                {!closed && <th className="pl-4 pr-1 py-2 font-medium w-8">
+                  <input type="checkbox" checked={allChecked} onChange={toggleAll}
+                    title="Select all" className="align-middle"/>
+                </th>}
                 <th className="px-4 py-2 font-medium">Asset</th>
                 <th className="px-4 py-2 font-medium">Team</th>
                 <th className="px-4 py-2 font-medium">Criticality</th>
@@ -888,6 +930,10 @@ function AssetsTab({ id, closed, onChange }) {
             <tbody>
               {linked.map(a => (
                 <tr key={a.id} className="border-b border-[#30363D] last:border-0">
+                  {!closed && <td className="pl-4 pr-1 py-2 w-8">
+                    <input type="checkbox" checked={selRemove.has(a.id)}
+                      onChange={() => toggle(selRemove, setSelRemove, a.id)} className="align-middle"/>
+                  </td>}
                   <td className="px-4 py-2">
                     <Link to={`/assets/${a.id}`} className="text-blue-300 hover:underline font-mono">{a.hostname}</Link>
                     <span className="text-slate-500 ml-2">{a.ip}</span>
@@ -899,7 +945,7 @@ function AssetsTab({ id, closed, onChange }) {
                     {a.critical_high_findings > 0 && <Chip color="red">{a.critical_high_findings} crit/high</Chip>}
                   </td>
                   <td className="px-4 py-2 text-right">
-                    {!closed && <button onClick={() => unlink(a)} className="text-slate-600 hover:text-red-400"><Trash size={13}/></button>}
+                    {!closed && <button onClick={() => unlink(a)} title="Remove from this review's scope (does not delete the host)" className="text-slate-600 hover:text-red-400"><Trash size={13}/></button>}
                   </td>
                 </tr>
               ))}
