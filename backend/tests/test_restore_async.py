@@ -149,5 +149,33 @@ print("PASS: a restore with the WRONG passphrase fails as a terminal error and d
       "streaming path preserves the decrypt-before-wipe guarantee, and the stashed upload is cleaned "
       "up even on failure")
 
+# ============ stage-then-swap: a mid-restore failure leaves live data intact ============
+
+run(db.findings.delete_many({}))
+run(db.findings.insert_many([{"id": f"keep{i}"} for i in range(9)]))
+# hand restore a corrupt archive -> it must fail WITHOUT wiping the 9 live docs
+bad = Path(os.environ["BACKUP_DIR"], ".restore-corrupt.bin")
+bad.write_bytes(b"this is not a gzip archive at all")
+try:
+    run(backup.restore_from_path(db, str(bad)))
+    a(False, "a corrupt archive should have raised")
+except ValueError as e:
+    a("valid VulnOps backup" in str(e) or "staging failed" in str(e))
+a(run(db.findings.count_documents({})) == 9,
+  "a corrupt restore wiped live data — staging must fail before any swap")
+# no orphan stage collections left behind
+names = run(db.list_collection_names())
+a(not any(n.startswith(backup.STAGE_PREFIX) for n in names),
+  "a failed restore left temporary stage collections behind")
+bad.unlink(missing_ok=True)
+print("PASS: a corrupt/failed restore leaves the live database exactly as it was and cleans up its "
+      "temp collections — the destructive swap only runs after the whole archive stages successfully")
+
+# and a SUCCESSFUL restore reports it staged-then-swapped
+run(db.findings.delete_many({}))
+ok_res = run(backup.restore_from_path(db, str(Path(os.environ["BACKUP_DIR"], plain["filename"]))))
+a(ok_res.get("staged_then_swapped") is True and ok_res["swapped_collections"] >= 1)
+print("PASS: a successful restore stages every collection then atomically swaps them into place")
+
 server.app.dependency_overrides.clear()
 print("\nALL ASYNC RESTORE TESTS PASSED")

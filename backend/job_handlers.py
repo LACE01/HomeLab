@@ -177,8 +177,14 @@ async def _restore(db, payload, heartbeat):
         result = await restore_from_path(db, restore_file, passphrase=passphrase)
         result["ok"] = True
     except ValueError as e:
-        # bad passphrase / corrupt or invalid file -- terminal, do not retry
+        # bad passphrase / corrupt or invalid file -- terminal, do not retry.
+        # Log the real reason so it's in the container logs (the UI only shows a
+        # short message); stage-then-swap means the live DB is untouched here.
+        logger.warning("Restore rejected (live data untouched): %s", e)
         result = {"ok": False, "error": str(e)}
+    except Exception as e:
+        logger.exception("Restore failed unexpectedly")
+        result = {"ok": False, "error": f"Restore failed: {e}"}
     finally:
         # the stashed upload is a full transient copy of the database -- never
         # leave it on the volume after the attempt, success or failure

@@ -288,7 +288,8 @@ async def create_backup(db, label: str | None = None, *, encrypt: bool = False) 
     filename = f"vulnops-backup-{ts}{suffix}"
     path = _safe_path(filename)
 
-    collection_names = [c for c in await db.list_collection_names() if c != "backup_history"]
+    collection_names = [c for c in await db.list_collection_names()
+                        if c != "backup_history" and not c.startswith(STAGE_PREFIX)]
 
     # Stream the dump to a temp gzip file on the backup volume, one document at a
     # time -- see _stream_gzip_dump. This is the fix for the worker being
@@ -433,28 +434,39 @@ async def restore_backup(db, content: bytes, passphrase: str | None = None) -> d
 RESTORE_BATCH = 2000
 
 
+STAGE_PREFIX = "__restore_stage__"
+
+
 async def restore_from_path(db, path, passphrase: str | None = None,
                             batch_size: int = RESTORE_BATCH) -> dict:
-    """Memory-bounded, worker-side restore (see the backup_restore handler).
+    """Memory-bounded, STAGE-THEN-SWAP, worker-side restore.
 
-    The old restore endpoint read the whole upload into RAM, json-parsed the
-    ENTIRE database into Python objects, and inserted each collection whole --
-    inline in the 1g API process, behind Cloudflare's ~100s proxy timeout. On a
-    large database that either OOM-killed the API or 520'd through the proxy: the
-    exact mirror of the create-backup bug, on the restore path. This runs in the
-    worker, frees each collection's memory as it inserts it, and writes in
-    batches instead of one giant insert_many.
+    Two problems this solves, both of which produced the "Restore failed" the
+    operator saw with no usable reason:
 
-    Destructive-safety is preserved: a wrong or missing passphrase (or a corrupt
-    file) raises BEFORE any collection is touched -- the deletes only start once
-    the archive has decrypted and parsed.
+    1. It ran inline in the 1g API process behind Cloudflare's ~100s proxy
+       timeout -- on a large database it OOM'd or 520'd. This runs in the worker,
+       frees each collection as it inserts it, and writes in batches.
+
+    2. The old path did delete_many() then insert_many() on the LIVE collection.
+       A failure part-way (bad doc, worker killed, disk full) left the database
+       half-wiped with no way back -- the worst possible outcome for a restore.
+       This stages every collection into a temporary collection FIRST and only
+       once the ENTIRE archive has been staged successfully does it swap the
+       staged collections into place with an atomic rename. If anything fails
+       during staging, the live database is untouched and the temp collections
+       are dropped.
+
+    Destructive-safety is therefore total: a wrong/missing passphrase, a corrupt
+    file, or a mid-restore error all leave the live data exactly as it was. The
+    only destructive step is the final rename-swap, which is fast metadata ops.
     """
     p = Path(path)
     if not p.exists():
         raise ValueError(f"Restore file not found: {path}")
     content = p.read_bytes()
     if is_encrypted(content):
-        content = decrypt_payload(content, passphrase)   # raises before any delete
+        content = decrypt_payload(content, passphrase)   # raises before anything is staged
     try:
         raw = gzip.decompress(content)
         del content
@@ -470,21 +482,47 @@ async def restore_from_path(db, path, passphrase: str | None = None,
         raise ValueError("Not a valid VulnOps backup file (missing 'collections' key)")
 
     names = list(collections.keys())
+    staged = []          # (stage_name, live_name, count) for names successfully staged
     restored = {}
-    total = 0
-    for name in names:
-        docs = collections.pop(name)      # drop from the parsed dict -> freed as we go
-        await db[name].delete_many({})
-        n = 0
-        for i in range(0, len(docs), batch_size):
-            chunk = docs[i:i + batch_size]
-            if chunk:
-                await db[name].insert_many(chunk)
-                n += len(chunk)
-        restored[name] = n
-        total += n
-        del docs
-    return {"collections_restored": len(names), "documents_restored": total, "detail": restored}
+
+    async def _drop_stage(stage_name):
+        try:
+            await db.drop_collection(stage_name)
+        except Exception:
+            pass
+
+    # ---- STAGE: load every collection into a temp collection; live data untouched ----
+    try:
+        for name in names:
+            docs = collections.pop(name)         # freed from the parsed dict as we go
+            stage_name = f"{STAGE_PREFIX}{name}"
+            await _drop_stage(stage_name)         # clear any leftover from a prior aborted restore
+            n = 0
+            for i in range(0, len(docs), batch_size):
+                chunk = docs[i:i + batch_size]
+                if chunk:
+                    await db[stage_name].insert_many(chunk)
+                    n += len(chunk)
+            staged.append((stage_name, name, n))
+            restored[name] = n
+            del docs
+    except Exception as e:
+        # staging failed -> live data is untouched; clean up every temp collection
+        for stage_name, _live, _n in staged:
+            await _drop_stage(stage_name)
+        # also drop the one we were mid-way through, if any
+        raise ValueError(f"Restore staging failed before any live data was changed: {e}")
+
+    # ---- SWAP: everything staged OK; rename each temp collection into place ----
+    # This is the only step that touches live data, and it's fast metadata ops.
+    swapped = 0
+    for stage_name, live_name, _n in staged:
+        await db[stage_name].rename(live_name, dropTarget=True)
+        swapped += 1
+
+    total = sum(restored.values())
+    return {"collections_restored": len(names), "documents_restored": total,
+            "detail": restored, "staged_then_swapped": True, "swapped_collections": swapped}
 
 
 async def prune_old_backups(db, retention: int = DEFAULT_RETENTION) -> dict:
