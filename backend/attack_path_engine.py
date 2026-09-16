@@ -187,6 +187,12 @@ def _exploit_weight(f: dict) -> float:
 # Graph construction
 # =========================================================================
 
+# Bounds that keep graph construction from exploding on a large flat segment.
+SEGMENT_FANOUT_CAP = 64      # max same-segment edges built per source host
+LARGE_SEGMENT = 150         # above this many hosts, drop generic "possible" edges
+MAX_TOTAL_EDGES = 120_000   # global backstop on total edges
+
+
 async def build_environment_graph(db, max_assets: int = 2000) -> dict:
     """One pass over the inventory + findings, producing typed nodes and evidenced
     edges. Everything downstream (enumeration, choke points, narratives) reads
@@ -280,18 +286,49 @@ async def build_environment_graph(db, max_assets: int = 2000) -> dict:
             })
 
     # --- host -> host ---
+    # Bounded fan-out. The naive all-pairs build is O(sum of segment_size^2): a
+    # single large flat segment (e.g. a /16 that all resolves to one "segment")
+    # produced millions of edge dicts and OOM-killed the container before path
+    # enumeration even ran. So per source we connect to at most SEGMENT_FANOUT_CAP
+    # destinations, valuable ones first (crown jewels, then hosts exposing a
+    # lateral service, then exploitable hosts), and in a very large segment we drop
+    # the generic "same segment, no confirmed service" noise edges entirely -- they
+    # are the bulk of the explosion and carry the least signal. A global cap is the
+    # final backstop.
+    exploitable_ids = {e["from"] for e in edges if e["kind"] == "exploitable"}
+
+    def _dst_priority(mid):
+        d = by_id.get(mid, {})
+        if nodes.get(mid, {}).get("crown_jewel"):
+            return 0
+        if any(pp in LATERAL_SERVICES for pp in _asset_ports(d)):
+            return 1
+        if mid in exploitable_ids:
+            return 2
+        return 3
+
     for seg, member_ids in segments.items():
         if len(member_ids) < 2:
             continue
+        if len(edges) >= MAX_TOTAL_EDGES:
+            break
+        big_segment = len(member_ids) > LARGE_SEGMENT
+        ordered_dsts = sorted(member_ids, key=_dst_priority)
         for src_id in member_ids:
+            if len(edges) >= MAX_TOTAL_EDGES:
+                break
             src = by_id[src_id]
-            for dst_id in member_ids:
+            made = 0
+            for dst_id in ordered_dsts:
                 if src_id == dst_id:
                     continue
+                if made >= SEGMENT_FANOUT_CAP or len(edges) >= MAX_TOTAL_EDGES:
+                    break
                 dst = by_id[dst_id]
                 dst_ports = _asset_ports(dst)
                 pivot = [p for p in dst_ports if p in LATERAL_SERVICES]
                 if pivot:
+                    made += 1
                     svc_name, tech = LATERAL_SERVICES[pivot[0]]
                     edges.append({
                         "id": _edge_id("lateral_service", src_id, dst_id, str(pivot[0])),
@@ -312,7 +349,10 @@ async def build_environment_graph(db, max_assets: int = 2000) -> dict:
                                      f"administrative credentials are commonly shared across a team's hosts."),
                         "technique": "T1078", "segment": seg,
                     })
-                else:
+                    made += 1
+                elif not big_segment:
+                    # generic "reachable in principle" noise -- only in small
+                    # segments, where it isn't a combinatorial explosion
                     edges.append({
                         "id": _edge_id("same_segment", src_id, dst_id),
                         "from": src_id, "to": dst_id,
@@ -320,6 +360,7 @@ async def build_environment_graph(db, max_assets: int = 2000) -> dict:
                         "evidence": f"Same network segment ({seg}) — reachable in principle, no confirmed service.",
                         "technique": "T1046", "segment": seg,
                     })
+                    made += 1
 
     return {"nodes": nodes, "edges": edges, "segments": segments,
             "assets_scanned": len(assets), "findings_considered": len(findings),
@@ -367,17 +408,29 @@ def enumerate_paths(graph: dict, max_hops: int = 4, max_paths: int = 200) -> lis
         return []
 
     results: list = []
+    # Bounded BFS. The result cap alone was not enough: on a dense graph the QUEUE
+    # itself grows combinatorially (each pop can enqueue many successors), and if
+    # few paths actually reach a crown jewel the queue balloons until the process
+    # is OOM-killed. So we also cap total node expansions and the live queue size,
+    # and use a deque (pop(0) on a list is O(n), which made a big queue quadratic).
+    from collections import deque
+    EXPANSION_BUDGET = 200_000     # max nodes popped -- bounds time
+    QUEUE_CAP = 400_000            # max live frontier -- bounds memory
     # queue entries: (current_node, [edges so far], visited set, accumulated cost)
-    queue = [(e["to"], [e], {"internet", e["to"]}, _edge_cost(e))
-             for e in out_edges.get("internet", [])]
+    queue = deque((e["to"], [e], {"internet", e["to"]}, _edge_cost(e))
+                  for e in out_edges.get("internet", []))
 
-    while queue and len(results) < max_paths * 4:
-        current, chain, visited, cost = queue.pop(0)
+    expansions = 0
+    while queue and len(results) < max_paths * 4 and expansions < EXPANSION_BUDGET:
+        current, chain, visited, cost = queue.popleft()
+        expansions += 1
         if current in crown_ids and len(chain) >= 1:
             results.append({"chain": list(chain), "cost": cost, "target": current})
             continue                       # don't route THROUGH a crown jewel
         if len(chain) >= max_hops:
             continue
+        if len(queue) >= QUEUE_CAP:
+            continue                       # frontier is saturated -- stop growing it
         for e in out_edges.get(current, []):
             if e["to"] in visited:
                 continue
@@ -387,6 +440,8 @@ def enumerate_paths(graph: dict, max_hops: int = 4, max_paths: int = 200) -> lis
             if e["kind"] == "same_segment" and current not in exploit_by_host:
                 continue
             queue.append((e["to"], chain + [e], visited | {e["to"]}, cost + _edge_cost(e)))
+            if len(queue) >= QUEUE_CAP:
+                break
 
     # keep the cheapest route per (entry, target) pair
     best: dict = {}
