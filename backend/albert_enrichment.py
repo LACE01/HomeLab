@@ -56,13 +56,34 @@ async def enrich_ip(db, ip: str) -> dict:
         except Exception as e:
             results.append({"source": source, "status": "error", "rows": [], "error": str(e)})
 
-    doc = {"ip": ip, "results": results, "checked_at": _now_iso()}
+    # Item 55: geolocation / ASN context from IPinfo. This is NOT a threat verdict,
+    # so it's stored as context (a "geo" field + a context row) and never mirrored
+    # into osint_findings. It's the only geo/ASN this pipeline has.
+    geo = None
+    import ipinfo as _ipinfo
+    try:
+        geo = await _ipinfo.lookup_ip(db, ip)
+        if geo:
+            results.append({"source": "IPinfo", "status": "found", "context": True,
+                            "rows": [{"name": f"{geo.get('org') or geo.get('asn') or 'ASN'} — "
+                                              f"{geo.get('country') or 'unknown country'}",
+                                      "detail": f"ASN {geo.get('asn')} ({geo.get('as_name')}), "
+                                                f"{geo.get('country')} [{geo.get('country_code')}]"}],
+                            "error": None})
+    except ValueError as e:
+        results.append({"source": "IPinfo", "status": "not_configured", "context": True, "rows": [], "error": str(e)})
+    except Exception as e:
+        results.append({"source": "IPinfo", "status": "error", "context": True, "rows": [], "error": str(e)})
+
+    doc = {"ip": ip, "results": results, "geo": geo, "checked_at": _now_iso()}
     await db.albert_ip_enrichment.update_one({"ip": ip}, {"$set": doc}, upsert=True)
 
     # Mirror any real hits into db.osint_findings -- the same collection the
     # recon-ng hub writes to -- so a finding shows up in one place regardless of
     # whether it was discovered via a manual recon-ng run or an Albert import.
     for r in results:
+        if r.get("context"):
+            continue   # geo/ASN context (IPinfo) is not a threat finding
         for row in r["rows"]:
             key = f"albert:{r['source']}:{ip}:{row.get('name','')}"
             existing = await db.osint_findings.find_one({"key": key}, {"_id": 0})

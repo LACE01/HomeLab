@@ -518,8 +518,22 @@ async def _upsert_observation(db, obs: dict) -> bool:
         return False
 
     enrichment = await correlate_observation(db, obs)
+    # Item 55: attach IPinfo ASN owner (Cloudflare gives the ASN number, not the
+    # org name) and fill country if the feed didn't provide one. Best-effort and
+    # cached -- never blocks ingest if IPinfo is unset or failing.
+    geo_extra = {}
+    try:
+        import ipinfo as _ipinfo
+        g = await _ipinfo.enrich_quietly(db, obs.get("source_ip") or "")
+        if g:
+            geo_extra["as_name"] = g.get("as_name")
+            geo_extra["as_domain"] = g.get("as_domain")
+            if not obs.get("country") and g.get("country"):
+                geo_extra["country"] = g.get("country")
+    except Exception:
+        pass
     doc = {
-        "id": str(uuid.uuid4()), "dedupe_key": key, **obs, **enrichment,
+        "id": str(uuid.uuid4()), "dedupe_key": key, **obs, **enrichment, **geo_extra,
         "hit_count": 1, "first_seen_at": obs["observed_at"], "last_seen_at": obs["observed_at"],
         "last_edge_status": obs.get("edge_status"), "last_origin_status": obs.get("origin_status"),
         "status": "new", "created_at": _now_iso(),

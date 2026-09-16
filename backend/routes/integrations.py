@@ -203,6 +203,10 @@ async def test_integration(integration_id: str, user: dict = Depends(require_rol
             # attack_telemetry.test_connection.
             from attack_telemetry import test_connection as _cf_test
             result = await _cf_test(cfg)
+        elif name == "IPinfo":
+            # Real Lite-tier lookup of a known IP, not a reachability ping.
+            from ipinfo import test_connection as _ipinfo_test
+            result = await _ipinfo_test(cfg)
         else:
             result = await _generic_reachability_check(cfg)
 

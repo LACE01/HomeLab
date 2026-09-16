@@ -73,6 +73,8 @@ ENRICHMENT_CONNECTORS = [
      "default_config": {"endpoint": "https://api.platform.censys.io"}},
     {"name": "GreyNoise", "type": "threat_intel", "logo": "greynoise",
      "default_config": {"endpoint": "https://api.greynoise.io"}},
+    {"name": "IPinfo", "type": "enrichment", "logo": "ipinfo",
+     "default_config": {"endpoint": "https://api.ipinfo.io"}},
     {"name": "AlienVault OTX", "type": "threat_intel", "logo": "otx",
      "default_config": {"endpoint": "https://otx.alienvault.com"}},
     {"name": "abuse.ch (ThreatFox)", "type": "threat_intel", "logo": "abusech",
