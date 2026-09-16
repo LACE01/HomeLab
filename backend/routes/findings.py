@@ -22,13 +22,16 @@ router = APIRouter()
 async def list_findings(
     user: dict = Depends(get_current_user),
     q: Optional[str] = None,
-    severity: Optional[str] = None,
-    status: Optional[str] = None,
+    severity: Optional[List[str]] = Query(None),
+    status: Optional[List[str]] = Query(None),
     kev: Optional[bool] = None,
     internet_facing: Optional[bool] = None,
     owner_team: Optional[str] = None,
     product_id: Optional[str] = None,
-    asset_id: Optional[str] = None,
+    asset_id: Optional[List[str]] = Query(None),
+    tags: Optional[List[str]] = Query(None),
+    asset_type: Optional[List[str]] = Query(None),
+    exploitability: Optional[List[str]] = Query(None),
     cve: Optional[str] = None,
     cwe: Optional[str] = None,
     view: Optional[str] = None,
@@ -47,10 +50,11 @@ async def list_findings(
     # team they're on, not an exact match against a single string. admin + manager
     # see everything (team_scope_filter returns {} for those roles).
     flt.update(team_scope_filter(user))
+    and_clauses: list = []
     if severity:
-        flt["severity"] = severity
+        flt["severity"] = {"$in": severity}
     if status:
-        flt["status"] = status
+        flt["status"] = {"$in": status}
     if kev is not None:
         flt["kev_flag"] = kev
     if internet_facing is not None:
@@ -59,8 +63,35 @@ async def list_findings(
         flt["owner_team"] = owner_team
     if product_id:
         flt["product_id"] = product_id
-    if asset_id:
-        flt["asset_id"] = asset_id
+
+    # Asset attribute filters (tags / asset_type) live on the ASSET, so resolve
+    # them to a set of asset ids and intersect with any explicit asset_id filter.
+    asset_conds: dict = {}
+    if tags:
+        asset_conds["tags"] = {"$in": tags}
+    if asset_type:
+        asset_conds["asset_type"] = {"$in": asset_type}
+    if asset_conds:
+        matched_ids = [a["id"] for a in await db.assets.find(
+            asset_conds, {"_id": 0, "id": 1}).to_list(50000)]
+        if asset_id:
+            matched_ids = [i for i in matched_ids if i in set(asset_id)]
+        # a filter that matches no asset must return nothing, not everything
+        and_clauses.append({"asset_id": {"$in": matched_ids or ["__no_match__"]}})
+    elif asset_id:
+        and_clauses.append({"asset_id": {"$in": asset_id}})
+
+    # Ease-of-exploitability: any of the selected signals (OR within the facet).
+    if exploitability:
+        exploit_map = {
+            "kev": {"kev_flag": True},
+            "active_attacks": {"rti": "active_attacks"},
+            "public_exploit": {"rti": "public_exploit"},
+            "epss_high": {"epss_score": {"$gte": 0.5}},
+        }
+        or_conds = [exploit_map[e] for e in exploitability if e in exploit_map]
+        if or_conds:
+            and_clauses.append({"$or": or_conds})
     if cve:
         flt["cve"] = cve
     if cwe:
@@ -75,12 +106,12 @@ async def list_findings(
         # against minor naming drift ("SBOM / OSV.dev" vs "SBOM/OSV.dev" etc).
         flt["source_tool"] = {"$regex": f"^{re.escape(source_tool)}$", "$options": "i"}
     if q:
-        flt["$or"] = [
+        and_clauses.append({"$or": [
             {"title": {"$regex": q, "$options": "i"}},
             {"cve": {"$regex": q, "$options": "i"}},
             {"asset_hostname": {"$regex": q, "$options": "i"}},
             {"qid": {"$regex": q, "$options": "i"}},
-        ]
+        ]})
 
     now = datetime.now(timezone.utc)
     if view == "kev":
@@ -104,6 +135,9 @@ async def list_findings(
         flt["assigned_to"] = None
         flt["status"] = {"$in": ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]}
 
+    if and_clauses:
+        flt["$and"] = flt.get("$and", []) + and_clauses
+
     sort_dir = -1 if order == "desc" else 1
     cursor = db.findings.find(flt, {"_id": 0}).sort(sort, sort_dir).skip(offset).limit(limit)
     items = await cursor.to_list(length=limit)
@@ -123,7 +157,18 @@ async def findings_stats(user: dict = Depends(get_current_user)):
         "due_at": {"$lt": now_iso()},
         "status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]},
     })
-    return {"total": total, "by_severity": sev, "by_status": statuses, "kev": kev_count, "overdue": overdue}
+    # Facet option lists for the Findings filter UI. Tags and device type live on
+    # the asset, so pull the distinct values from there.
+    try:
+        tags = sorted([t for t in await db.assets.distinct("tags") if t])[:200]
+    except Exception:
+        tags = []
+    try:
+        asset_types = sorted([t for t in await db.assets.distinct("asset_type") if t])
+    except Exception:
+        asset_types = []
+    return {"total": total, "by_severity": sev, "by_status": statuses, "kev": kev_count,
+            "overdue": overdue, "available_tags": tags, "available_asset_types": asset_types}
 
 
 # --------------------------- FINDINGS-GROUPS (literal path before {finding_id}) ---------------------------
