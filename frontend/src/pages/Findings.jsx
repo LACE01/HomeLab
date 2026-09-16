@@ -42,6 +42,52 @@ const SORT_OPTIONS = [
 
 const PAGE_SIZE = 100;
 
+const EXPLOIT_OPTIONS = [
+  { id: "kev", label: "KEV (exploited)" },
+  { id: "active_attacks", label: "Active attacks (EPSS)" },
+  { id: "public_exploit", label: "Public exploit" },
+  { id: "epss_high", label: "EPSS ≥ 0.5" },
+];
+
+function MultiSelect({ label, options, selected, onChange, width = "w-52" }) {
+  const [open, setOpen] = useState(false);
+  const toggle = (id) => {
+    const set = new Set(selected);
+    set.has(id) ? set.delete(id) : set.add(id);
+    onChange([...set]);
+  };
+  const count = selected.length;
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen(o => !o)}
+        className={`h-8 px-2.5 text-[12px] rounded border inline-flex items-center gap-1.5 ${count ? "border-blue-500/40 bg-blue-500/10 text-blue-200" : "border-[#30363D] text-slate-300 hover:border-[#484F58]"}`}>
+        {label}{count > 0 && <span className="text-[10px] bg-blue-500/30 text-blue-100 rounded-full px-1.5">{count}</span>}
+        <CaretDown size={12} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className={`absolute z-20 mt-1 ${width} max-h-64 overflow-y-auto bg-[#161B22] border border-[#30363D] rounded-md shadow-lg p-1`}>
+            {options.length === 0 && <div className="px-2 py-1.5 text-[11.5px] text-slate-500">No options</div>}
+            {options.map(o => {
+              const id = typeof o === "string" ? o : o.id;
+              const lbl = typeof o === "string" ? o : o.label;
+              const on = selected.includes(id);
+              return (
+                <label key={id} className="flex items-center gap-2 px-2 py-1.5 text-[12px] cursor-pointer hover:bg-slate-800/40 rounded">
+                  <input type="checkbox" checked={on} onChange={() => toggle(id)} />
+                  <span className={on ? "text-blue-200" : "text-slate-300"}>{lbl}</span>
+                </label>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+
 export default function Findings() {
   const { user } = useAuth();
   const { prefs, setSection } = usePreferences();
@@ -61,8 +107,15 @@ export default function Findings() {
   const [total, setTotal] = useState(0);
   const [q, setQ] = useState(qParam || "");
   const [view, setView] = useState(searchParams.get("view") || "");
-  const [severity, setSeverity] = useState(searchParams.get("severity") || "");
-  const [status, setStatus] = useState(searchParams.get("status") || "");
+  const [severities, setSeverities] = useState(searchParams.getAll("severity"));
+  const [statuses, setStatuses] = useState(searchParams.getAll("status"));
+  // Item: flexible multi-select facets on the Findings tab.
+  const [exploitability, setExploitability] = useState([]);   // kev|active_attacks|public_exploit|epss_high
+  const [assetTypes, setAssetTypes] = useState([]);           // server|workstation|...
+  const [tagFilter, setTagFilter] = useState([]);            // asset tags
+  const [kevOnly, setKevOnly] = useState(false);
+  const [internetOnly, setInternetOnly] = useState(false);
+  const [facetOpts, setFacetOpts] = useState({ available_tags: [], available_asset_types: [] });
   const [selected, setSelected] = useState(new Set());
   const [bulkStatus, setBulkStatus] = useState("Valid");
   const [bulkAssignee, setBulkAssignee] = useState("");
@@ -87,8 +140,8 @@ export default function Findings() {
     if (groupBy !== "none" && !cweParam && !cveParam && !sourceToolParam) {
       const params = { group_by: groupBy, view_mode: viewMode, limit: 100 };
       if (q) params.q = q; // search box now applies in grouped view too (title/CVE/hostname/QID)
-      if (severity) params.severity = severity;
-      if (status) params.status = status;
+      if (severities.length === 1) params.severity = severities[0];
+      if (statuses.length === 1) params.status = statuses[0];
       if (myQueue && user?.team) params.owner_team = user.team;
       else if (ownerTeamParam) params.owner_team = ownerTeamParam; // grouped view previously dropped team deep-links
       const r = await api.get("/v1/findings-groups", { params });
@@ -98,24 +151,32 @@ export default function Findings() {
       setLoading(false);
       return;
     }
-    const params = { limit: PAGE_SIZE, offset: page * PAGE_SIZE, sort, order };
-    if (q) params.q = q;
-    if (view) params.view = view;
-    if (severity) params.severity = severity;
-    if (status) params.status = status;
-    if (cweParam) params.cwe = cweParam;
-    if (cveParam) params.cve = cveParam;
-    if (myQueue && user?.team) params.owner_team = user.team;
-    else if (ownerTeamParam) params.owner_team = ownerTeamParam;
-    if (sourceToolParam) params.source_tool = sourceToolParam;
-    const r = await api.get("/v1/findings", { params });
+    const usp = new URLSearchParams();
+    usp.set("limit", PAGE_SIZE); usp.set("offset", page * PAGE_SIZE); usp.set("sort", sort); usp.set("order", order);
+    if (q) usp.set("q", q);
+    if (view) usp.set("view", view);
+    severities.forEach(v => usp.append("severity", v));
+    statuses.forEach(v => usp.append("status", v));
+    exploitability.forEach(v => usp.append("exploitability", v));
+    assetTypes.forEach(v => usp.append("asset_type", v));
+    tagFilter.forEach(v => usp.append("tags", v));
+    if (kevOnly) usp.set("kev", "true");
+    if (internetOnly) usp.set("internet_facing", "true");
+    if (cweParam) usp.set("cwe", cweParam);
+    if (cveParam) usp.set("cve", cveParam);
+    if (myQueue && user?.team) usp.set("owner_team", user.team);
+    else if (ownerTeamParam) usp.set("owner_team", ownerTeamParam);
+    if (sourceToolParam) usp.set("source_tool", sourceToolParam);
+    const r = await api.get("/v1/findings", { params: usp });
     setItems(r.data.items || []); setTotal(r.data.total);
     setLoading(false); setSelected(new Set());
   };
-  useEffect(() => { if (prefs) load(); /* eslint-disable-next-line */ }, [prefs, view, severity, status, myQueue, groupBy, viewMode, cweParam, cveParam, sourceToolParam, sort, order, page]);
+  const facetKey = [severities.join(","), statuses.join(","), exploitability.join(","), assetTypes.join(","), tagFilter.join(","), kevOnly, internetOnly].join("|");
+  useEffect(() => { if (prefs) load(); /* eslint-disable-next-line */ }, [prefs, view, facetKey, myQueue, groupBy, viewMode, cweParam, cveParam, sourceToolParam, sort, order, page]);
   // Any filter change (other than paging itself) should reset back to page 1 --
   // otherwise you can land on an empty page 5 after narrowing a filter down.
-  useEffect(() => { setPage(0); }, [view, severity, status, myQueue, sort, order, q]);
+  useEffect(() => { setPage(0); }, [view, facetKey, myQueue, sort, order, q]);
+  useEffect(() => { api.get("/v1/findings/stats").then(r => setFacetOpts(r.data)).catch(() => {}); }, []);
 
   // Keep the URL in sync with the current filters (replace, not push, so we don't
   // pollute history). This is what makes the back arrow from a Finding Detail
@@ -124,8 +185,8 @@ export default function Findings() {
   useEffect(() => {
     const p = new URLSearchParams();
     if (view) p.set("view", view);
-    if (severity) p.set("severity", severity);
-    if (status) p.set("status", status);
+    severities.forEach(v => p.append("severity", v));
+    statuses.forEach(v => p.append("status", v));
     if (q) p.set("q", q);
     if (ownerTeamParam) p.set("owner_team", ownerTeamParam);
     if (cweParam) p.set("cwe", cweParam);
@@ -133,7 +194,7 @@ export default function Findings() {
     if (sourceToolParam) p.set("source_tool", sourceToolParam);
     if (p.toString() !== searchParams.toString()) setSearchParams(p, { replace: true });
     // eslint-disable-next-line
-  }, [view, severity, status, q]);
+  }, [view, facetKey, q]);
 
   const runNlSearch = async () => {
     if (!q.trim()) return;
@@ -183,7 +244,7 @@ export default function Findings() {
 
   const exportCsv = async () => {
     const params = {};
-    if (severity) params.severity = severity;
+    if (severities.length === 1) params.severity = severities[0];
     if (status) params.status = status;
     const r = await api.get("/v1/reports/csv/findings", { params, responseType: "blob" });
     const url = URL.createObjectURL(r.data);
@@ -247,14 +308,19 @@ export default function Findings() {
             className={`h-8 px-2.5 text-[12px] rounded border inline-flex items-center gap-1.5 ${nlMode ? "bg-blue-500/15 border-blue-500/40 text-blue-300" : "border-[#30363D] text-slate-400 hover:border-[#484F58]"}`}>
             <Sparkle size={13}/> Ask
           </button>
-          <select data-testid="filter-severity" value={severity} onChange={(e)=>setSeverity(e.target.value)} className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200">
-            <option value="">All severities</option>
-            {["Critical","High","Medium","Low","Info"].map(s=> <option key={s}>{s}</option>)}
-          </select>
-          <select data-testid="filter-status" value={status} onChange={(e)=>setStatus(e.target.value)} className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200">
-            <option value="">All statuses</option>
-            {STATUSES.map(s=> <option key={s}>{s}</option>)}
-          </select>
+          <MultiSelect label="Severity" options={["Critical","High","Medium","Low","Info"]} selected={severities} onChange={setSeverities} width="w-44"/>
+          <MultiSelect label="Status" options={STATUSES} selected={statuses} onChange={setStatuses} width="w-56"/>
+          <MultiSelect label="Exploitability" options={EXPLOIT_OPTIONS} selected={exploitability} onChange={setExploitability} width="w-56"/>
+          <MultiSelect label="Device type" options={facetOpts.available_asset_types || []} selected={assetTypes} onChange={setAssetTypes} width="w-48"/>
+          <MultiSelect label="Tags" options={facetOpts.available_tags || []} selected={tagFilter} onChange={setTagFilter} width="w-52"/>
+          <button onClick={()=>setKevOnly(v=>!v)}
+            className={`h-8 px-2.5 text-[12px] rounded border ${kevOnly ? "border-red-500/40 bg-red-500/10 text-red-200" : "border-[#30363D] text-slate-300 hover:border-[#484F58]"}`}>KEV</button>
+          <button onClick={()=>setInternetOnly(v=>!v)}
+            className={`h-8 px-2.5 text-[12px] rounded border ${internetOnly ? "border-amber-500/40 bg-amber-500/10 text-amber-200" : "border-[#30363D] text-slate-300 hover:border-[#484F58]"}`}>Internet-facing</button>
+          {(severities.length||statuses.length||exploitability.length||assetTypes.length||tagFilter.length||kevOnly||internetOnly) > 0 && (
+            <button onClick={()=>{ setSeverities([]); setStatuses([]); setExploitability([]); setAssetTypes([]); setTagFilter([]); setKevOnly(false); setInternetOnly(false); }}
+              className="h-8 px-2.5 text-[12px] rounded border border-[#30363D] text-slate-400 hover:text-slate-200 inline-flex items-center gap-1"><X size={12}/> Clear</button>
+          )}
           <select data-testid="filter-sort" value={sort} onChange={(e)=>setSort(e.target.value)} className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200">
             {SORT_OPTIONS.map(o => <option key={o.id} value={o.id}>Sort: {o.label}</option>)}
           </select>
