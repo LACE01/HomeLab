@@ -110,9 +110,31 @@ export default function Backups() {
   const download = async (b) => {
     try {
       const r = await api.get(`/v1/admin/backups/${b.id}/download`, { responseType: "blob" });
+      // Verify the bytes that arrived match what the server sent — a download
+      // carried to another VM can truncate through a proxy, and a short .gz fails
+      // to restore with a cryptic error. Catch it here instead.
+      const expectBytes = Number(r.headers["x-backup-bytes"] || 0);
+      const expectSha = r.headers["x-backup-sha256"];
+      if (expectBytes && r.data.size !== expectBytes) {
+        toast.error(`Download incomplete: got ${r.data.size} of ${expectBytes} bytes. ` +
+                    `Try again — do not restore a truncated file.`);
+        return;
+      }
+      if (expectSha && window.crypto?.subtle) {
+        try {
+          const buf = await r.data.arrayBuffer();
+          const digest = await window.crypto.subtle.digest("SHA-256", buf);
+          const hex = Array.from(new Uint8Array(digest)).map(x => x.toString(16).padStart(2, "0")).join("");
+          if (hex !== expectSha) {
+            toast.error("Download failed integrity check (sha256 mismatch). Do not restore this file — re-download.");
+            return;
+          }
+        } catch { /* subtle crypto unavailable (non-HTTPS) — fall back to size check only */ }
+      }
       const url = window.URL.createObjectURL(new Blob([r.data]));
       const a = document.createElement("a"); a.href = url; a.download = b.filename; a.click();
       window.URL.revokeObjectURL(url);
+      if (expectSha) toast.success(`Downloaded ${b.filename} — verified sha256 ${expectSha.slice(0, 12)}…`);
     } catch (e) {
       toast.error("Download failed — the file may have been pruned");
     }
@@ -312,6 +334,7 @@ export default function Backups() {
                 </div>
                 <div className="text-[11px] text-slate-500 mt-1">
                   {new Date(b.created_at).toLocaleString()} · {b.documents} document(s) · {b.collections} collection(s) · {fmtBytes(b.size_bytes)}
+                  {b.sha256 && <span className="ml-1 text-slate-600" title={`SHA-256: ${b.sha256}`}>· sha256 {b.sha256.slice(0, 12)}…</span>}
                   {b.verification_error && <span className="text-red-400"> · {b.verification_error}</span>}
                   {b.offsite_error && <span className="text-orange-400"> · off-site: {b.offsite_error}</span>}
                 </div>

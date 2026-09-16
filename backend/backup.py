@@ -321,6 +321,7 @@ async def create_backup(db, label: str | None = None, *, encrypt: bool = False) 
             tmp_path.unlink()
 
     size_bytes = path.stat().st_size
+    sha256 = sha256_file(path)   # integrity fingerprint -- travels with the backup
 
     # Read the file back ONLY when off-site is actually configured -- otherwise
     # we'd pull the whole archive into RAM for nothing (and the archive can be
@@ -333,7 +334,7 @@ async def create_backup(db, label: str | None = None, *, encrypt: bool = False) 
     record = {
         "id": str(uuid.uuid4()), "filename": filename, "label": label,
         "collections": len(collection_names), "documents": total_docs,
-        "size_bytes": size_bytes, "created_at": _now_iso(),
+        "size_bytes": size_bytes, "sha256": sha256, "created_at": _now_iso(),
         "encrypted": encrypt,
         "verified": verification["valid"], "verification_error": verification.get("error"),
         "verified_at": verification["verified_at"],
@@ -399,6 +400,23 @@ def read_backup_file(filename: str) -> bytes:
     if not path.exists():
         raise FileNotFoundError(f"Backup file '{filename}' not found on disk")
     return path.read_bytes()
+
+
+def sha256_file(path) -> str:
+    """Streaming SHA-256 of a file on disk -- bounded memory, so it works on a
+    large backup. Used to detect a download that arrived truncated or altered
+    when a backup is carried from one VM to another."""
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def sha256_bytes(data: bytes) -> str:
+    import hashlib
+    return hashlib.sha256(data).hexdigest()
 
 
 async def restore_backup(db, content: bytes, passphrase: str | None = None) -> dict:
@@ -467,6 +485,8 @@ async def restore_from_path(db, path, passphrase: str | None = None,
     content = p.read_bytes()
     if is_encrypted(content):
         content = decrypt_payload(content, passphrase)   # raises before anything is staged
+    up_size = len(content)
+    up_sha = sha256_bytes(content)
     try:
         raw = gzip.decompress(content)
         del content
@@ -474,8 +494,19 @@ async def restore_from_path(db, path, passphrase: str | None = None,
         del raw
     except ValueError:
         raise
+    except (EOFError, OSError) as e:
+        # A truncated/corrupt gzip is the classic symptom of a download that was
+        # cut short or altered in transit (e.g. carried between VMs through a
+        # proxy). Say so plainly, with the fingerprint of what we received so it
+        # can be compared to the source VM's value.
+        raise ValueError(
+            "The backup file could not be decompressed -- it looks truncated or "
+            f"corrupted (received {up_size} bytes, sha256 {up_sha}). If you downloaded "
+            "it from another VM, the download was likely cut short; re-download it and "
+            f"check the size/sha256 match the source. Underlying error: {e}")
     except Exception as e:
-        raise ValueError(f"Not a valid VulnOps backup file: {e}")
+        raise ValueError(f"Not a valid VulnOps backup file (received {up_size} bytes, "
+                          f"sha256 {up_sha}): {e}")
 
     collections = data.get("collections")
     if collections is None or not isinstance(collections, dict):

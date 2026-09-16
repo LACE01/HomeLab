@@ -160,7 +160,7 @@ try:
     run(backup.restore_from_path(db, str(bad)))
     a(False, "a corrupt archive should have raised")
 except ValueError as e:
-    a("valid VulnOps backup" in str(e) or "staging failed" in str(e))
+    a("valid VulnOps backup" in str(e) or "staging failed" in str(e) or "truncated or corrupted" in str(e))
 a(run(db.findings.count_documents({})) == 9,
   "a corrupt restore wiped live data — staging must fail before any swap")
 # no orphan stage collections left behind

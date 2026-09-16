@@ -2,7 +2,7 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 
 from db import db
@@ -53,17 +53,24 @@ async def get_backup_passphrase(backup_id: str, user: dict = Depends(require_rol
 
 @router.get("/v1/admin/backups/{backup_id}/download")
 async def download_backup(backup_id: str, user: dict = Depends(require_role("admin"))):
-    from backup import read_backup_file
+    """Stream the backup from disk with a Content-Length and its SHA-256, so a
+    download that is carried to another VM can't silently truncate: the client
+    (and Cloudflare) know the exact byte count, and the X-Backup-SHA256 header lets
+    the operator verify the file arrived intact before restoring it. Served as
+    octet-stream so no proxy tries to re-encode a file that is already gzip."""
+    from backup import _safe_path, sha256_file
     record = await db.backup_history.find_one({"id": backup_id}, {"_id": 0})
     if not record:
         raise HTTPException(404, "Backup not found")
-    try:
-        content = read_backup_file(record["filename"])
-    except FileNotFoundError as e:
-        raise HTTPException(404, str(e))
-    return StreamingResponse(
-        iter([content]), media_type="application/gzip",
-        headers={"Content-Disposition": f"attachment; filename={record['filename']}"},
+    path = _safe_path(record["filename"])
+    if not path.exists():
+        raise HTTPException(404, f"Backup file '{record['filename']}' not found on disk")
+    # Prefer the sha256 recorded at creation; fall back to computing it for older
+    # backups that predate the field.
+    sha = record.get("sha256") or sha256_file(path)
+    return FileResponse(
+        str(path), media_type="application/octet-stream", filename=record["filename"],
+        headers={"X-Backup-SHA256": sha, "X-Backup-Bytes": str(path.stat().st_size)},
     )
 
 
