@@ -25,6 +25,17 @@ FLAG_REGISTRY = [
                     "workflow. Off means the entire workflow -- requesting, approving, running -- "
                     "is unavailable. Even when on, nothing runs without a registered executor, "
                     "which the platform does not ship."},
+    # Item 51 (PYTHIA forecasting half). DEFAULT FALSE, experimental. geo_forecast.py
+    # reads this with its OWN fail-closed check, and even when ON the surface stays
+    # inert (no forecasts) until a vetted forecast source is registered. Registered
+    # here only so an admin can flip it from Settings -> Feature Flags.
+    {"key": "experimental_geo_forecast", "group": "Experimental (use with caution)", "default": False,
+     "label": "Experimental geopolitical forecast (OFF by default)",
+     "description": "Enables the SEPARATE, experimental Geo-Forecast surface. Forecasting is an "
+                    "algorithmic guess, not an intelligence product, and is never shown next to KEV/findings. "
+                    "Turning this on only makes the (empty) surface reachable -- it produces no forecasts until "
+                    "a forecast source whose feeds have been vetted through legal/policy review is explicitly "
+                    "registered. Do not treat any output as decision-bearing."},
     {"key": "vendor_detect_hardware", "group": "Vendor Detection", "default": True,
      "label": "Detect vendors from asset hardware",
      "description": "Suggests a vendor candidate from each asset's hardware_info manufacturer (e.g. \"HP\", \"Dell\")."},
