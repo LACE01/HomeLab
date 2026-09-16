@@ -111,6 +111,7 @@ export default function Sidebar() {
           <NavItem to="/findings" icon={ListChecks} label="Findings" testid="nav-findings" />
           <NavItem to="/attack-paths" icon={ShareNetwork} label="Attack Paths" testid="nav-attack-paths" />
           <NavItem to="/exposure" icon={Globe} label="Exposure" testid="nav-exposure" />
+          <NavItem to="/app-inventory" icon={Cube} label="Application Inventory" testid="nav-app-inventory" />
           <NavItem to="/admin/tls-certs" icon={Certificate} label="TLS Certificates" testid="nav-tls-certs" />
           <NavItem to="/admin/email-auth" icon={At} label="Email Authentication" testid="nav-email-auth" />
           <NavItem to="/admin/eol-tracking" icon={CalendarX} label="End-of-Life Software" testid="nav-eol-tracking" />

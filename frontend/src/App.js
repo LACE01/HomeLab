@@ -30,6 +30,7 @@ import Playbooks from "@/pages/Playbooks";
 import PlaybookDetail from "@/pages/PlaybookDetail";
 import Automation from "@/pages/Automation";
 import Exposure from "@/pages/Exposure";
+import ApplicationInventory from "@/pages/ApplicationInventory";
 import NmapUpload from "@/pages/NmapUpload";
 import NiktoScans from "@/pages/NiktoScans";
 import ReconOSINT from "@/pages/ReconOSINT";
@@ -185,6 +186,7 @@ const AppRouter = () => {
       <Route path="/admin/playbooks/:id" element={<Protected module="/admin/playbooks"><PlaybookDetail/></Protected>}/>
       <Route path="/automation" element={<Protected module="/automation"><Automation/></Protected>}/>
       <Route path="/exposure" element={<Protected module="/exposure"><Exposure/></Protected>}/>
+      <Route path="/app-inventory" element={<Protected module="/app-inventory"><ApplicationInventory/></Protected>}/>
       <Route path="/admin/nmap-scans" element={<Protected module="/admin/nmap-scans"><NmapUpload/></Protected>}/>
       <Route path="/admin/nikto-scans" element={<Protected module="/admin/nikto-scans"><NiktoScans/></Protected>}/>
       <Route path="/admin/recon-osint" element={<Protected module="/admin/recon-osint"><ReconOSINT/></Protected>}/>
