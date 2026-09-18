@@ -88,6 +88,73 @@ function MultiSelect({ label, options, selected, onChange, width = "w-52" }) {
 }
 
 
+function ExportModal({ onClose, onExport, selectedCount, total }) {
+  const [cat, setCat] = useState({ columns: [], default: [] });
+  const LS_KEY = "findings.export.columns";
+  const [cols, setCols] = useState(null);
+  const [scope, setScope] = useState("filtered");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api.get("/v1/findings/export-columns").then(r => {
+      setCat(r.data);
+      let remembered = null;
+      try { remembered = JSON.parse(localStorage.getItem(LS_KEY) || "null"); } catch { /* ignore */ }
+      const valid = new Set(r.data.columns.map(c => c.key));
+      const chosen = (remembered || r.data.default).filter(k => valid.has(k));
+      setCols(chosen.length ? chosen : r.data.default);
+    }).catch(() => {});
+  }, []);
+  if (cols === null) return null;
+  const toggle = (k) => setCols(cs => cs.includes(k) ? cs.filter(x => x !== k) : [...cs, k]);
+  const run = async () => {
+    setBusy(true);
+    try { localStorage.setItem(LS_KEY, JSON.stringify(cols)); } catch { /* ignore */ }
+    try { await onExport(cols, scope); } finally { setBusy(false); }
+  };
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" onClick={onClose}>
+      <div className="w-full max-w-lg bg-[#0D1117] border border-[#30363D] rounded-lg p-5" onClick={e=>e.stopPropagation()}>
+        <div className="text-[15px] text-slate-100 font-medium mb-3">Export findings to CSV</div>
+        <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500 mb-1.5">Scope</div>
+        <div className="flex flex-col gap-1.5 mb-4">
+          {[["filtered", `Current view (respects your filters)`],
+            ["selected", `Selected only (${selectedCount})`],
+            ["all", `All findings you can see`]].map(([id, lbl]) => (
+            <label key={id} className={`flex items-center gap-2 text-[12.5px] ${id==="selected" && selectedCount===0 ? "opacity-40" : "cursor-pointer"}`}>
+              <input type="radio" name="scope" checked={scope===id} disabled={id==="selected" && selectedCount===0}
+                onChange={()=>setScope(id)} />
+              <span className="text-slate-200">{lbl}</span>
+            </label>
+          ))}
+        </div>
+        <div className="flex items-center justify-between mb-1.5">
+          <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500">Columns ({cols.length})</div>
+          <div className="flex gap-2 text-[11px]">
+            <button className="text-blue-300 hover:underline" onClick={()=>setCols(cat.columns.map(c=>c.key))}>All</button>
+            <button className="text-slate-400 hover:underline" onClick={()=>setCols(cat.default)}>Reset</button>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-1 max-h-56 overflow-y-auto border border-[#30363D] rounded p-2 mb-4">
+          {cat.columns.map(c => (
+            <label key={c.key} className="flex items-center gap-2 text-[12px] px-1.5 py-1 rounded hover:bg-slate-800/40 cursor-pointer">
+              <input type="checkbox" checked={cols.includes(c.key)} onChange={()=>toggle(c.key)} />
+              <span className={cols.includes(c.key) ? "text-slate-200" : "text-slate-400"}>{c.label}</span>
+            </label>
+          ))}
+        </div>
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} className="h-8 px-3 text-[12px] text-slate-400 hover:text-slate-200 rounded border border-[#30363D]">Cancel</button>
+          <button onClick={run} disabled={busy || cols.length===0}
+            className="h-8 px-4 text-[12px] bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-white rounded">
+            {busy ? "Exporting…" : "Download CSV"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 export default function Findings() {
   const { user } = useAuth();
   const { prefs, setSection } = usePreferences();
@@ -116,6 +183,8 @@ export default function Findings() {
   const [kevOnly, setKevOnly] = useState(false);
   const [internetOnly, setInternetOnly] = useState(false);
   const [showResolved, setShowResolved] = useState(false);   // #60: hide resolved by default
+  const [teamFilter, setTeamFilter] = useState(searchParams.get("owner_team") || "");   // #57
+  const [exportOpen, setExportOpen] = useState(false);   // #59 export modal
   const [facetOpts, setFacetOpts] = useState({ available_tags: [], available_asset_types: [] });
   const [selected, setSelected] = useState(new Set());
   const [bulkStatus, setBulkStatus] = useState("Valid");
@@ -136,24 +205,10 @@ export default function Findings() {
   const groupBy = prefs?.findings?.group_by || "none";
   const viewMode = prefs?.findings?.view_mode || "by_asset";
 
-  const load = async () => {
-    setLoading(true);
-    if (groupBy !== "none" && !cweParam && !cveParam && !sourceToolParam) {
-      const params = { group_by: groupBy, view_mode: viewMode, limit: 100 };
-      if (q) params.q = q; // search box now applies in grouped view too (title/CVE/hostname/QID)
-      if (severities.length === 1) params.severity = severities[0];
-      if (statuses.length === 1) params.status = statuses[0];
-      if (myQueue && user?.team) params.owner_team = user.team;
-      else if (ownerTeamParam) params.owner_team = ownerTeamParam; // grouped view previously dropped team deep-links
-      const r = await api.get("/v1/findings-groups", { params });
-      setGroups(r.data.groups || []);
-      setExpanded(new Set());
-      setGroupChildren({});
-      setLoading(false);
-      return;
-    }
+  // Every active filter as query params -- shared by the list load and the CSV
+  // export so an export reflects exactly what's on screen (incl. team scope).
+  const filterParams = () => {
     const usp = new URLSearchParams();
-    usp.set("limit", PAGE_SIZE); usp.set("offset", page * PAGE_SIZE); usp.set("sort", sort); usp.set("order", order);
     if (q) usp.set("q", q);
     if (view) usp.set("view", view);
     severities.forEach(v => usp.append("severity", v));
@@ -166,14 +221,37 @@ export default function Findings() {
     if (showResolved) usp.set("include_resolved", "true");
     if (cweParam) usp.set("cwe", cweParam);
     if (cveParam) usp.set("cve", cveParam);
-    if (myQueue && user?.team) usp.set("owner_team", user.team);
+    if (teamFilter) usp.set("owner_team", teamFilter);
+    else if (myQueue && user?.team) usp.set("owner_team", user.team);
     else if (ownerTeamParam) usp.set("owner_team", ownerTeamParam);
     if (sourceToolParam) usp.set("source_tool", sourceToolParam);
+    return usp;
+  };
+
+  const load = async () => {
+    setLoading(true);
+    if (groupBy !== "none" && !cweParam && !cveParam && !sourceToolParam) {
+      const params = { group_by: groupBy, view_mode: viewMode, limit: 100 };
+      if (q) params.q = q; // search box now applies in grouped view too (title/CVE/hostname/QID)
+      if (severities.length === 1) params.severity = severities[0];
+      if (statuses.length === 1) params.status = statuses[0];
+      if (teamFilter) params.owner_team = teamFilter;
+      else if (myQueue && user?.team) params.owner_team = user.team;
+      else if (ownerTeamParam) params.owner_team = ownerTeamParam; // grouped view previously dropped team deep-links
+      const r = await api.get("/v1/findings-groups", { params });
+      setGroups(r.data.groups || []);
+      setExpanded(new Set());
+      setGroupChildren({});
+      setLoading(false);
+      return;
+    }
+    const usp = filterParams();
+    usp.set("limit", PAGE_SIZE); usp.set("offset", page * PAGE_SIZE); usp.set("sort", sort); usp.set("order", order);
     const r = await api.get("/v1/findings", { params: usp });
     setItems(r.data.items || []); setTotal(r.data.total);
     setLoading(false); setSelected(new Set());
   };
-  const facetKey = [severities.join(","), statuses.join(","), exploitability.join(","), assetTypes.join(","), tagFilter.join(","), kevOnly, internetOnly, showResolved].join("|");
+  const facetKey = [severities.join(","), statuses.join(","), exploitability.join(","), assetTypes.join(","), tagFilter.join(","), kevOnly, internetOnly, showResolved, teamFilter].join("|");
   useEffect(() => { if (prefs) load(); /* eslint-disable-next-line */ }, [prefs, view, facetKey, myQueue, groupBy, viewMode, cweParam, cveParam, sourceToolParam, sort, order, page]);
   // Any filter change (other than paging itself) should reset back to page 1 --
   // otherwise you can land on an empty page 5 after narrowing a filter down.
@@ -244,14 +322,18 @@ export default function Findings() {
     setGroupChildren(prev => ({ ...prev, [key]: r.data.items || [] }));
   };
 
-  const exportCsv = async () => {
-    const params = {};
-    if (severities.length === 1) params.severity = severities[0];
-    if (status) params.status = status;
-    const r = await api.get("/v1/reports/csv/findings", { params, responseType: "blob" });
+  const doExport = async (columns, scope) => {
+    const usp = scope === "filtered" ? filterParams() : new URLSearchParams();
+    usp.set("scope", scope);
+    usp.set("sort", sort); usp.set("order", order);
+    columns.forEach(c => usp.append("columns", c));
+    if (scope === "selected") [...selected].forEach(id => usp.append("ids", id));
+    const r = await api.get("/v1/findings/export", { params: usp, responseType: "blob" });
     const url = URL.createObjectURL(r.data);
-    const a = document.createElement("a"); a.href = url; a.download = "findings.csv"; a.click();
+    const a = document.createElement("a"); a.href = url;
+    a.download = `findings-export-${new Date().toISOString().slice(0,10)}.csv`; a.click();
     URL.revokeObjectURL(url);
+    setExportOpen(false);
   };
 
   const toggleAll = (checked) => setSelected(checked ? new Set(items.map(i=>i.id)) : new Set());
@@ -279,11 +361,15 @@ export default function Findings() {
             <button data-testid="queue-all" onClick={()=>setMyQueue(false)} className={`px-3 h-8 text-[12px] ${!myQueue?"bg-blue-500/15 text-blue-300":"text-slate-400 hover:bg-slate-800/40"}`}>All Teams</button>
           </div>
         )}
-        <button data-testid="export-csv" onClick={exportCsv}
+        <button data-testid="export-csv" onClick={()=>setExportOpen(true)}
           className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] hover:bg-slate-800/40 rounded inline-flex items-center gap-1.5 text-slate-300">
-          <FileArrowDown size={14}/> Export CSV
+          <FileArrowDown size={14}/> Export
         </button>
       </>}>
+      {exportOpen && (
+        <ExportModal onClose={()=>setExportOpen(false)} onExport={doExport}
+          selectedCount={selected.size} total={total} />
+      )}
 
       {nlInterpreted && (
         <div className="border border-blue-500/30 bg-blue-500/5 rounded-md px-3 py-2 mb-3 flex items-center justify-between gap-3">
@@ -321,8 +407,9 @@ export default function Findings() {
             className={`h-8 px-2.5 text-[12px] rounded border ${internetOnly ? "border-amber-500/40 bg-amber-500/10 text-amber-200" : "border-[#30363D] text-slate-300 hover:border-[#484F58]"}`}>Internet-facing</button>
           <button onClick={()=>setShowResolved(v=>!v)} title="By default only open findings are shown"
             className={`h-8 px-2.5 text-[12px] rounded border ${showResolved ? "border-slate-500 bg-slate-500/10 text-slate-200" : "border-[#30363D] text-slate-400 hover:border-[#484F58]"}`}>{showResolved ? "Showing resolved" : "Show resolved"}</button>
-          {(severities.length||statuses.length||exploitability.length||assetTypes.length||tagFilter.length||kevOnly||internetOnly) > 0 && (
-            <button onClick={()=>{ setSeverities([]); setStatuses([]); setExploitability([]); setAssetTypes([]); setTagFilter([]); setKevOnly(false); setInternetOnly(false); setShowResolved(false); }}
+          <div className="w-44"><TeamCombobox value={teamFilter} onChange={setTeamFilter} testid="filter-team" placeholder="Any team"/></div>
+          {(severities.length||statuses.length||exploitability.length||assetTypes.length||tagFilter.length||kevOnly||internetOnly||teamFilter) > 0 && (
+            <button onClick={()=>{ setSeverities([]); setStatuses([]); setExploitability([]); setAssetTypes([]); setTagFilter([]); setKevOnly(false); setInternetOnly(false); setShowResolved(false); setTeamFilter(""); }}
               className="h-8 px-2.5 text-[12px] rounded border border-[#30363D] text-slate-400 hover:text-slate-200 inline-flex items-center gap-1"><X size={12}/> Clear</button>
           )}
           <select data-testid="filter-sort" value={sort} onChange={(e)=>setSort(e.target.value)} className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200">

@@ -1,11 +1,14 @@
 """Findings routes: list, stats, detail, KRI, comments, status updates, bulk ops,
 prioritization preview, attack-paths, CWE prevalence, threat-intel, findings-groups."""
 import re
+import csv
+import io
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from db import db
@@ -38,33 +41,15 @@ def _q_or_clauses(q: str) -> list:
 
 
 # --------------------------- FINDINGS LIST + STATS ---------------------------
-@router.get("/v1/findings")
-async def list_findings(
-    user: dict = Depends(get_current_user),
-    q: Optional[str] = None,
-    severity: Optional[List[str]] = Query(None),
-    status: Optional[List[str]] = Query(None),
-    kev: Optional[bool] = None,
-    internet_facing: Optional[bool] = None,
-    owner_team: Optional[str] = None,
-    product_id: Optional[str] = None,
-    asset_id: Optional[List[str]] = Query(None),
-    tags: Optional[List[str]] = Query(None),
-    asset_type: Optional[List[str]] = Query(None),
-    exploitability: Optional[List[str]] = Query(None),
-    include_resolved: bool = False,
-    cve: Optional[str] = None,
-    cwe: Optional[str] = None,
-    view: Optional[str] = None,
-    platform: Optional[str] = None,
-    min_risk_score: Optional[int] = None,
-    source_tool: Optional[str] = None,
-    sort: str = "risk_score",
-    order: str = "desc",
-    limit: int = 100,
-    offset: int = 0,
-    _rbac: dict = Depends(require_module("/findings")),
-):
+async def _build_findings_filter(
+    user, *, q=None, severity=None, status=None, kev=None, internet_facing=None,
+    owner_team=None, product_id=None, asset_id=None, tags=None, asset_type=None,
+    exploitability=None, include_resolved=False, cve=None, cwe=None, view=None,
+    platform=None, min_risk_score=None, source_tool=None,
+) -> dict:
+    """Shared filter builder for the findings list AND the CSV export, so an export
+    reflects exactly the same filters (and team scoping, and hide-resolved default)
+    as what's on screen."""
     flt: dict = {}
     # Team scoping: analyst/executive users only see their team(s)' findings --
     # a user can now belong to more than one team, so this is an $in over every
@@ -160,6 +145,44 @@ async def list_findings(
 
     if and_clauses:
         flt["$and"] = flt.get("$and", []) + and_clauses
+    return flt
+
+
+
+@router.get("/v1/findings")
+async def list_findings(
+    user: dict = Depends(get_current_user),
+    q: Optional[str] = None,
+    severity: Optional[List[str]] = Query(None),
+    status: Optional[List[str]] = Query(None),
+    kev: Optional[bool] = None,
+    internet_facing: Optional[bool] = None,
+    owner_team: Optional[str] = None,
+    product_id: Optional[str] = None,
+    asset_id: Optional[List[str]] = Query(None),
+    tags: Optional[List[str]] = Query(None),
+    asset_type: Optional[List[str]] = Query(None),
+    exploitability: Optional[List[str]] = Query(None),
+    include_resolved: bool = False,
+    cve: Optional[str] = None,
+    cwe: Optional[str] = None,
+    view: Optional[str] = None,
+    platform: Optional[str] = None,
+    min_risk_score: Optional[int] = None,
+    source_tool: Optional[str] = None,
+    sort: str = "risk_score",
+    order: str = "desc",
+    limit: int = 100,
+    offset: int = 0,
+    _rbac: dict = Depends(require_module("/findings")),
+):
+    flt = await _build_findings_filter(
+        user, q=q, severity=severity, status=status, kev=kev, internet_facing=internet_facing,
+        owner_team=owner_team, product_id=product_id, asset_id=asset_id, tags=tags,
+        asset_type=asset_type, exploitability=exploitability, include_resolved=include_resolved,
+        cve=cve, cwe=cwe, view=view, platform=platform, min_risk_score=min_risk_score,
+        source_tool=source_tool,
+    )
 
     sort_dir = -1 if order == "desc" else 1
     cursor = db.findings.find(flt, {"_id": 0}).sort(sort, sort_dir).skip(offset).limit(limit)
@@ -201,6 +224,107 @@ async def findings_stats(user: dict = Depends(get_current_user)):
             "by_severity_all": sev_all, "by_status": statuses, "kev": kev_count,
             "overdue": overdue, "available_tags": tags, "available_asset_types": asset_types,
             "resolved_statuses": RESOLVED_STATUSES}
+
+
+# Column catalogue for the flexible CSV export (#59). label -> how to read it off a
+# finding doc. The frontend column picker offers exactly these.
+EXPORT_COLUMNS = {
+    "id": ("ID", lambda f: f.get("id")),
+    "cve": ("CVE", lambda f: f.get("cve") or ""),
+    "qid": ("QID", lambda f: f.get("qid") or f.get("source_native_id") or ""),
+    "title": ("Title", lambda f: f.get("title") or ""),
+    "severity": ("Severity", lambda f: f.get("severity") or ""),
+    "cvss": ("CVSS", lambda f: f.get("cvss_score")),
+    "epss": ("EPSS", lambda f: f.get("epss_score")),
+    "kev": ("KEV", lambda f: "YES" if f.get("kev_flag") else "NO"),
+    "risk_score": ("Risk Score", lambda f: f.get("risk_score")),
+    "status": ("Status", lambda f: f.get("status") or ""),
+    "asset": ("Asset", lambda f: f.get("asset_hostname") or ""),
+    "ip": ("IP", lambda f: f.get("asset_ip") or ""),
+    "owner_team": ("Owner Team", lambda f: f.get("owner_team") or ""),
+    "assigned_to": ("Assigned To", lambda f: f.get("assigned_to") or ""),
+    "internet_facing": ("Internet Facing", lambda f: "YES" if f.get("internet_facing") else "NO"),
+    "first_seen": ("First Seen", lambda f: f.get("first_seen_at") or ""),
+    "due": ("Due", lambda f: f.get("due_at") or ""),
+    "source": ("Source", lambda f: f.get("source_tool") or ""),
+    "entity": ("Entity", lambda f: f.get("entity_name") or ""),
+}
+DEFAULT_EXPORT_COLUMNS = ["cve", "qid", "title", "severity", "kev", "risk_score",
+                          "status", "asset", "ip", "owner_team", "due", "source"]
+
+
+@router.get("/v1/findings/export")
+async def export_findings(
+    user: dict = Depends(get_current_user),
+    _rbac: dict = Depends(require_module("/findings")),
+    # same filter surface as the list, so the export respects what's on screen
+    q: Optional[str] = None,
+    severity: Optional[List[str]] = Query(None),
+    status: Optional[List[str]] = Query(None),
+    kev: Optional[bool] = None,
+    internet_facing: Optional[bool] = None,
+    owner_team: Optional[str] = None,
+    asset_id: Optional[List[str]] = Query(None),
+    tags: Optional[List[str]] = Query(None),
+    asset_type: Optional[List[str]] = Query(None),
+    exploitability: Optional[List[str]] = Query(None),
+    include_resolved: bool = False,
+    cve: Optional[str] = None,
+    cwe: Optional[str] = None,
+    view: Optional[str] = None,
+    platform: Optional[str] = None,
+    min_risk_score: Optional[int] = None,
+    source_tool: Optional[str] = None,
+    sort: str = "risk_score",
+    order: str = "desc",
+    # #59: choose columns and scope
+    columns: Optional[List[str]] = Query(None),
+    scope: str = "filtered",              # filtered | selected | all
+    ids: Optional[List[str]] = Query(None),
+    limit: int = 100000,
+):
+    """Flexible, team-scoped CSV export (#57 + #59).
+
+    scope=filtered -> everything matching the current filters (team scoping always
+    applies); scope=selected -> just the ids passed; scope=all -> every finding the
+    user may see, ignoring the on-screen filters. Columns are user-chosen."""
+    if scope == "selected":
+        flt = {}
+        flt.update(team_scope_filter(user))
+        flt["id"] = {"$in": ids or ["__none__"]}
+    elif scope == "all":
+        flt = {}
+        flt.update(team_scope_filter(user))
+    else:
+        flt = await _build_findings_filter(
+            user, q=q, severity=severity, status=status, kev=kev, internet_facing=internet_facing,
+            owner_team=owner_team, asset_id=asset_id, tags=tags, asset_type=asset_type,
+            exploitability=exploitability, include_resolved=include_resolved, cve=cve, cwe=cwe,
+            view=view, platform=platform, min_risk_score=min_risk_score, source_tool=source_tool,
+        )
+
+    cols = [c for c in (columns or DEFAULT_EXPORT_COLUMNS) if c in EXPORT_COLUMNS] or DEFAULT_EXPORT_COLUMNS
+    sort_dir = -1 if order == "desc" else 1
+    rows = await db.findings.find(flt, {"_id": 0}).sort(sort, sort_dir).limit(limit).to_list(limit)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([EXPORT_COLUMNS[c][0] for c in cols])
+    for f in rows:
+        writer.writerow([EXPORT_COLUMNS[c][1](f) for c in cols])
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]), media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=findings-export.csv",
+                 "X-Export-Rows": str(len(rows))},
+    )
+
+
+@router.get("/v1/findings/export-columns")
+async def export_columns(user: dict = Depends(get_current_user)):
+    """The column catalogue + the default selection, for the export column picker."""
+    return {"columns": [{"key": k, "label": v[0]} for k, v in EXPORT_COLUMNS.items()],
+            "default": DEFAULT_EXPORT_COLUMNS}
 
 
 # --------------------------- FINDINGS-GROUPS (literal path before {finding_id}) ---------------------------
