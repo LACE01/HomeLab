@@ -540,6 +540,13 @@ async def nightly_loop(db, interval_hours: int = 24):
             logger.exception(f"Patch completion sweep failed: {e}")
             ok, detail["patch_completions_error"] = False, str(e)
         try:
+            from remediation_campaigns import snapshot_progress, notify_alerts
+            detail["campaign_snapshots"] = await snapshot_progress(db)
+            detail["campaign_alerts"] = await notify_alerts(db)
+        except Exception as e:
+            logger.exception(f"Remediation campaign nightly failed: {e}")
+            ok, detail["campaign_nightly_error"] = False, str(e)
+        try:
             from feature_flags import is_enabled
             if await is_enabled(db, "albert_allowlist_nightly_review"):
                 from albert_allowlist import check_allowlist_reviews
