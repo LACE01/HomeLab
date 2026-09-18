@@ -40,6 +40,9 @@ class CampaignBody(BaseModel):
     assignees: Optional[List[str]] = None
     finding_ids: Optional[list] = None
     findings_filter: Optional[dict] = None   # the full Findings-tab filter set
+    require_verification: bool = True
+    maintenance_window: Optional[dict] = None   # {start, end} ISO
+    change_ticket: Optional[str] = None
 
 
 @router.get("/v1/remediation-campaigns")
@@ -78,7 +81,9 @@ async def create_campaign(body: CampaignBody,
     camp = await rc.create_campaign(
         db, name=body.name.strip(), description=body.description, owner_team=body.owner_team,
         due_date=body.due_date, finding_ids=finding_ids, filt=body.findings_filter,
-        assignees=body.assignees, created_by=user.get("email") or user.get("id"))
+        assignees=body.assignees, created_by=user.get("email") or user.get("id"),
+        require_verification=body.require_verification, maintenance_window=body.maintenance_window,
+        change_ticket=body.change_ticket)
     if not camp["finding_ids"]:
         await db.remediation_campaigns.delete_one({"id": camp["id"]})
         raise HTTPException(400, "Nothing matched — the campaign would be empty")
@@ -102,6 +107,9 @@ class CampaignPatch(BaseModel):
     add_finding_ids: Optional[list] = None
     remove_finding_ids: Optional[list] = None
     add_findings_filter: Optional[dict] = None
+    require_verification: Optional[bool] = None
+    maintenance_window: Optional[dict] = None
+    change_ticket: Optional[str] = None
 
 
 @router.patch("/v1/remediation-campaigns/{campaign_id}")
@@ -112,10 +120,16 @@ async def update_campaign(campaign_id: str, body: CampaignPatch,
         raise HTTPException(404, "Campaign not found")
     actor = user.get("email") or user.get("id")
     patch = {}
-    for fld in ("name", "description", "due_date", "status", "assignees"):
+    for fld in ("name", "description", "due_date", "status", "assignees",
+                "require_verification", "maintenance_window", "change_ticket"):
         v = getattr(body, fld)
         if v is not None:
             patch[fld] = v
+    if body.assignees is not None:
+        new_people = set(body.assignees) - set(camp.get("assignees") or [])
+        if new_people:
+            await rc.notify_assignees(db, {**camp, **patch}, list(new_people), "assigned",
+                                      f"You've been assigned to remediation campaign '{camp.get('name')}'")
     ids = set(camp.get("finding_ids") or [])
     add = set(body.add_finding_ids or [])
     if body.add_findings_filter:
@@ -215,6 +229,29 @@ async def bulk_status(campaign_id: str, body: BulkStatusBody,
 
 
 @router.post("/v1/remediation-campaigns/{campaign_id}/close")
-async def close_campaign(campaign_id: str, user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
-    await rc.close_campaign(db, campaign_id, user.get("email") or user.get("id"))
+async def close_campaign(campaign_id: str, force: bool = False,
+                         user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    """Verification-gated: won't close until every baseline finding is scanner-
+    verified (Fixed validated) or formally accepted (exception) -- unless force."""
+    camp = await rc.campaign_detail(db, campaign_id)
+    if not camp:
+        raise HTTPException(404, "Campaign not found")
+    if camp.get("require_verification", True) and not camp["progress"]["closeable"] and not force:
+        raise HTTPException(400,
+            f"Cannot close: {camp['progress']['unverified_resolved']} finding(s) are resolved but not "
+            f"scanner-verified, and {camp['progress']['open']} still open. Wait for the next scan to "
+            f"confirm the fixes, route unpatchable ones to an exception (Accepted risk), or force-close.")
+    await rc.close_campaign(db, campaign_id, user.get("email") or user.get("id"),
+                            "Force-closed" if force else "Closed (all verified/accepted)")
     return {"ok": True}
+
+
+@router.get("/v1/remediation-campaigns/{campaign_id}/burndown")
+async def campaign_burndown(campaign_id: str, user: dict = Depends(require_module(MODULE_KEY))):
+    return {"series": await rc.burndown(db, campaign_id)}
+
+
+@router.post("/v1/remediation-campaigns/snapshot-progress")
+async def snapshot_progress(user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    """Record today's progress for every campaign (nightly-style; also runnable now)."""
+    return await rc.snapshot_progress(db)

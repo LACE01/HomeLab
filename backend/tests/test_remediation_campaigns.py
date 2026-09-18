@@ -108,5 +108,56 @@ a(run(db.notifications_outbox.count_documents({"kind":"remediation_overdue"}))>=
 a(c.post("/api/v1/remediation-campaigns/notify").json()["sent"]==0, "alerts dedupe per day")
 print("PASS: campaign alerts are pushed to the notifications outbox (deduped per day)")
 
+# ============ verification-gated close ============
+run(db.findings.insert_many([
+  {"id":"v1","title":"V1","severity":"High","status":"New","owner_team":"SecOps","asset_id":"hv","asset_hostname":"hv"},
+  {"id":"v2","title":"V2","severity":"High","status":"New","owner_team":"SecOps","asset_id":"hv","asset_hostname":"hv"},
+]))
+vc=c.post("/api/v1/remediation-campaigns", json={"name":"verify","finding_ids":["v1","v2"],
+  "assignees":["tech@county.us"],"require_verification":True}).json()
+vid=vc["id"]
+# mark v1 'Fixed pending validation' (provisional) and v2 'Fixed validated'
+c.post(f"/api/v1/remediation-campaigns/{vid}/bulk-status", json={"finding_ids":["v1"],"status":"Fixed pending validation"})
+c.post(f"/api/v1/remediation-campaigns/{vid}/bulk-status", json={"finding_ids":["v2"],"status":"Fixed validated"})
+d=c.get(f"/api/v1/remediation-campaigns/{vid}").json()
+a(d["progress"]["verified"]==1 and d["progress"]["unverified_resolved"]==0 and d["progress"]["closeable"] is False, d["progress"])
+# close is blocked because v1 is only pending validation (still open)
+r=c.post(f"/api/v1/remediation-campaigns/{vid}/close")
+a(r.status_code==400 and "verified" in r.json()["detail"].lower(), r.text)
+print("PASS: verification-gated close blocks while a fix is only 'pending validation' (not scanner-verified)")
+# scanner verifies v1 -> now closeable, auto-close on the status flip
+c.post(f"/api/v1/remediation-campaigns/{vid}/bulk-status", json={"finding_ids":["v1"],"status":"Fixed validated"})
+d2=c.get(f"/api/v1/remediation-campaigns/{vid}").json()
+a(d2["progress"]["closeable"] is True and d2["status"]=="closed", (d2["progress"]["closeable"], d2["status"]))
+print("PASS: once the scanner confirms all fixes (Fixed validated), the campaign is closeable and auto-closes")
+
+# ============ assignee notifications ============
+a(run(db.notifications_outbox.count_documents({"kind":"campaign_assigned","recipient":"tech@county.us"}))>=1,
+  "assignee got an 'assigned' notification on campaign create")
+print("PASS: assignees are notified on assignment (per-recipient outbox entry)")
+# overdue -> assignee nudged
+run(db.findings.insert_one({"id":"od1","title":"OD","severity":"High","status":"New","owner_team":"SecOps","asset_id":"ho","asset_hostname":"ho"}))
+oc=c.post("/api/v1/remediation-campaigns", json={"name":"overdue camp","finding_ids":["od1"],
+  "assignees":["tech2@county.us"],"due_date":(now-timedelta(days=2)).isoformat()}).json()
+c.post("/api/v1/remediation-campaigns/notify")
+a(run(db.notifications_outbox.count_documents({"kind":"campaign_overdue","recipient":"tech2@county.us"}))>=1)
+print("PASS: assignees are nudged when their campaign is overdue")
+
+# ============ maintenance window + change ticket ============
+mc=c.post("/api/v1/remediation-campaigns", json={"name":"win","finding_ids":["od1"],
+  "maintenance_window":{"start":(now).isoformat(),"end":(now+timedelta(days=1)).isoformat()},
+  "change_ticket":"CHG-1001"}).json()
+md=c.get(f"/api/v1/remediation-campaigns/{mc['id']}").json()
+a(md["maintenance_window"]["start"] and md["change_ticket"]=="CHG-1001")
+a(rc.in_maintenance_window(md) is True, "now is within the configured window")
+print("PASS: maintenance window + change ticket are stored and the in-window check works")
+
+# ============ burndown history ============
+run(rc.snapshot_progress(db, day="2026-09-16"))
+run(rc.snapshot_progress(db, day="2026-09-17"))
+bd=c.get(f"/api/v1/remediation-campaigns/{vid}/burndown").json()["series"]
+a(len(bd)>=2 and all("patched" in x and "open" in x for x in bd), bd)
+print("PASS: daily progress snapshots build a burndown series per campaign")
+
 server.app.dependency_overrides.clear()
 print("\nALL REMEDIATION CAMPAIGN v2 TESTS PASSED")

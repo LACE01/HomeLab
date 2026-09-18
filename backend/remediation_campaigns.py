@@ -19,6 +19,13 @@ import uuid
 
 from routes.common import OPEN_STATUSES, RESOLVED_STATUSES
 
+# Scanner-verified vs provisional. Only "Fixed validated" is a source/human-confirmed
+# fix; "Mitigated" is a compensating control (not a patch); "Accepted risk" is an
+# exception (closed without patching). Verification-gated close requires every
+# baseline finding to be VERIFIED or ACCEPTED -- not merely marked resolved.
+VERIFIED_STATUSES = ["Fixed validated"]
+ACCEPTED_STATUSES = ["Accepted risk"]
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -31,7 +38,7 @@ def _baseline(camp: dict):
     return b if b is not None else None
 
 
-def compute_progress(findings: list, due_date: str | None = None, baseline_ids=None) -> dict:
+def compute_progress(findings: list, due_date: str | None = None, baseline_ids=None, require_verification: bool = True) -> dict:
     """Live progress for a campaign.
 
     The denominator is the BASELINE: the findings that were OPEN when they were
@@ -69,13 +76,28 @@ def compute_progress(findings: list, due_date: str | None = None, baseline_ids=N
                 ages.append((now - dt).days)
             except Exception:
                 pass
+    verified = [f for f in findings if f.get("status") in VERIFIED_STATUSES]
+    accepted = [f for f in findings if f.get("status") in ACCEPTED_STATUSES]
+    # closeable: verification-gated -> every baseline finding scanner-verified or
+    # formally accepted (exception). Ungated -> just resolved.
+    if require_verification:
+        closeable = total > 0 and all(
+            f.get("status") in VERIFIED_STATUSES or f.get("status") in ACCEPTED_STATUSES
+            for f in findings)
+    else:
+        closeable = complete
     return {
         "total": total,
         "patched": len(resolved),
+        "verified": len(verified),
+        "accepted": len(accepted),
+        "unverified_resolved": len(resolved) - len(verified) - len(accepted),
         "open": len(still_open),
         "regressions": len(reopened),
         "percent_complete": pct,
+        "percent_verified": round(100 * len(verified) / total) if total else 0,
         "complete": complete,
+        "closeable": closeable,
         "overdue": overdue,
         "by_status": _by_status(findings),
         "avg_open_age_days": round(sum(ages) / len(ages)) if ages else 0,
@@ -127,7 +149,8 @@ async def _open_subset(db, ids: list) -> list:
 
 
 async def create_campaign(db, *, name, description="", owner_team=None, due_date=None,
-                          finding_ids=None, filt=None, assignees=None, created_by="system") -> dict:
+                          finding_ids=None, filt=None, assignees=None, created_by="system",
+                          require_verification=True, maintenance_window=None, change_ticket=None) -> dict:
     ids = await _resolve_finding_ids(db, finding_ids=finding_ids, filt=filt)
     baseline = await _open_subset(db, ids)
     doc = {
@@ -136,6 +159,9 @@ async def create_campaign(db, *, name, description="", owner_team=None, due_date
         "assignees": assignees or [],
         "finding_ids": ids, "filter": filt or None,
         "baseline_open_ids": baseline,
+        "require_verification": bool(require_verification),
+        "maintenance_window": maintenance_window or None,   # {start, end}
+        "change_ticket": change_ticket or None,
         "created_by": created_by, "created_at": _now_iso(),
         "status": "active",
         # what this campaign set out to patch: the members open at add-time
@@ -145,6 +171,11 @@ async def create_campaign(db, *, name, description="", owner_team=None, due_date
     await log_activity(db, doc["id"], created_by, "created",
                        f"Campaign created — {len(baseline)} open finding(s) to patch"
                        + (f" ({len(ids) - len(baseline)} already resolved)" if len(ids) > len(baseline) else ""))
+    if doc["assignees"]:
+        await notify_assignees(db, doc, doc["assignees"], "assigned",
+                               f"You've been assigned to remediation campaign '{name}'"
+                               f" — {len(baseline)} finding(s) to patch"
+                               + (f", due {due_date[:10]}" if due_date else ""))
     return {k: v for k, v in doc.items() if k != "_id"}
 
 
@@ -164,7 +195,7 @@ async def list_campaigns(db, *, owner_team=None) -> list:
     out = []
     for camp in await db.remediation_campaigns.find(q, {"_id": 0}).sort("created_at", -1).to_list(500):
         findings = await _campaign_findings(db, camp)
-        out.append({**camp, "progress": compute_progress(findings, camp.get("due_date"), _baseline(camp))})
+        out.append({**camp, "progress": compute_progress(findings, camp.get("due_date"), _baseline(camp), camp.get("require_verification", True))})
     return out
 
 
@@ -173,7 +204,7 @@ async def campaign_detail(db, campaign_id: str, *, for_user: dict = None) -> dic
     if not camp:
         return None
     findings = await _campaign_findings(db, camp)
-    camp["progress"] = compute_progress(findings, camp.get("due_date"), _baseline(camp))
+    camp["progress"] = compute_progress(findings, camp.get("due_date"), _baseline(camp), camp.get("require_verification", True))
     _bl = _baseline(camp)
     camp["groups"] = {
         "device": group_breakdown(findings, "device", _bl),
@@ -298,8 +329,8 @@ async def maybe_autoclose(db, campaign: dict) -> bool:
     if campaign.get("status") == "closed":
         return False
     findings = await _campaign_findings(db, campaign)
-    if compute_progress(findings, None, _baseline(campaign)).get("complete"):
-        await close_campaign(db, campaign["id"], "system", "All findings remediated — auto-closed.")
+    if compute_progress(findings, None, _baseline(campaign), campaign.get("require_verification", True)).get("closeable"):
+        await close_campaign(db, campaign["id"], "system", "All findings verified/accepted — auto-closed.")
         return True
     return False
 
@@ -312,6 +343,13 @@ async def notify_alerts(db) -> dict:
     today = date.today().isoformat()
     sent = 0
     al = await alerts(db)
+    # per-assignee overdue nudges
+    camps_by_id = {c["id"]: c for c in await db.remediation_campaigns.find({}, {"_id": 0}).to_list(500)}
+    for r in al["overdue"]:
+        camp = camps_by_id.get(r["id"])
+        if camp and camp.get("assignees"):
+            sent += await notify_assignees(db, camp, camp["assignees"], "overdue",
+                                           f"Campaign '{camp['name']}' is overdue — {r.get('open','?')} finding(s) still open")
     for kind, rows in (("overdue", al["overdue"]), ("regression", al["regressions"])):
         for r in rows:
             key = f"campaign:{kind}:{r['id']}:{today}"
@@ -325,3 +363,54 @@ async def notify_alerts(db) -> dict:
                 "link": f"/remediation-campaigns", "created_at": _now_iso(), "read": False})
             sent += 1
     return {"sent": sent}
+
+
+# ------------------------------------------------------- assignee notifications
+async def notify_assignees(db, campaign: dict, recipients, kind: str, body: str) -> int:
+    """Write a per-assignee notification to the outbox (the channel the
+    Notifications tab records), deduped per campaign+kind+recipient+day."""
+    from datetime import date
+    today = date.today().isoformat()
+    sent = 0
+    for r in recipients or []:
+        key = f"campaign_assignee:{kind}:{campaign['id']}:{r}:{today}"
+        if await db.notifications_outbox.find_one({"dedupe_key": key}, {"_id": 0}):
+            continue
+        await db.notifications_outbox.insert_one({
+            "id": str(uuid.uuid4()), "dedupe_key": key, "recipient": r,
+            "kind": f"campaign_{kind}", "title": f"Remediation: {campaign.get('name')}",
+            "body": body, "link": "/remediation-campaigns",
+            "created_at": _now_iso(), "read": False})
+        sent += 1
+    return sent
+
+
+# ------------------------------------------------------- burndown history
+async def snapshot_progress(db, *, day: str = None) -> dict:
+    """Record today's progress for every active campaign so the detail can show a
+    real burndown curve. Idempotent per campaign/day. Meant to run nightly."""
+    from datetime import date
+    day = day or date.today().isoformat()
+    n = 0
+    for camp in await db.remediation_campaigns.find({}, {"_id": 0}).to_list(500):
+        findings = await _campaign_findings(db, camp)
+        p = compute_progress(findings, camp.get("due_date"), _baseline(camp),
+                             camp.get("require_verification", True))
+        await db.remediation_campaign_snapshots.replace_one(
+            {"campaign_id": camp["id"], "day": day},
+            {"campaign_id": camp["id"], "day": day, "total": p["total"],
+             "patched": p["patched"], "verified": p["verified"], "open": p["open"],
+             "regressions": p["regressions"], "at": _now_iso()}, upsert=True)
+        n += 1
+    return {"campaigns": n, "day": day}
+
+
+async def burndown(db, campaign_id: str) -> list:
+    return await db.remediation_campaign_snapshots.find(
+        {"campaign_id": campaign_id}, {"_id": 0}).sort("day", 1).to_list(400)
+
+
+def in_maintenance_window(campaign: dict) -> bool:
+    mw = campaign.get("maintenance_window") or {}
+    now = _now_iso()
+    return bool(mw.get("start") and mw.get("end") and mw["start"] <= now <= mw["end"])
