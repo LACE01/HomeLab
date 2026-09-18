@@ -22,6 +22,10 @@ const VERIFIED = ["Fixed validated"]; const ACCEPTED = ["Accepted risk"];
 
 // Client-side progress over a BASELINE (findings open at add-time), so the Admin
 // vs My-work toggle can rescope stats/groups without another round-trip.
+function ageDays(f) {
+  if (!f.first_seen_at || RESOLVED.includes(f.status)) return null;
+  return Math.round((Date.now() - new Date(f.first_seen_at).getTime()) / 86400000);
+}
 function progressOf(findings, baseline) {
   const scope = baseline ? findings.filter(f => baseline.has(f.id)) : findings;
   const patched = scope.filter(f => RESOLVED.includes(f.status)).length;
@@ -183,13 +187,14 @@ function AlertCard({ tone, icon:Icon, label, items, render, onOpen }) {
 
 function CreateModal({ onClose, onCreated }) {
   const [name,setName]=useState(""); const [team,setTeam]=useState(""); const [due,setDue]=useState("");
-  const [assignees,setAssignees]=useState(""); const [busy,setBusy]=useState(false);
+  const [assignees,setAssignees]=useState([]); const [users,setUsers]=useState([]); const [busy,setBusy]=useState(false);
   const [sev,setSev]=useState([]); const [status,setStatus]=useState([]); const [exp,setExp]=useState([]);
   const [tags,setTags]=useState([]); const [devtype,setDevtype]=useState([]); const [q,setQ]=useState("");
   const [kev,setKev]=useState(false); const [inet,setInet]=useState(false);
   const [facets,setFacets]=useState({available_tags:[],available_asset_types:[]});
   const [reqVerify,setReqVerify]=useState(true); const [mwStart,setMwStart]=useState(""); const [mwEnd,setMwEnd]=useState(""); const [chg,setChg]=useState("");
-  useEffect(()=>{api.get("/v1/findings/stats").then(r=>setFacets(r.data)).catch(()=>{});},[]);
+  useEffect(()=>{api.get("/v1/findings/stats").then(r=>setFacets(r.data)).catch(()=>{});
+    api.get("/v1/remediation-campaigns/assignable-users").then(r=>setUsers(r.data.items||[])).catch(()=>{});},[]);
   const create=async()=>{
     if(!name.trim()){toast.error("Name required");return;}
     const f={};
@@ -202,7 +207,7 @@ function CreateModal({ onClose, onCreated }) {
     try{
       await api.post("/v1/remediation-campaigns",{name:name.trim(),owner_team:team||null,
         due_date:due?new Date(due).toISOString():null,
-        assignees:assignees.split(",").map(x=>x.trim()).filter(Boolean),
+        assignees:assignees,
         require_verification:reqVerify,
         maintenance_window:(mwStart&&mwEnd)?{start:new Date(mwStart).toISOString(),end:new Date(mwEnd).toISOString()}:null,
         change_ticket:chg.trim()||null,
@@ -221,8 +226,8 @@ function CreateModal({ onClose, onCreated }) {
             <input type="date" value={due} onChange={e=>setDue(e.target.value)} className="w-full h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"/></div>
           <div><label className="block text-[10.5px] uppercase tracking-wider font-mono text-slate-500 mb-1">Owner team</label>
             <TeamCombobox value={team} onChange={setTeam} placeholder="Select team…"/></div>
-          <div><label className="block text-[10.5px] uppercase tracking-wider font-mono text-slate-500 mb-1">Assignees (emails, comma-sep)</label>
-            <input value={assignees} onChange={e=>setAssignees(e.target.value)} placeholder="tech@county.us" className="w-full h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"/></div>
+          <div><label className="block text-[10.5px] uppercase tracking-wider font-mono text-slate-500 mb-1">Assignees</label>
+            <Dropdown label="Pick users…" options={users.map(u=>u.email)} selected={assignees} onChange={setAssignees}/></div>
         </div>
         <div className="border-t border-[#30363D] pt-3 mb-1 text-[10.5px] uppercase tracking-wider font-mono text-slate-500">Scope — same filters as the Findings tab</div>
         <input value={q} onChange={e=>setQ(e.target.value)} placeholder='Search — supports qid: cve: owner: source: entity:' className="w-full h-8 px-2 my-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"/>
@@ -299,6 +304,15 @@ function CampaignDetail({ id, onBack }) {
     if (!sel.size) return;
     await api.post(`/v1/remediation-campaigns/${id}/bulk-status`, { finding_ids:[...sel], status });
     toast.success(`${sel.size} → ${status}`); setSel(new Set()); load();
+  };
+  const requestExc = async () => {
+    if (!sel.size) return;
+    const why = window.prompt(`Can't patch these ${sel.size}? Business justification for a risk exception:`);
+    if (!why || !why.trim()) return;
+    const days = parseInt(window.prompt("Acceptance duration (days):", "90") || "90", 10) || 90;
+    const r = await api.post(`/v1/remediation-campaigns/${id}/request-exceptions`,
+      { finding_ids:[...sel], business_justification:why.trim(), duration_days:days });
+    toast.success(`Filed ${r.data.requested} risk exception(s)`); setSel(new Set()); load();
   };
   const removeSel = async () => {
     if (!sel.size || !window.confirm(`Remove ${sel.size} from this campaign? (findings not deleted)`)) return;
@@ -409,6 +423,7 @@ function CampaignDetail({ id, onBack }) {
               <select onChange={e=>{if(e.target.value){bulkStatus(e.target.value);e.target.value="";}}} className="h-7 bg-[#161B22] border border-[#30363D] rounded px-2 text-[11.5px] text-slate-300">
                 <option value="">Set status…</option>{STATUSES.map(s=><option key={s}>{s}</option>)}
               </select>
+              <button onClick={requestExc} className="h-7 px-2.5 text-[11.5px] rounded border border-amber-500/40 text-amber-200">Can&apos;t patch → exception</button>
               {isAdmin && <button onClick={removeSel} className="h-7 px-2.5 text-[11.5px] rounded border border-[#30363D] text-red-300">Remove</button>}
             </>}
           </div>
@@ -416,7 +431,7 @@ function CampaignDetail({ id, onBack }) {
             <table className="w-full text-[12px]">
               <thead><tr className="border-b border-[#30363D] text-left text-slate-500 text-[10.5px] uppercase tracking-wider">
                 <th className="pl-3 pr-1 py-2 w-6"></th><th className="px-2 py-2">Finding</th><th className="px-2 py-2">CVE/QID</th>
-                <th className="px-2 py-2">Sev</th><th className="px-2 py-2">Asset</th><th className="px-2 py-2">Status</th><th className="px-2 py-2">Ticket</th><th className="px-2 py-2"></th></tr></thead>
+                <th className="px-2 py-2">Sev</th><th className="px-2 py-2">Asset</th><th className="px-2 py-2">Status</th><th className="px-2 py-2">Open</th><th className="px-2 py-2">Ticket</th><th className="px-2 py-2"></th></tr></thead>
               <tbody>
                 {findings.map(f=>(
                   <tr key={f.id} className="border-b border-[#30363D]/60 hover:bg-slate-800/20">
@@ -426,11 +441,12 @@ function CampaignDetail({ id, onBack }) {
                     <td className="px-2 py-1.5"><SevBadge severity={f.severity}/></td>
                     <td className="px-2 py-1.5 text-slate-400">{f.asset_hostname||"—"}</td>
                     <td className="px-2 py-1.5 text-slate-300">{f.status}</td>
-                    <td className="px-2 py-1.5 text-slate-400">{f.ticket ? (typeof f.ticket==="string"?f.ticket:(f.ticket.key||f.ticket.id||"linked")) : "—"}</td>
+                    <td className="px-2 py-1.5 text-slate-400">{ageDays(f)!=null?`${ageDays(f)}d`:"—"}</td>
+                    <td className="px-2 py-1.5">{f.ticket_ref?.url ? (f.ticket_ref.url.startsWith("http") ? <a href={f.ticket_ref.url} target="_blank" rel="noreferrer" className="text-blue-300 hover:underline">{f.ticket_ref.external_id}</a> : <Link to={f.ticket_ref.url} className="text-blue-300 hover:underline">{f.ticket_ref.external_id}</Link>) : (f.ticket ? <span className="text-slate-400">{typeof f.ticket==="string"?f.ticket:(f.ticket.key||f.ticket.id||"linked")}</span> : <span className="text-slate-500">—</span>)}</td>
                     <td className="px-2 py-1.5"><Link to={`/findings/${f.id}`} className="text-blue-300 hover:underline inline-flex items-center gap-0.5">Remediate <ArrowSquareOut size={11}/></Link></td>
                   </tr>
                 ))}
-                {findings.length===0 && <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-500 text-[12px]">No findings in this view.</td></tr>}
+                {findings.length===0 && <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-500 text-[12px]">No findings in this view.</td></tr>}
               </tbody>
             </table>
           </div>
