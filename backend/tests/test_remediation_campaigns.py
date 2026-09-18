@@ -194,5 +194,21 @@ ac=c.post("/api/v1/remediation-campaigns", json={"name":"dispatch camp","finding
 a(run(db.notifications_outbox.count_documents({"kind":"campaign_assigned"}))>=1, "per-assignee outbox record")
 print("PASS: assignment fans out to configured Notifications channels (dispatch) in addition to the outbox")
 
+# ============ SLA/priority auto-sort (tech queue: highest-impact first) ============
+from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+_now2=_dt.now(_tz.utc)
+run(db.findings.insert_many([
+  {"id":"pr_low","title":"low","severity":"Low","status":"New","owner_team":"SecOps","asset_id":"hp","asset_hostname":"hp"},
+  {"id":"pr_crit_kev_od","title":"crit kev overdue","severity":"Critical","status":"New","owner_team":"SecOps","asset_id":"hp","asset_hostname":"hp","kev_flag":True,"due_at":(_now2-_td(days=3)).isoformat(),"epss_score":0.9},
+  {"id":"pr_med","title":"med","severity":"Medium","status":"New","owner_team":"SecOps","asset_id":"hp","asset_hostname":"hp"},
+  {"id":"pr_done","title":"done","severity":"Critical","status":"Fixed validated","owner_team":"SecOps","asset_id":"hp","asset_hostname":"hp"},
+]))
+pc=c.post("/api/v1/remediation-campaigns", json={"name":"prio","finding_ids":["pr_low","pr_crit_kev_od","pr_med","pr_done"]}).json()
+order=[f["id"] for f in c.get(f"/api/v1/remediation-campaigns/{pc['id']}").json()["findings"]]
+a(order[0]=="pr_crit_kev_od", f"the Critical+KEV+overdue+high-EPSS finding must be first: {order}")
+a(order.index("pr_med")<order.index("pr_low"), "Medium ranks above Low")
+a(order[-1]=="pr_done", "resolved findings sink to the bottom")
+print("PASS: campaign findings are auto-sorted by priority (SLA × severity × KEV × EPSS × age); resolved sink")
+
 server.app.dependency_overrides.clear()
 print("\nALL REMEDIATION CAMPAIGN v2 TESTS PASSED")

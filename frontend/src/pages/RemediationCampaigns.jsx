@@ -416,6 +416,7 @@ function CampaignDetail({ id, onBack }) {
         <div className="max-w-5xl">
           <div className="flex items-center gap-2 mb-2 flex-wrap">
             {mineOnly ? <span className="text-[11px] text-slate-500">Showing your team / assigned findings</span> : null}
+            <span className="text-[11px] text-slate-500">· sorted by priority (SLA × severity × KEV × EPSS × age)</span>
             {drill && <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-200">{drill.by}: {drill.key}<button onClick={()=>setDrill(null)} className="text-blue-300/70 hover:text-red-300"><X size={10}/></button></span>}
             {sel.size>0 && <>
               <span className="text-[12px] text-slate-300">{sel.size} selected</span>
@@ -436,7 +437,7 @@ function CampaignDetail({ id, onBack }) {
                 {findings.map(f=>(
                   <tr key={f.id} className="border-b border-[#30363D]/60 hover:bg-slate-800/20">
                     <td className="pl-3 pr-1 py-1.5"><input type="checkbox" checked={sel.has(f.id)} onChange={()=>toggle(f.id)}/></td>
-                    <td className="px-2 py-1.5"><Link to={`/findings/${f.id}`} className="text-slate-100 hover:text-blue-300 hover:underline">{f.title}</Link></td>
+                    <td className="px-2 py-1.5"><span className="inline-flex items-center gap-1.5"><span title={`priority ${f.priority_score}`} className={`w-1.5 h-1.5 rounded-full inline-block ${f.priority_score>=120?"bg-red-500":f.priority_score>=70?"bg-amber-500":f.priority_score<0?"bg-slate-700":"bg-slate-500"}`}/><Link to={`/findings/${f.id}`} className="text-slate-100 hover:text-blue-300 hover:underline">{f.title}</Link></span></td>
                     <td className="px-2 py-1.5 text-slate-400 font-mono">{f.cve||f.qid||"—"}</td>
                     <td className="px-2 py-1.5"><SevBadge severity={f.severity}/></td>
                     <td className="px-2 py-1.5 text-slate-400">{f.asset_hostname||"—"}</td>

@@ -187,7 +187,7 @@ async def _campaign_findings(db, campaign: dict) -> list:
         {"id": {"$in": ids}},
         {"_id": 0, "id": 1, "title": 1, "cve": 1, "qid": 1, "severity": 1, "status": 1,
          "asset_id": 1, "asset_hostname": 1, "owner_team": 1, "due_at": 1, "kev_flag": 1,
-         "first_seen_at": 1, "assigned_to": 1, "ticket": 1, "entity_name": 1}).to_list(100000)
+         "first_seen_at": 1, "assigned_to": 1, "ticket": 1, "entity_name": 1, "epss_score": 1}).to_list(100000)
     # attach the real ticket (db.tickets, e.g. a risk-acceptance ticket) per finding
     tix = {}
     async for t in db.tickets.find({"finding_id": {"$in": ids}}, {"_id": 0}):
@@ -207,6 +207,38 @@ async def list_campaigns(db, *, owner_team=None) -> list:
         findings = await _campaign_findings(db, camp)
         out.append({**camp, "progress": compute_progress(findings, camp.get("due_date"), _baseline(camp), camp.get("require_verification", True))})
     return out
+
+
+_SEV_WEIGHT = {"Critical": 100, "High": 70, "Medium": 40, "Low": 15, "Info": 5}
+
+
+def priority_score(f: dict) -> int:
+    """SLA x severity x exploitability x age -> a single work-next score. Higher =
+    do sooner. Resolved findings sink to the bottom so the queue is always the live
+    work in priority order."""
+    if f.get("status") in RESOLVED_STATUSES:
+        return -1
+    score = _SEV_WEIGHT.get(f.get("severity"), 20)
+    if f.get("kev_flag"):
+        score += 50
+    due = f.get("due_at")
+    now = _now_iso()
+    if due:
+        if due < now:
+            score += 40                      # overdue
+        elif due < (datetime.now(timezone.utc) + timedelta(days=7)).isoformat():
+            score += 20                      # due this week
+    epss = f.get("epss_score")
+    if isinstance(epss, (int, float)):
+        score += round(epss * 30)
+    fs = f.get("first_seen_at")
+    if fs:
+        try:
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(str(fs).replace("Z","+00:00")).replace(tzinfo=timezone.utc)).days
+            score += min(age // 10, 20)      # older nudges up, capped
+        except Exception:
+            pass
+    return score
 
 
 async def campaign_detail(db, campaign_id: str, *, for_user: dict = None) -> dict | None:
@@ -229,8 +261,9 @@ async def campaign_detail(db, campaign_id: str, *, for_user: dict = None) -> dic
         email = for_user.get("email")
         camp["mine"] = [f["id"] for f in findings
                         if f.get("assigned_to") == email or f.get("owner_team") in teams]
-    camp["findings"] = sorted(findings, key=lambda f: (f.get("status") in RESOLVED_STATUSES,
-                                                       f.get("severity") or ""))
+    for f in findings:
+        f["priority_score"] = priority_score(f)
+    camp["findings"] = sorted(findings, key=lambda f: -f["priority_score"])   # highest-impact first
     return camp
 
 
