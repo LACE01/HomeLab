@@ -90,6 +90,7 @@ function VulnOverTime() {
                 <Area key={sv} type="monotone" dataKey={sv} stackId="sev" stroke={SEV_FILL[sv]} fill={SEV_FILL[sv]} fillOpacity={0.35} />
               ))}
               <Line type="monotone" dataKey="total_open" name="Total open (remediation)" stroke="#e2e8f0" strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="patched" name="Patches applied" stroke="#22c55e" strokeWidth={2} strokeDasharray="5 4" dot={false} />
             </ComposedChart>
           </ResponsiveContainer>
         )}

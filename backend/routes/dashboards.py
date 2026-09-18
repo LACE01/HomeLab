@@ -497,21 +497,33 @@ async def vuln_timeseries(days: int = 90, user: dict = Depends(get_current_user)
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
     rows = await db.posture_snapshots.find(
         {"day": {"$gte": cutoff}}, {"_id": 0}).sort("day", 1).to_list(400)
+    # Patches applied per day (green line) -- same source as the per-host chart.
+    patches_by_day: dict = {}
+    async for pa in db.patches_applied.find({"resolved_at": {"$gte": cutoff}}, {"_id": 0, "resolved_at": 1}):
+        try:
+            d = (pa["resolved_at"] or "")[:10]
+        except Exception:
+            continue
+        if d:
+            patches_by_day[d] = patches_by_day.get(d, 0) + 1
     series = []
     for r in rows:
         c = r.get("counts") or {}
         sev = c.get("by_severity") or {}
+        day = r.get("day")
         series.append({
-            "day": r.get("day"),
+            "day": day,
             "Critical": sev.get("Critical", 0), "High": sev.get("High", 0),
             "Medium": sev.get("Medium", 0), "Low": sev.get("Low", 0),
             "total_open": c.get("open_findings", 0),
             "kev": c.get("kev", 0),
             "overdue": c.get("overdue", 0),
+            "patched": patches_by_day.get(day, 0),
         })
     first_kev = series[0]["kev"] if series else 0
     last_kev = series[-1]["kev"] if series else 0
     return {"series": series, "points": len(series),
+            "patched_total": sum(patches_by_day.values()),
             "kev_burndown": {"start": first_kev, "current": last_kev,
                              "reduced": max(0, first_kev - last_kev)}}
 
