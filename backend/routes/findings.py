@@ -20,6 +20,37 @@ from routes.common import now_iso, _clean, finding_ctx, team_scope_filter, OPEN_
 router = APIRouter()
 
 
+def _parse_search_operators(q: str):
+    """Pull field-scoped operators out of the search box (#58): qid:, cve:, owner:,
+    source:, entity:. Returns (free_text, extra_filter_clauses). Whatever isn't an
+    operator stays as free text for the normal title/CVE/hostname/QID search."""
+    if not q:
+        return "", []
+    extra, free = [], []
+    for tok in q.split():
+        if ":" in tok:
+            field, _, val = tok.partition(":")
+            field, val = field.lower().strip(), val.strip()
+            if not val:
+                continue
+            if field == "qid":
+                ors = [{"qid": {"$regex": val, "$options": "i"}}]
+                if val.isdigit():
+                    ors += [{"qid": int(val)}, {"qid": val}]
+                extra.append({"$or": ors})
+                continue
+            if field == "cve":
+                extra.append({"cve": {"$regex": val, "$options": "i"}}); continue
+            if field in ("owner", "team"):
+                extra.append({"owner_team": {"$regex": val, "$options": "i"}}); continue
+            if field == "source":
+                extra.append({"source_tool": {"$regex": val, "$options": "i"}}); continue
+            if field == "entity":
+                extra.append({"entity_name": {"$regex": val, "$options": "i"}}); continue
+        free.append(tok)
+    return " ".join(free), extra
+
+
 def _q_or_clauses(q: str) -> list:
     """Free-text search across title/CVE/hostname/QID. QID is stored as a string
     by some scanners and as an int by others, and a $regex never matches a numeric
@@ -46,6 +77,7 @@ async def _build_findings_filter(
     owner_team=None, product_id=None, asset_id=None, tags=None, asset_type=None,
     exploitability=None, include_resolved=False, cve=None, cwe=None, view=None,
     platform=None, min_risk_score=None, source_tool=None,
+    sla=None, age_days=None, entity=None, confidence=None,
 ) -> dict:
     """Shared filter builder for the findings list AND the CSV export, so an export
     reflects exactly the same filters (and team scoping, and hide-resolved default)
@@ -111,8 +143,27 @@ async def _build_findings_filter(
         # created" deep links pass this, and a case-sensitive exact match is brittle
         # against minor naming drift ("SBOM / OSV.dev" vs "SBOM/OSV.dev" etc).
         flt["source_tool"] = {"$regex": f"^{re.escape(source_tool)}$", "$options": "i"}
-    if q:
-        and_clauses.append({"$or": _q_or_clauses(q)})
+    # #58 field-scoped operators (qid:/cve:/owner:/source:/entity:) + free text
+    free_text, op_clauses = _parse_search_operators(q)
+    and_clauses.extend(op_clauses)
+    if free_text:
+        and_clauses.append({"$or": _q_or_clauses(free_text)})
+
+    # #58 additional filters
+    if sla == "overdue":
+        and_clauses.append({"due_at": {"$lt": datetime.now(timezone.utc).isoformat()}})
+    elif sla == "within":
+        and_clauses.append({"due_at": {"$gte": datetime.now(timezone.utc).isoformat()}})
+    if age_days is not None:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=int(age_days))).isoformat()
+        and_clauses.append({"first_seen_at": {"$lte": cutoff}})
+    if entity:
+        flt["entity_name"] = {"$regex": entity, "$options": "i"}
+    if confidence == "low":
+        and_clauses.append({"$or": [{"ownership_confidence": {"$lt": 0.5}},
+                                    {"ownership_confidence": {"$exists": False}}]})
+    elif confidence == "high":
+        and_clauses.append({"ownership_confidence": {"$gte": 0.5}})
 
     now = datetime.now(timezone.utc)
     if view == "kev":
@@ -170,6 +221,10 @@ async def list_findings(
     platform: Optional[str] = None,
     min_risk_score: Optional[int] = None,
     source_tool: Optional[str] = None,
+    sla: Optional[str] = None,
+    age_days: Optional[int] = None,
+    entity: Optional[str] = None,
+    confidence: Optional[str] = None,
     sort: str = "risk_score",
     order: str = "desc",
     limit: int = 100,
@@ -181,7 +236,7 @@ async def list_findings(
         owner_team=owner_team, product_id=product_id, asset_id=asset_id, tags=tags,
         asset_type=asset_type, exploitability=exploitability, include_resolved=include_resolved,
         cve=cve, cwe=cwe, view=view, platform=platform, min_risk_score=min_risk_score,
-        source_tool=source_tool,
+        source_tool=source_tool, sla=sla, age_days=age_days, entity=entity, confidence=confidence,
     )
 
     sort_dir = -1 if order == "desc" else 1
@@ -275,6 +330,10 @@ async def export_findings(
     platform: Optional[str] = None,
     min_risk_score: Optional[int] = None,
     source_tool: Optional[str] = None,
+    sla: Optional[str] = None,
+    age_days: Optional[int] = None,
+    entity: Optional[str] = None,
+    confidence: Optional[str] = None,
     sort: str = "risk_score",
     order: str = "desc",
     # #59: choose columns and scope
@@ -301,6 +360,7 @@ async def export_findings(
             owner_team=owner_team, asset_id=asset_id, tags=tags, asset_type=asset_type,
             exploitability=exploitability, include_resolved=include_resolved, cve=cve, cwe=cwe,
             view=view, platform=platform, min_risk_score=min_risk_score, source_tool=source_tool,
+            sla=sla, age_days=age_days, entity=entity, confidence=confidence,
         )
 
     cols = [c for c in (columns or DEFAULT_EXPORT_COLUMNS) if c in EXPORT_COLUMNS] or DEFAULT_EXPORT_COLUMNS
@@ -325,6 +385,48 @@ async def export_columns(user: dict = Depends(get_current_user)):
     """The column catalogue + the default selection, for the export column picker."""
     return {"columns": [{"key": k, "label": v[0]} for k, v in EXPORT_COLUMNS.items()],
             "default": DEFAULT_EXPORT_COLUMNS}
+
+
+# ------------------------ #58: per-user saved views ------------------------
+class SavedViewBody(BaseModel):
+    name: str
+    # the filter state to restore, stored verbatim (a small dict of the UI's filters)
+    filters: dict = {}
+
+
+@router.get("/v1/findings/views")
+async def list_saved_views(user: dict = Depends(get_current_user),
+                           _rbac: dict = Depends(require_module("/findings"))):
+    """This user's saved Findings views."""
+    owner = user.get("email") or user.get("id")
+    items = await db.saved_findings_views.find({"owner": owner}, {"_id": 0})         .sort("name", 1).to_list(200)
+    return {"items": items}
+
+
+@router.post("/v1/findings/views")
+async def save_view(body: SavedViewBody, user: dict = Depends(get_current_user),
+                    _rbac: dict = Depends(require_module("/findings"))):
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(400, "A view name is required")
+    owner = user.get("email") or user.get("id")
+    doc = {"owner": owner, "name": name, "filters": body.filters or {}, "updated_at": now_iso()}
+    existing = await db.saved_findings_views.find_one({"owner": owner, "name": name}, {"_id": 0})
+    if existing:
+        doc["id"] = existing["id"]
+        await db.saved_findings_views.update_one({"owner": owner, "name": name}, {"$set": doc})
+    else:
+        doc["id"] = str(uuid.uuid4())
+        await db.saved_findings_views.insert_one(dict(doc))
+    return {"ok": True, "id": doc["id"], "name": name}
+
+
+@router.delete("/v1/findings/views/{view_id}")
+async def delete_saved_view(view_id: str, user: dict = Depends(get_current_user),
+                            _rbac: dict = Depends(require_module("/findings"))):
+    owner = user.get("email") or user.get("id")
+    await db.saved_findings_views.delete_one({"owner": owner, "id": view_id})
+    return {"ok": True}
 
 
 # --------------------------- FINDINGS-GROUPS (literal path before {finding_id}) ---------------------------

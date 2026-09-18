@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
+import { toast } from "sonner";
 import { useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -185,6 +186,11 @@ export default function Findings() {
   const [showResolved, setShowResolved] = useState(false);   // #60: hide resolved by default
   const [teamFilter, setTeamFilter] = useState(searchParams.get("owner_team") || "");   // #57
   const [exportOpen, setExportOpen] = useState(false);   // #59 export modal
+  const [sla, setSla] = useState("");            // #58 "", overdue, within
+  const [ageDays, setAgeDays] = useState("");    // #58 min age in days
+  const [confidence, setConfidence] = useState(""); // #58 "", low, high
+  const [entity, setEntity] = useState("");      // #58 entity name contains
+  const [savedViews, setSavedViews] = useState([]);
   const [facetOpts, setFacetOpts] = useState({ available_tags: [], available_asset_types: [] });
   const [selected, setSelected] = useState(new Set());
   const [bulkStatus, setBulkStatus] = useState("Valid");
@@ -225,6 +231,10 @@ export default function Findings() {
     else if (myQueue && user?.team) usp.set("owner_team", user.team);
     else if (ownerTeamParam) usp.set("owner_team", ownerTeamParam);
     if (sourceToolParam) usp.set("source_tool", sourceToolParam);
+    if (sla) usp.set("sla", sla);
+    if (ageDays) usp.set("age_days", ageDays);
+    if (confidence) usp.set("confidence", confidence);
+    if (entity) usp.set("entity", entity);
     return usp;
   };
 
@@ -251,12 +261,33 @@ export default function Findings() {
     setItems(r.data.items || []); setTotal(r.data.total);
     setLoading(false); setSelected(new Set());
   };
-  const facetKey = [severities.join(","), statuses.join(","), exploitability.join(","), assetTypes.join(","), tagFilter.join(","), kevOnly, internetOnly, showResolved, teamFilter].join("|");
+  const facetKey = [severities.join(","), statuses.join(","), exploitability.join(","), assetTypes.join(","), tagFilter.join(","), kevOnly, internetOnly, showResolved, teamFilter, sla, ageDays, confidence, entity].join("|");
   useEffect(() => { if (prefs) load(); /* eslint-disable-next-line */ }, [prefs, view, facetKey, myQueue, groupBy, viewMode, cweParam, cveParam, sourceToolParam, sort, order, page]);
   // Any filter change (other than paging itself) should reset back to page 1 --
   // otherwise you can land on an empty page 5 after narrowing a filter down.
   useEffect(() => { setPage(0); }, [view, facetKey, myQueue, sort, order, q]);
   useEffect(() => { api.get("/v1/findings/stats").then(r => setFacetOpts(r.data)).catch(() => {}); }, []);
+  const loadViews = () => api.get("/v1/findings/views").then(r => setSavedViews(r.data.items || [])).catch(() => {});
+  useEffect(() => { loadViews(); /* eslint-disable-next-line */ }, []);
+  const applyView = (v) => {
+    const f = v.filters || {};
+    setSeverities(f.severities||[]); setStatuses(f.statuses||[]); setExploitability(f.exploitability||[]);
+    setAssetTypes(f.assetTypes||[]); setTagFilter(f.tagFilter||[]); setKevOnly(!!f.kevOnly);
+    setInternetOnly(!!f.internetOnly); setShowResolved(!!f.showResolved); setTeamFilter(f.teamFilter||"");
+    setSla(f.sla||""); setAgeDays(f.ageDays||""); setConfidence(f.confidence||""); setEntity(f.entity||""); setQ(f.q||"");
+  };
+  const currentFilterState = () => ({ severities, statuses, exploitability, assetTypes, tagFilter, kevOnly,
+    internetOnly, showResolved, teamFilter, sla, ageDays, confidence, entity, q });
+  const saveCurrentView = async () => {
+    const name = window.prompt("Save this view as:");
+    if (!name || !name.trim()) return;
+    await api.post("/v1/findings/views", { name: name.trim(), filters: currentFilterState() });
+    toast.success(`Saved view "${name.trim()}"`); loadViews();
+  };
+  const deleteView = async (v) => {
+    if (!window.confirm(`Delete saved view "${v.name}"?`)) return;
+    await api.delete(`/v1/findings/views/${v.id}`); loadViews();
+  };
 
   // Keep the URL in sync with the current filters (replace, not push, so we don't
   // pollute history). This is what makes the back arrow from a Finding Detail
@@ -352,6 +383,25 @@ export default function Findings() {
 
   const counter = useMemo(() => `${items.length} of ${total}`, [items, total]);
 
+  // #58 visible, removable chips for every active filter
+  const activeChips = useMemo(() => {
+    const chips = [];
+    severities.forEach(v => chips.push({ key:`sev:${v}`, label:`Severity: ${v}`, clear:()=>setSeverities(severities.filter(x=>x!==v)) }));
+    statuses.forEach(v => chips.push({ key:`st:${v}`, label:`Status: ${v}`, clear:()=>setStatuses(statuses.filter(x=>x!==v)) }));
+    exploitability.forEach(v => chips.push({ key:`ex:${v}`, label:`Exploit: ${v}`, clear:()=>setExploitability(exploitability.filter(x=>x!==v)) }));
+    assetTypes.forEach(v => chips.push({ key:`at:${v}`, label:`Type: ${v}`, clear:()=>setAssetTypes(assetTypes.filter(x=>x!==v)) }));
+    tagFilter.forEach(v => chips.push({ key:`tg:${v}`, label:`Tag: ${v}`, clear:()=>setTagFilter(tagFilter.filter(x=>x!==v)) }));
+    if (kevOnly) chips.push({ key:"kev", label:"KEV", clear:()=>setKevOnly(false) });
+    if (internetOnly) chips.push({ key:"inet", label:"Internet-facing", clear:()=>setInternetOnly(false) });
+    if (showResolved) chips.push({ key:"res", label:"Incl. resolved", clear:()=>setShowResolved(false) });
+    if (teamFilter) chips.push({ key:"team", label:`Team: ${teamFilter}`, clear:()=>setTeamFilter("") });
+    if (sla) chips.push({ key:"sla", label:`SLA: ${sla}`, clear:()=>setSla("") });
+    if (ageDays) chips.push({ key:"age", label:`Age ≥ ${ageDays}d`, clear:()=>setAgeDays("") });
+    if (confidence) chips.push({ key:"conf", label:`Owner conf: ${confidence}`, clear:()=>setConfidence("") });
+    if (entity) chips.push({ key:"ent", label:`Entity: ${entity}`, clear:()=>setEntity("") });
+    return chips;
+  }, [severities, statuses, exploitability, assetTypes, tagFilter, kevOnly, internetOnly, showResolved, teamFilter, sla, ageDays, confidence, entity]);
+
   return (
     <Layout title="Findings Workbench" subtitle="Triage, prioritize, assign, and remediate vulnerabilities at scale"
       actions={<>
@@ -408,8 +458,18 @@ export default function Findings() {
           <button onClick={()=>setShowResolved(v=>!v)} title="By default only open findings are shown"
             className={`h-8 px-2.5 text-[12px] rounded border ${showResolved ? "border-slate-500 bg-slate-500/10 text-slate-200" : "border-[#30363D] text-slate-400 hover:border-[#484F58]"}`}>{showResolved ? "Showing resolved" : "Show resolved"}</button>
           <div className="w-44"><TeamCombobox value={teamFilter} onChange={setTeamFilter} testid="filter-team" placeholder="Any team"/></div>
+          <select value={sla} onChange={e=>setSla(e.target.value)} title="SLA" className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-300">
+            <option value="">Any SLA</option><option value="overdue">Overdue</option><option value="within">Within SLA</option>
+          </select>
+          <select value={ageDays} onChange={e=>setAgeDays(e.target.value)} title="Minimum age" className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-300">
+            <option value="">Any age</option><option value="7">≥ 7 days</option><option value="30">≥ 30 days</option><option value="90">≥ 90 days</option>
+          </select>
+          <select value={confidence} onChange={e=>setConfidence(e.target.value)} title="Ownership confidence" className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-300">
+            <option value="">Any owner conf.</option><option value="low">Low confidence</option><option value="high">High confidence</option>
+          </select>
+          <input value={entity} onChange={e=>setEntity(e.target.value)} placeholder="Entity…" className="h-8 w-28 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200"/>
           {(severities.length||statuses.length||exploitability.length||assetTypes.length||tagFilter.length||kevOnly||internetOnly||teamFilter) > 0 && (
-            <button onClick={()=>{ setSeverities([]); setStatuses([]); setExploitability([]); setAssetTypes([]); setTagFilter([]); setKevOnly(false); setInternetOnly(false); setShowResolved(false); setTeamFilter(""); }}
+            <button onClick={()=>{ setSeverities([]); setStatuses([]); setExploitability([]); setAssetTypes([]); setTagFilter([]); setKevOnly(false); setInternetOnly(false); setShowResolved(false); setTeamFilter(""); setSla(""); setAgeDays(""); setConfidence(""); setEntity(""); }}
               className="h-8 px-2.5 text-[12px] rounded border border-[#30363D] text-slate-400 hover:text-slate-200 inline-flex items-center gap-1"><X size={12}/> Clear</button>
           )}
           <select data-testid="filter-sort" value={sort} onChange={(e)=>setSort(e.target.value)} className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200">
@@ -426,14 +486,33 @@ export default function Findings() {
           </button>
         </div>
         <div className="px-3 py-1.5 flex flex-wrap gap-1.5 items-center">
-          <span className="text-[10px] uppercase tracking-wider font-mono text-slate-500 mr-1">Saved Views</span>
+          <span className="text-[10px] uppercase tracking-wider font-mono text-slate-500 mr-1">Quick Views</span>
           {VIEWS.map(v => (
             <button key={v.id} data-testid={`view-${v.id||'all'}`} onClick={()=>setView(v.id)}
               className={`px-2 py-1 text-[11.5px] rounded-sm border ${view===v.id?"border-blue-500/40 bg-blue-500/10 text-blue-300":"border-[#30363D] text-slate-400 hover:text-slate-200 hover:border-[#484F58]"}`}>
               {v.label}
             </button>
           ))}
+          <span className="text-[10px] uppercase tracking-wider font-mono text-slate-500 ml-3 mr-1">My Views</span>
+          {savedViews.map(v => (
+            <span key={v.id} className="inline-flex items-center rounded-sm border border-[#30363D] text-slate-300 hover:border-[#484F58]">
+              <button onClick={()=>applyView(v)} className="px-2 py-1 text-[11.5px]">{v.name}</button>
+              <button onClick={()=>deleteView(v)} title="Delete view" className="px-1.5 text-slate-500 hover:text-red-400"><X size={11}/></button>
+            </span>
+          ))}
+          <button onClick={saveCurrentView} className="px-2 py-1 text-[11.5px] rounded-sm border border-dashed border-[#30363D] text-blue-300 hover:border-blue-500/40">+ Save current</button>
         </div>
+        {activeChips.length > 0 && (
+          <div className="px-3 py-1.5 flex flex-wrap gap-1.5 items-center border-t border-[#30363D]">
+            <span className="text-[10px] uppercase tracking-wider font-mono text-slate-500 mr-1">Filters</span>
+            {activeChips.map((chip) => (
+              <span key={chip.key} className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-200">
+                {chip.label}
+                <button onClick={chip.clear} className="text-blue-300/70 hover:text-red-300"><X size={10}/></button>
+              </span>
+            ))}
+          </div>
+        )}
         {/* Grouping & view-mode controls (Iteration 3c) */}
         <div className="px-3 py-1.5 flex flex-wrap gap-2 items-center border-t border-[#30363D]">
           <span className="text-[10px] uppercase tracking-wider font-mono text-slate-500 mr-1 inline-flex items-center gap-1">
