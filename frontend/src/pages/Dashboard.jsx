@@ -11,7 +11,7 @@ import { fmtRel, isOverdue } from "@/lib/utils-fmt";
 import { Link, useNavigate } from "react-router-dom";
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid,
-  BarChart, Bar, Cell, PieChart, Pie, Legend,
+  BarChart, Bar, Cell, PieChart, Pie, Legend, ComposedChart, Line,
 } from "recharts";
 import { Lightning, Fire, Clock, ArrowsClockwise, Warning, UserCircle, ChartLineUp, FileArrowDown, Sparkle } from "@phosphor-icons/react";
 import { toast } from "sonner";
@@ -60,6 +60,149 @@ const TILE_CATALOG = [
   { id: "panel-imports", label: "Recent Imports", group: "Panels" },
   { id: "panel-cwe", label: "CWE Prevalence", group: "Panels" },
 ];
+
+const SEV_FILL = { Critical: "#ef4444", High: "#f97316", Medium: "#eab308", Low: "#3b82f6" };
+
+function VulnOverTime() {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    api.get("/v1/dashboards/vuln-timeseries", { params: { days: 90 } }).then(r => setData(r.data)).catch(() => {});
+  }, []);
+  const series = data?.series || [];
+  const burn = data?.kev_burndown || { start: 0, current: 0, reduced: 0 };
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 mb-4">
+      <div className="lg:col-span-3 border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+        <div className="text-[13px] text-slate-200 font-medium mb-2">Vulnerabilities Over Time</div>
+        {series.length === 0 ? (
+          <div className="h-[220px] flex items-center justify-center text-[12px] text-slate-500">
+            No snapshots yet — history builds daily.
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height={240}>
+            <ComposedChart data={series} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1f2733" />
+              <XAxis dataKey="day" tick={{ fontSize: 10, fill: "#64748b" }} />
+              <YAxis tick={{ fontSize: 10, fill: "#64748b" }} />
+              <Tooltip contentStyle={{ background: "#0D1117", border: "1px solid #30363D", fontSize: 12 }} />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              {["Low","Medium","High","Critical"].map(sv => (
+                <Area key={sv} type="monotone" dataKey={sv} stackId="sev" stroke={SEV_FILL[sv]} fill={SEV_FILL[sv]} fillOpacity={0.35} />
+              ))}
+              <Line type="monotone" dataKey="total_open" name="Total open (remediation)" stroke="#e2e8f0" strokeWidth={2} dot={false} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+      <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4 flex flex-col">
+        <div className="text-[13px] text-slate-200 font-medium mb-1">KEV Burndown</div>
+        <div className="text-[11px] text-slate-500 mb-3">Known-Exploited, open</div>
+        <div className="flex items-end gap-2">
+          <div className="text-[34px] font-bold text-red-300 leading-none">{burn.current}</div>
+          <div className="text-[12px] text-slate-500 mb-1">open now</div>
+        </div>
+        <div className="text-[12px] text-slate-400 mt-2">
+          {burn.reduced > 0
+            ? <span className="text-emerald-300">▼ {burn.reduced} remediated</span>
+            : <span className="text-slate-500">no change</span>} over the window (from {burn.start})
+        </div>
+        {series.length > 1 && (
+          <div className="mt-auto pt-3">
+            <ResponsiveContainer width="100%" height={60}>
+              <AreaChart data={series} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
+                <Area type="monotone" dataKey="kev" stroke="#ef4444" fill="#ef4444" fillOpacity={0.25} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FindingsSankey() {
+  const [teams, setTeams] = useState("");
+  const [kev, setKev] = useState(false);
+  const [sev, setSev] = useState("");
+  const [data, setData] = useState(null);
+  const loadSankey = () => {
+    const params = {};
+    if (teams) params.owner_team = teams;
+    if (kev) params.kev = true;
+    if (sev) params.severity = sev;
+    api.get("/v1/dashboards/sankey", { params }).then(r => setData(r.data)).catch(() => {});
+  };
+  useEffect(() => { loadSankey(); /* eslint-disable-next-line */ }, [teams, kev, sev]);
+  return (
+    <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4 mb-4">
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <div className="text-[13px] text-slate-200 font-medium">Findings Flow — Sensor → Category → Severity</div>
+        <div className="flex items-center gap-2">
+          <input value={teams} onChange={e=>setTeams(e.target.value)} placeholder="Team…" className="h-7 w-28 bg-[#161B22] border border-[#30363D] rounded px-2 text-[11.5px] text-slate-200"/>
+          <select value={sev} onChange={e=>setSev(e.target.value)} className="h-7 bg-[#161B22] border border-[#30363D] rounded px-2 text-[11.5px] text-slate-300">
+            <option value="">All sev</option>{["Critical","High","Medium","Low"].map(x=><option key={x}>{x}</option>)}
+          </select>
+          <button onClick={()=>setKev(v=>!v)} className={`h-7 px-2 text-[11.5px] rounded border ${kev?"border-red-500/40 bg-red-500/10 text-red-200":"border-[#30363D] text-slate-400"}`}>KEV</button>
+        </div>
+      </div>
+      <SankeySVG data={data} />
+    </div>
+  );
+}
+
+function SankeySVG({ data }) {
+  if (!data || !data.links || data.links.length === 0) {
+    return <div className="h-[240px] flex items-center justify-center text-[12px] text-slate-500">No open findings match these filters.</div>;
+  }
+  const W = 900, H = 340, colX = [40, W/2 - 20, W - 140];
+  const cols = { 0: [], 1: [], 2: [] };
+  data.nodes.forEach(n => { (cols[n.column] = cols[n.column] || []).push({ ...n, value: 0 }); });
+  const byId = {};
+  Object.values(cols).flat().forEach(n => { byId[n.id] = n; });
+  data.links.forEach(l => { if (byId[l.source]) byId[l.source].value += l.value; if (byId[l.target]) byId[l.target].value += l.value; });
+  const SEV = { Critical: "#ef4444", High: "#f97316", Medium: "#eab308", Low: "#3b82f6", Info: "#64748b" };
+  const layout = {};
+  [0,1,2].forEach(col => {
+    const list = (cols[col]||[]).sort((a,b)=>b.value-a.value);
+    const total = list.reduce((s,n)=>s+n.value,0) || 1;
+    let y = 20; const gap = 8; const avail = H - 40 - gap*(list.length-1);
+    list.forEach(n => {
+      const h = Math.max(10, (n.value/total)*avail);
+      layout[n.id] = { x: colX[col], y, h, col, name: n.name, value: n.value };
+      y += h + gap;
+    });
+  });
+  const color = (id, col, name) => col === 2 ? (SEV[name] || "#64748b") : (col === 0 ? "#3b82f6" : "#8b5cf6");
+  // link vertical offsets per node
+  const off = {}; Object.keys(layout).forEach(k => off[k] = 0);
+  const ribbons = data.links.map((l, i) => {
+    const a = layout[l.source], b = layout[l.target];
+    if (!a || !b) return null;
+    const total = a.value || 1, tt = b.value || 1;
+    const th = Math.max(1, (l.value/ Math.max(total,tt)) * Math.min(a.h, b.h) * 0.9);
+    const y1 = a.y + off[l.source] + th/2; off[l.source] += th;
+    const y2 = b.y + off[l.target] + th/2; off[l.target] += th;
+    const x1 = a.x + 12, x2 = b.x;
+    const mx = (x1 + x2) / 2;
+    return <path key={i} d={`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`} fill="none"
+      stroke={color(l.target, layout[l.target].col, layout[l.target].name)} strokeWidth={th} strokeOpacity={0.25} />;
+  });
+  return (
+    <ResponsiveContainer width="100%" height={340}>
+      <svg viewBox={`0 0 ${W} ${H}`}>
+        {ribbons}
+        {Object.values(layout).map(n => (
+          <g key={n.x + "-" + n.y}>
+            <rect x={n.x} y={n.y} width={12} height={n.h} rx={2} fill={color(null, n.col, n.name)} />
+            <text x={n.col === 2 ? n.x - 6 : n.x + 16} y={n.y + n.h/2} dy="0.35em"
+              textAnchor={n.col === 2 ? "end" : "start"} fontSize="10" fill="#cbd5e1">{n.name} ({n.value})</text>
+          </g>
+        ))}
+      </svg>
+    </ResponsiveContainer>
+  );
+}
+
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -182,6 +325,9 @@ export default function Dashboard() {
           <FileArrowDown size={14}/> Export PDF
         </button>
       </>}>
+
+      {/* #61: full-width vulnerabilities-over-time + KEV burndown at the very top */}
+      <VulnOverTime/>
 
       {tab === "ops" && analyst && (
         <div className="space-y-4">
@@ -346,6 +492,7 @@ export default function Dashboard() {
 
       {tab === "mgr" && manager && (
         <div className="space-y-4">
+          <FindingsSankey/>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <Panel title={`Risk Score Trend (${manager.range || range})`}>
               <div className="p-3 h-[260px]">
@@ -392,6 +539,7 @@ export default function Dashboard() {
 
       {tab === "exec" && exec && (
         <div className="space-y-4">
+          <FindingsSankey/>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4 md:col-span-2">
               <div className="text-[10px] uppercase tracking-wider text-slate-500 font-mono mb-1">Security Score</div>

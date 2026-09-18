@@ -484,3 +484,90 @@ async def dashboard_soc(
         "yara": {"matches_in_range": yara_matches_in_range},
         "ir": {"open_cases": ir_open, "opened_in_range": ir_opened_in_range},
     }
+
+
+# ============ #61 Vulnerabilities-over-time + KEV burndown ============
+
+@router.get("/v1/dashboards/vuln-timeseries")
+async def vuln_timeseries(days: int = 90, user: dict = Depends(get_current_user),
+                          _rbac: dict = Depends(require_module("/"))):
+    """Daily open-findings-by-severity + total + KEV, from posture_snapshots, for
+    the full-width vulnerabilities-over-time chart and the KEV-burndown tile."""
+    from datetime import date
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    rows = await db.posture_snapshots.find(
+        {"day": {"$gte": cutoff}}, {"_id": 0}).sort("day", 1).to_list(400)
+    series = []
+    for r in rows:
+        c = r.get("counts") or {}
+        sev = c.get("by_severity") or {}
+        series.append({
+            "day": r.get("day"),
+            "Critical": sev.get("Critical", 0), "High": sev.get("High", 0),
+            "Medium": sev.get("Medium", 0), "Low": sev.get("Low", 0),
+            "total_open": c.get("open_findings", 0),
+            "kev": c.get("kev", 0),
+            "overdue": c.get("overdue", 0),
+        })
+    first_kev = series[0]["kev"] if series else 0
+    last_kev = series[-1]["kev"] if series else 0
+    return {"series": series, "points": len(series),
+            "kev_burndown": {"start": first_kev, "current": last_kev,
+                             "reduced": max(0, first_kev - last_kev)}}
+
+
+# ============ #56 Sankey: Sensor -> Category -> Severity ============
+
+SANKEY_SEVERITIES = ["Critical", "High", "Medium", "Low", "Info"]
+
+
+@router.get("/v1/dashboards/sankey")
+async def findings_sankey(
+    owner_team: Optional[str] = None,
+    entity: Optional[str] = None,
+    severity: Optional[str] = None,
+    kev: Optional[bool] = None,
+    user: dict = Depends(get_current_user),
+    _rbac: dict = Depends(require_module("/")),
+):
+    """Flow of OPEN findings Sensor -> Category -> Severity for the Manager/Executive
+    dashboards. Filterable by team, entity, severity and KEV. (The frontend hides
+    this on the Analyst view.)"""
+    from routes.common import OPEN_STATUSES
+    flt = {"status": {"$in": OPEN_STATUSES}}
+    if owner_team:
+        flt["owner_team"] = owner_team
+    if entity:
+        flt["entity_name"] = {"$regex": entity, "$options": "i"}
+    if severity:
+        flt["severity"] = severity
+    if kev is not None:
+        flt["kev_flag"] = kev
+    rows = await db.findings.find(
+        flt, {"_id": 0, "source_tool": 1, "source_tool_type": 1, "cwe": 1, "severity": 1}
+    ).limit(200000).to_list(200000)
+
+    sensor_cat: dict = {}
+    cat_sev: dict = {}
+    for f in rows:
+        sensor = f.get("source_tool") or "Unknown sensor"
+        category = f.get("source_tool_type") or f.get("cwe") or "Uncategorized"
+        sev = f.get("severity") or "Info"
+        sensor_cat[(sensor, category)] = sensor_cat.get((sensor, category), 0) + 1
+        cat_sev[(category, sev)] = cat_sev.get((category, sev), 0) + 1
+
+    # nodes are namespaced by column so a name reused across columns stays distinct
+    nodes: dict = {}
+    def node(col, name):
+        nid = f"{col}:{name}"
+        if nid not in nodes:
+            nodes[nid] = {"id": nid, "name": name, "column": col}
+        return nid
+
+    links = []
+    for (sensor, category), v in sensor_cat.items():
+        links.append({"source": node(0, sensor), "target": node(1, category), "value": v})
+    for (category, sev), v in cat_sev.items():
+        links.append({"source": node(1, category), "target": node(2, sev), "value": v})
+
+    return {"nodes": list(nodes.values()), "links": links, "total": len(rows)}
