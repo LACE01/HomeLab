@@ -122,7 +122,14 @@ async def update_campaign(campaign_id: str, body: CampaignPatch,
         add |= set(await _ids_from_findings_filter(user, body.add_findings_filter))
     if add:
         ids |= add
-        await rc.log_activity(db, campaign_id, actor, "added_findings", f"Added {len(add)} finding(s)")
+        # extend the baseline with the newly-added findings that are OPEN now,
+        # so "what we need to patch" grows with them (patched-since-added holds).
+        new_open = await rc._open_subset(db, list(add))
+        base = set(camp.get("baseline_open_ids") or [])
+        base |= set(new_open)
+        patch["baseline_open_ids"] = sorted(base)
+        await rc.log_activity(db, campaign_id, actor, "added_findings",
+                              f"Added {len(add)} finding(s) ({len(new_open)} open to patch)")
     if body.remove_finding_ids:
         ids -= set(body.remove_finding_ids)
         await rc.log_activity(db, campaign_id, actor, "removed_findings",

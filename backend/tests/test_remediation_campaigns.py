@@ -36,6 +36,21 @@ camp=r.json(); cid=camp["id"]
 a(set(camp["finding_ids"])=={"f1","f3"}, camp["finding_ids"])  # Critical/High AND KEV
 print("PASS: campaign created from the same multi-select Findings filter (Critical/High + KEV → f1,f3)")
 
+# ---- #baseline: patched counts only findings patched AFTER being added ----
+# add a member that is ALREADY resolved at creation -> must NOT count toward patched/total
+run(db.findings.insert_one({"id":"fdone","title":"Already fixed","cve":"CVE-9","severity":"Critical","status":"Fixed validated","owner_team":"SecOps","kev_flag":True,"asset_id":"h5","asset_hostname":"h5"}))
+rb=c.post("/api/v1/remediation-campaigns", json={"name":"baseline test","finding_ids":["f1","fdone"]}).json()
+pb=c.get(f"/api/v1/remediation-campaigns/{rb['id']}").json()["progress"]
+a(pb["total"]==1 and pb["patched"]==0, f"only the open member (f1) is the baseline: {pb}")
+a(pb["already_resolved_at_add"]==1, "the pre-resolved member is context, not progress")
+# now patch f1 -> patched becomes 1/1
+c.post(f"/api/v1/remediation-campaigns/{rb['id']}/bulk-status", json={"finding_ids":["f1"],"status":"Fixed validated"})
+pb2=c.get(f"/api/v1/remediation-campaigns/{rb['id']}").json()["progress"]
+a(pb2["patched"]==1 and pb2["percent_complete"]==100, pb2)
+print("PASS: baseline — a member already resolved at add-time doesn't inflate patched; only in-campaign patches count")
+# restore f1 open for the rest of the suite
+run(db.findings.update_one({"id":"f1"},{"$set":{"status":"New"}}))
+
 # ---- detail: aging, groups (device/vuln/team), mine slice ----
 d=c.get(f"/api/v1/remediation-campaigns/{cid}").json()
 a(d["progress"]["max_open_age_days"]>=45 and d["progress"]["aging_over_30d"]==1, d["progress"])

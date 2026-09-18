@@ -24,8 +24,31 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def compute_progress(findings: list, due_date: str | None = None) -> dict:
-    """Live progress for a campaign from its findings' CURRENT status."""
+def _baseline(camp: dict):
+    """The campaign's baseline finding-id set (open at add-time). None for
+    pre-baseline campaigns, so they fall back to counting every member."""
+    b = camp.get("baseline_open_ids")
+    return b if b is not None else None
+
+
+def compute_progress(findings: list, due_date: str | None = None, baseline_ids=None) -> dict:
+    """Live progress for a campaign.
+
+    The denominator is the BASELINE: the findings that were OPEN when they were
+    added to the campaign -- i.e. what this campaign actually set out to patch.
+    'patched' therefore counts only findings patched AFTER being added, not ones
+    that happened to already be resolved. (Members already resolved at add-time are
+    kept for context but excluded from the bar, so 60% means 60% of the work THIS
+    campaign owns, not a number inflated by history.) When no baseline is recorded
+    (older campaigns), every member counts, preserving the previous behaviour."""
+    if baseline_ids is not None:
+        base = set(baseline_ids)
+        scope = [f for f in findings if f.get("id") in base]
+        already_done = len(findings) - len(scope)
+    else:
+        scope = findings
+        already_done = 0
+    findings = scope   # progress is computed over the baseline scope only
     total = len(findings)
     resolved = [f for f in findings if f.get("status") in RESOLVED_STATUSES]
     reopened = [f for f in findings if f.get("status") == "Reopened"]   # regressions
@@ -58,6 +81,7 @@ def compute_progress(findings: list, due_date: str | None = None) -> dict:
         "avg_open_age_days": round(sum(ages) / len(ages)) if ages else 0,
         "max_open_age_days": max(ages) if ages else 0,
         "aging_over_30d": sum(1 for a in ages if a > 30),
+        "already_resolved_at_add": already_done,
     }
 
 
@@ -92,22 +116,35 @@ async def _resolve_finding_ids(db, *, finding_ids=None, filt=None) -> list:
     return sorted(ids)
 
 
+async def _open_subset(db, ids: list) -> list:
+    """Which of these finding ids are currently OPEN -- the campaign's baseline."""
+    if not ids:
+        return []
+    rows = await db.findings.find(
+        {"id": {"$in": list(ids)}, "status": {"$in": OPEN_STATUSES}},
+        {"_id": 0, "id": 1}).to_list(100000)
+    return sorted(r["id"] for r in rows)
+
+
 async def create_campaign(db, *, name, description="", owner_team=None, due_date=None,
                           finding_ids=None, filt=None, assignees=None, created_by="system") -> dict:
     ids = await _resolve_finding_ids(db, finding_ids=finding_ids, filt=filt)
+    baseline = await _open_subset(db, ids)
     doc = {
         "id": str(uuid.uuid4()), "name": name, "description": description,
         "owner_team": owner_team, "due_date": due_date,
         "assignees": assignees or [],
         "finding_ids": ids, "filter": filt or None,
+        "baseline_open_ids": baseline,
         "created_by": created_by, "created_at": _now_iso(),
         "status": "active",
-        # snapshot of the baseline so "started at N, X to go" is provable later
-        "baseline_total": len(ids), "baseline_at": _now_iso(),
+        # what this campaign set out to patch: the members open at add-time
+        "baseline_total": len(baseline), "baseline_at": _now_iso(),
     }
     await db.remediation_campaigns.insert_one(dict(doc))
     await log_activity(db, doc["id"], created_by, "created",
-                       f"Campaign created with {len(ids)} finding(s)")
+                       f"Campaign created — {len(baseline)} open finding(s) to patch"
+                       + (f" ({len(ids) - len(baseline)} already resolved)" if len(ids) > len(baseline) else ""))
     return {k: v for k, v in doc.items() if k != "_id"}
 
 
@@ -127,7 +164,7 @@ async def list_campaigns(db, *, owner_team=None) -> list:
     out = []
     for camp in await db.remediation_campaigns.find(q, {"_id": 0}).sort("created_at", -1).to_list(500):
         findings = await _campaign_findings(db, camp)
-        out.append({**camp, "progress": compute_progress(findings, camp.get("due_date"))})
+        out.append({**camp, "progress": compute_progress(findings, camp.get("due_date"), _baseline(camp))})
     return out
 
 
@@ -136,11 +173,12 @@ async def campaign_detail(db, campaign_id: str, *, for_user: dict = None) -> dic
     if not camp:
         return None
     findings = await _campaign_findings(db, camp)
-    camp["progress"] = compute_progress(findings, camp.get("due_date"))
+    camp["progress"] = compute_progress(findings, camp.get("due_date"), _baseline(camp))
+    _bl = _baseline(camp)
     camp["groups"] = {
-        "device": group_breakdown(findings, "device"),
-        "vulnerability": group_breakdown(findings, "vulnerability"),
-        "team": group_breakdown(findings, "team"),
+        "device": group_breakdown(findings, "device", _bl),
+        "vulnerability": group_breakdown(findings, "vulnerability", _bl),
+        "team": group_breakdown(findings, "team", _bl),
     }
     camp["activity"] = await activity(db, campaign_id)
     camp["timeline"] = await timeline(db, camp)
@@ -205,7 +243,7 @@ async def mass_note_findings(db, *, finding_ids, actor, text, attachments=None) 
 
 
 # -------------------------------------------------------------------- grouping
-def group_breakdown(findings: list, by: str) -> list:
+def group_breakdown(findings: list, by: str, baseline_ids=None) -> list:
     """Per-device / per-vulnerability / per-team rollup of a campaign's findings,
     each with its own patched/open/regression progress -- so the work can be sliced
     the same three ways the Findings tab offers."""
@@ -219,7 +257,7 @@ def group_breakdown(findings: list, by: str) -> list:
         groups.setdefault(keyer(f), []).append(f)
     out = []
     for k, fs in groups.items():
-        p = compute_progress(fs)
+        p = compute_progress(fs, None, baseline_ids)
         out.append({"key": k, "total": p["total"], "patched": p["patched"],
                     "open": p["open"], "regressions": p["regressions"],
                     "percent_complete": p["percent_complete"]})
@@ -260,7 +298,7 @@ async def maybe_autoclose(db, campaign: dict) -> bool:
     if campaign.get("status") == "closed":
         return False
     findings = await _campaign_findings(db, campaign)
-    if compute_progress(findings).get("complete"):
+    if compute_progress(findings, None, _baseline(campaign)).get("complete"):
         await close_campaign(db, campaign["id"], "system", "All findings remediated — auto-closed.")
         return True
     return False
