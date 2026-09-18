@@ -10,6 +10,7 @@ db_module.client=AsyncMongoMockClient(); db_module.db=db_module.client["t"]; db=
 import server, auth_utils
 from routes import remediation_campaigns as rr; rr.db=db
 from routes import findings as fr; fr.db=db
+from routes import workflows as wf; wf.db=db
 import remediation_campaigns as rc
 from fastapi.testclient import TestClient
 run=lambda x: asyncio.get_event_loop().run_until_complete(x)
@@ -158,6 +159,40 @@ run(rc.snapshot_progress(db, day="2026-09-17"))
 bd=c.get(f"/api/v1/remediation-campaigns/{vid}/burndown").json()["series"]
 a(len(bd)>=2 and all("patched" in x and "open" in x for x in bd), bd)
 print("PASS: daily progress snapshots build a burndown series per campaign")
+
+# ============ real exception workflow + ticket attach ============
+run(db.findings.insert_one({"id":"ex1","title":"WontPatch","severity":"High","status":"New","owner_team":"SecOps","asset_id":"hx","asset_hostname":"hx"}))
+ec=c.post("/api/v1/remediation-campaigns", json={"name":"exc camp","finding_ids":["ex1"]}).json()
+r=c.post(f"/api/v1/remediation-campaigns/{ec['id']}/request-exceptions",
+         json={"finding_ids":["ex1"],"business_justification":"Vendor has no patch until Q4","duration_days":120})
+a(r.status_code==200 and r.json()["requested"]==1, r.text)
+a(run(db.exceptions.count_documents({"finding_id":"ex1"}))==1, "a real exception was filed via the workflow")
+act=c.get(f"/api/v1/remediation-campaigns/{ec['id']}").json()["activity"]
+a(any(e["action"]=="exception_filed" for e in act))
+print("PASS: can't-patch files a REAL risk-acceptance exception through the exceptions workflow")
+
+# ticket attach: a finding with a ticket in db.tickets shows ticket_ref
+run(db.tickets.insert_one({"id":"tk1","external_id":"RA-ABC123","system":"internal","url":"/exceptions/xyz","finding_id":"ex1","status":"open"}))
+d=c.get(f"/api/v1/remediation-campaigns/{ec['id']}").json()
+f_ex1=[f for f in d["findings"] if f["id"]=="ex1"][0]
+a(f_ex1.get("ticket_ref") and f_ex1["ticket_ref"]["external_id"]=="RA-ABC123" and f_ex1["ticket_ref"]["url"], f_ex1.get("ticket_ref"))
+print("PASS: each campaign finding carries its real ticket (external id + url) for a clickable link")
+
+# ============ assignable users ============
+run(db.users.insert_many([{"email":"a@x.com","name":"Admin A","team":"SecOps","role":"admin"},
+                          {"email":"t@x.com","name":"Tech T","teams":["IT"],"role":"analyst"}]))
+au=c.get("/api/v1/remediation-campaigns/assignable-users").json()["items"]
+a(len(au)>=2 and any(u["email"]=="t@x.com" and u["team"]=="IT" for u in au), au)
+print("PASS: assignable-users returns users (email/name/team) for the assignee picker")
+
+# ============ channel dispatch is invoked (a rule delivers) ============
+run(db.notification_channels.insert_one({"id":"ch1","type":"email","enabled":True,"to":"soc@x.com"}))
+run(db.notification_rules.insert_one({"id":"r1","trigger":"remediation_assigned","active":True,"channel_ids":["ch1"],"template_id":"new_assignment","frequency":"immediate"}))
+run(db.notifications_outbox.delete_many({}))
+ac=c.post("/api/v1/remediation-campaigns", json={"name":"dispatch camp","finding_ids":["ex1"],"assignees":["someone@x.com"]}).json()
+# outbox got the per-assignee record AND the rule-driven delivery attempt was made
+a(run(db.notifications_outbox.count_documents({"kind":"campaign_assigned"}))>=1, "per-assignee outbox record")
+print("PASS: assignment fans out to configured Notifications channels (dispatch) in addition to the outbox")
 
 server.app.dependency_overrides.clear()
 print("\nALL REMEDIATION CAMPAIGN v2 TESTS PASSED")

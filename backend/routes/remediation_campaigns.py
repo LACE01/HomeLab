@@ -1,6 +1,6 @@
 """Item 62 -- Remediation Campaign / Patch Tracker routes (v2)."""
 from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from db import db
@@ -60,6 +60,14 @@ async def list_campaigns(owner_team: Optional[str] = None, mine: bool = False,
 @router.get("/v1/remediation-campaigns/alerts")
 async def campaign_alerts(user: dict = Depends(require_module(MODULE_KEY))):
     return await rc.alerts(db)
+
+
+@router.get("/v1/remediation-campaigns/assignable-users")
+async def assignable_users(user: dict = Depends(require_module(MODULE_KEY))):
+    """Users to pick as campaign assignees (for the assignee dropdown)."""
+    rows = await db.users.find({}, {"_id": 0, "email": 1, "name": 1, "team": 1, "teams": 1, "role": 1}).to_list(500)
+    return {"items": [{"email": u.get("email"), "name": u.get("name"),
+                       "team": u.get("team") or (u.get("teams") or [None])[0]} for u in rows if u.get("email")]}
 
 
 @router.post("/v1/remediation-campaigns/notify")
@@ -226,6 +234,40 @@ async def bulk_status(campaign_id: str, body: BulkStatusBody,
     if camp:
         await rc.maybe_autoclose(db, camp)
     return {"updated": len(body.finding_ids)}
+
+
+class ExceptionReqBody(BaseModel):
+    finding_ids: List[str]
+    business_justification: str
+    duration_days: int = 90
+    compensating_controls: Optional[List[str]] = None
+
+
+@router.post("/v1/remediation-campaigns/{campaign_id}/request-exceptions")
+async def request_exceptions(campaign_id: str, body: ExceptionReqBody,
+                             user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    """Can't-patch path: file REAL risk-acceptance exceptions through the built-in
+    exceptions workflow (approval chain + ticket), one per finding, instead of just
+    flipping a status. The findings stay in their current status until approved."""
+    if not body.business_justification.strip():
+        raise HTTPException(400, "A business justification is required for a risk exception")
+    from routes.workflows import request_exception as _req_exc, ExceptionCreate
+    actor = user.get("email") or user.get("id")
+    created = []
+    for fid in body.finding_ids:
+        try:
+            exc = await _req_exc(ExceptionCreate(
+                target_type="finding", finding_id=fid,
+                business_justification=body.business_justification,
+                duration_days=body.duration_days,
+                compensating_controls=body.compensating_controls or []), user)
+            created.append(exc.get("id"))
+        except HTTPException:
+            continue
+    await rc.log_activity(db, campaign_id, actor, "exception_filed",
+                          f"Filed {len(created)} risk-acceptance exception(s) via the exceptions workflow "
+                          f"({body.duration_days}d): {body.business_justification[:80]}")
+    return {"requested": len(created), "exception_ids": created}
 
 
 @router.post("/v1/remediation-campaigns/{campaign_id}/close")

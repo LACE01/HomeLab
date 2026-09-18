@@ -183,11 +183,21 @@ async def _campaign_findings(db, campaign: dict) -> list:
     ids = campaign.get("finding_ids") or []
     if not ids:
         return []
-    return await db.findings.find(
+    findings = await db.findings.find(
         {"id": {"$in": ids}},
         {"_id": 0, "id": 1, "title": 1, "cve": 1, "qid": 1, "severity": 1, "status": 1,
          "asset_id": 1, "asset_hostname": 1, "owner_team": 1, "due_at": 1, "kev_flag": 1,
          "first_seen_at": 1, "assigned_to": 1, "ticket": 1, "entity_name": 1}).to_list(100000)
+    # attach the real ticket (db.tickets, e.g. a risk-acceptance ticket) per finding
+    tix = {}
+    async for t in db.tickets.find({"finding_id": {"$in": ids}}, {"_id": 0}):
+        tix.setdefault(t.get("finding_id"), t)
+    for f in findings:
+        t = tix.get(f["id"])
+        if t:
+            f["ticket_ref"] = {"external_id": t.get("external_id") or t.get("id"),
+                               "url": t.get("url"), "system": t.get("system"), "status": t.get("status")}
+    return findings
 
 
 async def list_campaigns(db, *, owner_team=None) -> list:
@@ -355,13 +365,19 @@ async def notify_alerts(db) -> dict:
             key = f"campaign:{kind}:{r['id']}:{today}"
             if await db.notifications_outbox.find_one({"dedupe_key": key}, {"_id": 0}):
                 continue
+            body = (f"{r.get('open', '?')} findings still open past due"
+                    if kind == "overdue" else f"{r.get('regressions')} regression(s) detected")
             await db.notifications_outbox.insert_one({
                 "id": str(uuid.uuid4()), "dedupe_key": key,
                 "kind": f"remediation_{kind}", "title": f"Campaign {kind}: {r['name']}",
-                "body": (f"{r.get('open', '?')} findings still open past due"
-                         if kind == "overdue" else f"{r.get('regressions')} regression(s) detected"),
-                "link": f"/remediation-campaigns", "created_at": _now_iso(), "read": False})
+                "body": body, "link": f"/remediation-campaigns", "created_at": _now_iso(), "read": False})
             sent += 1
+            try:
+                from notifier import dispatch
+                await dispatch(f"remediation_{kind}", {"campaign": r["name"], "body": body,
+                                                       "link": "/remediation-campaigns"}, db)
+            except Exception:
+                pass
     return {"sent": sent}
 
 
@@ -382,6 +398,16 @@ async def notify_assignees(db, campaign: dict, recipients, kind: str, body: str)
             "body": body, "link": "/remediation-campaigns",
             "created_at": _now_iso(), "read": False})
         sent += 1
+    # Also fan out through the configured Notifications channels/rules (email/Slack/
+    # SMS) -- best-effort, never blocks the outbox record.
+    try:
+        from notifier import dispatch
+        trigger = "remediation_overdue" if kind == "overdue" else "remediation_assigned"
+        await dispatch(trigger, {"campaign": campaign.get("name"), "owner_team": campaign.get("owner_team"),
+                                 "recipients": list(recipients or []), "body": body,
+                                 "link": "/remediation-campaigns"}, db)
+    except Exception:
+        pass
     return sent
 
 
