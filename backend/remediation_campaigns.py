@@ -33,6 +33,19 @@ def compute_progress(findings: list, due_date: str | None = None) -> dict:
     pct = round(100 * len(resolved) / total) if total else 0
     complete = total > 0 and len(resolved) == total
     overdue = bool(due_date) and not complete and due_date < _now_iso()
+    # aging: how long the still-open findings have been open (days since first seen)
+    now = datetime.now(timezone.utc)
+    ages = []
+    for f in still_open:
+        fs = f.get("first_seen_at")
+        if fs:
+            try:
+                dt = datetime.fromisoformat(str(fs).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                ages.append((now - dt).days)
+            except Exception:
+                pass
     return {
         "total": total,
         "patched": len(resolved),
@@ -42,6 +55,9 @@ def compute_progress(findings: list, due_date: str | None = None) -> dict:
         "complete": complete,
         "overdue": overdue,
         "by_status": _by_status(findings),
+        "avg_open_age_days": round(sum(ages) / len(ages)) if ages else 0,
+        "max_open_age_days": max(ages) if ages else 0,
+        "aging_over_30d": sum(1 for a in ages if a > 30),
     }
 
 
@@ -77,17 +93,21 @@ async def _resolve_finding_ids(db, *, finding_ids=None, filt=None) -> list:
 
 
 async def create_campaign(db, *, name, description="", owner_team=None, due_date=None,
-                          finding_ids=None, filt=None, created_by="system") -> dict:
+                          finding_ids=None, filt=None, assignees=None, created_by="system") -> dict:
     ids = await _resolve_finding_ids(db, finding_ids=finding_ids, filt=filt)
     doc = {
         "id": str(uuid.uuid4()), "name": name, "description": description,
         "owner_team": owner_team, "due_date": due_date,
-        "finding_ids": ids, "created_by": created_by, "created_at": _now_iso(),
+        "assignees": assignees or [],
+        "finding_ids": ids, "filter": filt or None,
+        "created_by": created_by, "created_at": _now_iso(),
         "status": "active",
         # snapshot of the baseline so "started at N, X to go" is provable later
         "baseline_total": len(ids), "baseline_at": _now_iso(),
     }
     await db.remediation_campaigns.insert_one(dict(doc))
+    await log_activity(db, doc["id"], created_by, "created",
+                       f"Campaign created with {len(ids)} finding(s)")
     return {k: v for k, v in doc.items() if k != "_id"}
 
 
@@ -98,7 +118,8 @@ async def _campaign_findings(db, campaign: dict) -> list:
     return await db.findings.find(
         {"id": {"$in": ids}},
         {"_id": 0, "id": 1, "title": 1, "cve": 1, "qid": 1, "severity": 1, "status": 1,
-         "asset_hostname": 1, "owner_team": 1, "due_at": 1, "kev_flag": 1}).to_list(100000)
+         "asset_id": 1, "asset_hostname": 1, "owner_team": 1, "due_at": 1, "kev_flag": 1,
+         "first_seen_at": 1, "assigned_to": 1, "ticket": 1, "entity_name": 1}).to_list(100000)
 
 
 async def list_campaigns(db, *, owner_team=None) -> list:
@@ -110,12 +131,25 @@ async def list_campaigns(db, *, owner_team=None) -> list:
     return out
 
 
-async def campaign_detail(db, campaign_id: str) -> dict | None:
+async def campaign_detail(db, campaign_id: str, *, for_user: dict = None) -> dict | None:
     camp = await db.remediation_campaigns.find_one({"id": campaign_id}, {"_id": 0})
     if not camp:
         return None
     findings = await _campaign_findings(db, camp)
     camp["progress"] = compute_progress(findings, camp.get("due_date"))
+    camp["groups"] = {
+        "device": group_breakdown(findings, "device"),
+        "vulnerability": group_breakdown(findings, "vulnerability"),
+        "team": group_breakdown(findings, "team"),
+    }
+    camp["activity"] = await activity(db, campaign_id)
+    camp["timeline"] = await timeline(db, camp)
+    # a "mine" slice for the tech view: findings assigned to the user or their team
+    if for_user:
+        teams = set(for_user.get("teams") or ([for_user["team"]] if for_user.get("team") else []))
+        email = for_user.get("email")
+        camp["mine"] = [f["id"] for f in findings
+                        if f.get("assigned_to") == email or f.get("owner_team") in teams]
     camp["findings"] = sorted(findings, key=lambda f: (f.get("status") in RESOLVED_STATUSES,
                                                        f.get("severity") or ""))
     return camp
@@ -133,3 +167,123 @@ async def alerts(db) -> dict:
         if p["complete"] and camp.get("status") != "closed":
             completed.append({"id": camp["id"], "name": camp["name"]})
     return {"overdue": overdue, "regressions": regressions, "newly_complete": completed}
+
+
+# ------------------------------------------------------------------ activity
+async def log_activity(db, campaign_id, actor, action, detail="", **extra) -> dict:
+    """Append to a campaign's append-only activity log (the audit + timeline source).
+    action is one of: created, note, status_change, added_findings, removed_findings,
+    patch_detected, exception_filed, closed, reopened."""
+    doc = {"id": str(uuid.uuid4()), "campaign_id": campaign_id, "actor": actor,
+           "action": action, "detail": detail, "at": _now_iso(), **extra}
+    await db.remediation_campaign_activity.insert_one(dict(doc))
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+async def activity(db, campaign_id, limit=300) -> list:
+    return await db.remediation_campaign_activity.find(
+        {"campaign_id": campaign_id}, {"_id": 0}).sort("at", -1).to_list(limit)
+
+
+async def add_note(db, campaign_id, *, actor, text, attachments=None, links=None) -> dict:
+    """A campaign-level note with optional screenshots (attachments) and links."""
+    return await log_activity(db, campaign_id, actor, "note", text,
+                              attachments=attachments or [], links=links or [])
+
+
+# ------------------------------------------------------------- mass note/status
+async def mass_note_findings(db, *, finding_ids, actor, text, attachments=None) -> int:
+    """Write one note to MANY findings at once (db.comments, the same store the
+    Finding detail uses) so the tech doesn't have to open each vulnerability."""
+    n = 0
+    for fid in finding_ids or []:
+        await db.comments.insert_one({
+            "id": str(uuid.uuid4()), "finding_id": fid, "author": actor,
+            "text": text, "attachments": attachments or [], "created_at": _now_iso()})
+        n += 1
+    return n
+
+
+# -------------------------------------------------------------------- grouping
+def group_breakdown(findings: list, by: str) -> list:
+    """Per-device / per-vulnerability / per-team rollup of a campaign's findings,
+    each with its own patched/open/regression progress -- so the work can be sliced
+    the same three ways the Findings tab offers."""
+    keyer = {
+        "device": lambda f: f.get("asset_hostname") or f.get("asset_id") or "Unknown host",
+        "vulnerability": lambda f: f.get("cve") or f.get("title") or "Unknown vuln",
+        "team": lambda f: f.get("owner_team") or "Unassigned",
+    }.get(by, lambda f: "All")
+    groups: dict = {}
+    for f in findings:
+        groups.setdefault(keyer(f), []).append(f)
+    out = []
+    for k, fs in groups.items():
+        p = compute_progress(fs)
+        out.append({"key": k, "total": p["total"], "patched": p["patched"],
+                    "open": p["open"], "regressions": p["regressions"],
+                    "percent_complete": p["percent_complete"]})
+    out.sort(key=lambda g: (-g["open"], -g["total"]))
+    return out
+
+
+# -------------------------------------------------------------------- timeline
+async def timeline(db, campaign: dict) -> list:
+    """Merged timeline: patches applied (from db.patches_applied, scoped to the
+    campaign's findings) + campaign activity events, oldest first."""
+    ids = set(campaign.get("finding_ids") or [])
+    events = []
+    if ids:
+        async for pa in db.patches_applied.find(
+                {"finding_ids": {"$elemMatch": {"$in": list(ids)}}}, {"_id": 0}):
+            hits = [fid for fid in (pa.get("finding_ids") or []) if fid in ids]
+            if hits:
+                events.append({"at": pa.get("resolved_at"), "type": "patch",
+                               "detail": f"{pa.get('asset_hostname') or 'host'}: {pa.get('title') or 'patched'}",
+                               "count": len(hits)})
+    for a in await activity(db, campaign["id"]):
+        events.append({"at": a["at"], "type": a["action"], "detail": a.get("detail", ""),
+                       "actor": a.get("actor")})
+    events.sort(key=lambda e: e.get("at") or "")
+    return events
+
+
+# ---------------------------------------------------------------------- close
+async def close_campaign(db, campaign_id, actor, note="") -> None:
+    await db.remediation_campaigns.update_one(
+        {"id": campaign_id}, {"$set": {"status": "closed", "closed_at": _now_iso()}})
+    await log_activity(db, campaign_id, actor, "closed", note or "Campaign closed")
+
+
+async def maybe_autoclose(db, campaign: dict) -> bool:
+    """Auto-close a campaign the moment every finding is resolved."""
+    if campaign.get("status") == "closed":
+        return False
+    findings = await _campaign_findings(db, campaign)
+    if compute_progress(findings).get("complete"):
+        await close_campaign(db, campaign["id"], "system", "All findings remediated — auto-closed.")
+        return True
+    return False
+
+
+# -------------------------------------------------------- alerts -> notifications
+async def notify_alerts(db) -> dict:
+    """Push campaign alerts (overdue, regression) into the notifications outbox --
+    the same channel the Notifications tab reads -- deduped per campaign+kind+day."""
+    from datetime import date
+    today = date.today().isoformat()
+    sent = 0
+    al = await alerts(db)
+    for kind, rows in (("overdue", al["overdue"]), ("regression", al["regressions"])):
+        for r in rows:
+            key = f"campaign:{kind}:{r['id']}:{today}"
+            if await db.notifications_outbox.find_one({"dedupe_key": key}, {"_id": 0}):
+                continue
+            await db.notifications_outbox.insert_one({
+                "id": str(uuid.uuid4()), "dedupe_key": key,
+                "kind": f"remediation_{kind}", "title": f"Campaign {kind}: {r['name']}",
+                "body": (f"{r.get('open', '?')} findings still open past due"
+                         if kind == "overdue" else f"{r.get('regressions')} regression(s) detected"),
+                "link": f"/remediation-campaigns", "created_at": _now_iso(), "read": False})
+            sent += 1
+    return {"sent": sent}
