@@ -40,6 +40,14 @@ def user_teams(user: dict) -> list:
     return teams
 
 
+# Canonical finding-status buckets. "Fixed pending validation" is still OPEN --
+# it isn't resolved until validated. Everything in RESOLVED_STATUSES is a closed
+# outcome and must not be counted as, or shown among, active findings by default.
+OPEN_STATUSES = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+RESOLVED_STATUSES = ["Fixed validated", "Mitigated", "False positive", "Duplicate",
+                     "Accepted risk", "Closed administratively"]
+
+
 def team_scope_filter(user: dict, field: str = "owner_team") -> dict:
     """Mongo filter fragment restricting to the given user's teams -- analyst and
     executive roles only ever see data belonging to (one of) their own teams; admin

@@ -115,6 +115,7 @@ export default function Findings() {
   const [tagFilter, setTagFilter] = useState([]);            // asset tags
   const [kevOnly, setKevOnly] = useState(false);
   const [internetOnly, setInternetOnly] = useState(false);
+  const [showResolved, setShowResolved] = useState(false);   // #60: hide resolved by default
   const [facetOpts, setFacetOpts] = useState({ available_tags: [], available_asset_types: [] });
   const [selected, setSelected] = useState(new Set());
   const [bulkStatus, setBulkStatus] = useState("Valid");
@@ -162,6 +163,7 @@ export default function Findings() {
     tagFilter.forEach(v => usp.append("tags", v));
     if (kevOnly) usp.set("kev", "true");
     if (internetOnly) usp.set("internet_facing", "true");
+    if (showResolved) usp.set("include_resolved", "true");
     if (cweParam) usp.set("cwe", cweParam);
     if (cveParam) usp.set("cve", cveParam);
     if (myQueue && user?.team) usp.set("owner_team", user.team);
@@ -171,7 +173,7 @@ export default function Findings() {
     setItems(r.data.items || []); setTotal(r.data.total);
     setLoading(false); setSelected(new Set());
   };
-  const facetKey = [severities.join(","), statuses.join(","), exploitability.join(","), assetTypes.join(","), tagFilter.join(","), kevOnly, internetOnly].join("|");
+  const facetKey = [severities.join(","), statuses.join(","), exploitability.join(","), assetTypes.join(","), tagFilter.join(","), kevOnly, internetOnly, showResolved].join("|");
   useEffect(() => { if (prefs) load(); /* eslint-disable-next-line */ }, [prefs, view, facetKey, myQueue, groupBy, viewMode, cweParam, cveParam, sourceToolParam, sort, order, page]);
   // Any filter change (other than paging itself) should reset back to page 1 --
   // otherwise you can land on an empty page 5 after narrowing a filter down.
@@ -317,8 +319,10 @@ export default function Findings() {
             className={`h-8 px-2.5 text-[12px] rounded border ${kevOnly ? "border-red-500/40 bg-red-500/10 text-red-200" : "border-[#30363D] text-slate-300 hover:border-[#484F58]"}`}>KEV</button>
           <button onClick={()=>setInternetOnly(v=>!v)}
             className={`h-8 px-2.5 text-[12px] rounded border ${internetOnly ? "border-amber-500/40 bg-amber-500/10 text-amber-200" : "border-[#30363D] text-slate-300 hover:border-[#484F58]"}`}>Internet-facing</button>
+          <button onClick={()=>setShowResolved(v=>!v)} title="By default only open findings are shown"
+            className={`h-8 px-2.5 text-[12px] rounded border ${showResolved ? "border-slate-500 bg-slate-500/10 text-slate-200" : "border-[#30363D] text-slate-400 hover:border-[#484F58]"}`}>{showResolved ? "Showing resolved" : "Show resolved"}</button>
           {(severities.length||statuses.length||exploitability.length||assetTypes.length||tagFilter.length||kevOnly||internetOnly) > 0 && (
-            <button onClick={()=>{ setSeverities([]); setStatuses([]); setExploitability([]); setAssetTypes([]); setTagFilter([]); setKevOnly(false); setInternetOnly(false); }}
+            <button onClick={()=>{ setSeverities([]); setStatuses([]); setExploitability([]); setAssetTypes([]); setTagFilter([]); setKevOnly(false); setInternetOnly(false); setShowResolved(false); }}
               className="h-8 px-2.5 text-[12px] rounded border border-[#30363D] text-slate-400 hover:text-slate-200 inline-flex items-center gap-1"><X size={12}/> Clear</button>
           )}
           <select data-testid="filter-sort" value={sort} onChange={(e)=>setSort(e.target.value)} className="h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-200">

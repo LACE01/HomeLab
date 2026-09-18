@@ -12,9 +12,29 @@ from db import db
 from rbac import require_module
 from auth_utils import get_current_user, require_role
 from scoring import compute_risk
-from routes.common import now_iso, _clean, finding_ctx, team_scope_filter
+from routes.common import now_iso, _clean, finding_ctx, team_scope_filter, OPEN_STATUSES, RESOLVED_STATUSES
 
 router = APIRouter()
+
+
+def _q_or_clauses(q: str) -> list:
+    """Free-text search across title/CVE/hostname/QID. QID is stored as a string
+    by some scanners and as an int by others, and a $regex never matches a numeric
+    field -- which is exactly why searching a QID looked wired but returned nothing.
+    So for an all-digits query we also match the QID (and plugin_id) as a number."""
+    ql = (q or "").strip()
+    ors = [
+        {"title": {"$regex": ql, "$options": "i"}},
+        {"cve": {"$regex": ql, "$options": "i"}},
+        {"asset_hostname": {"$regex": ql, "$options": "i"}},
+        {"qid": {"$regex": ql, "$options": "i"}},
+    ]
+    if ql.isdigit():
+        ors.append({"qid": int(ql)})
+        ors.append({"qid": ql})
+        ors.append({"plugin_id": ql})
+        ors.append({"plugin_id": int(ql)})
+    return ors
 
 
 # --------------------------- FINDINGS LIST + STATS ---------------------------
@@ -32,6 +52,7 @@ async def list_findings(
     tags: Optional[List[str]] = Query(None),
     asset_type: Optional[List[str]] = Query(None),
     exploitability: Optional[List[str]] = Query(None),
+    include_resolved: bool = False,
     cve: Optional[str] = None,
     cwe: Optional[str] = None,
     view: Optional[str] = None,
@@ -106,12 +127,7 @@ async def list_findings(
         # against minor naming drift ("SBOM / OSV.dev" vs "SBOM/OSV.dev" etc).
         flt["source_tool"] = {"$regex": f"^{re.escape(source_tool)}$", "$options": "i"}
     if q:
-        and_clauses.append({"$or": [
-            {"title": {"$regex": q, "$options": "i"}},
-            {"cve": {"$regex": q, "$options": "i"}},
-            {"asset_hostname": {"$regex": q, "$options": "i"}},
-            {"qid": {"$regex": q, "$options": "i"}},
-        ]})
+        and_clauses.append({"$or": _q_or_clauses(q)})
 
     now = datetime.now(timezone.utc)
     if view == "kev":
@@ -135,6 +151,13 @@ async def list_findings(
         flt["assigned_to"] = None
         flt["status"] = {"$in": ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]}
 
+    # #60: by default the list shows only OPEN findings. Resolved/fixed items were
+    # appearing in the default (unfiltered) list and being counted as active, which
+    # inflated the numbers. If the user explicitly picks statuses, or a view sets
+    # one, or asks to include resolved, we respect that.
+    if not include_resolved and not status and not view and "status" not in flt:
+        flt["status"] = {"$in": OPEN_STATUSES}
+
     if and_clauses:
         flt["$and"] = flt.get("$and", []) + and_clauses
 
@@ -147,12 +170,19 @@ async def list_findings(
 
 @router.get("/v1/findings/stats")
 async def findings_stats(user: dict = Depends(get_current_user)):
-    pipeline_sev = [{"$group": {"_id": "$severity", "count": {"$sum": 1}}}]
+    # #60: severity/KEV headline counts are OPEN-scoped so resolved findings don't
+    # inflate the dashboard. by_status still spans every status (that's its job),
+    # and by_severity_all keeps the all-inclusive breakdown for anyone who wants it.
+    pipeline_sev = [{"$match": {"status": {"$in": OPEN_STATUSES}}},
+                    {"$group": {"_id": "$severity", "count": {"$sum": 1}}}]
+    pipeline_sev_all = [{"$group": {"_id": "$severity", "count": {"$sum": 1}}}]
     pipeline_status = [{"$group": {"_id": "$status", "count": {"$sum": 1}}}]
     sev = {r["_id"]: r["count"] async for r in db.findings.aggregate(pipeline_sev)}
+    sev_all = {r["_id"]: r["count"] async for r in db.findings.aggregate(pipeline_sev_all)}
     statuses = {r["_id"]: r["count"] async for r in db.findings.aggregate(pipeline_status)}
     total = await db.findings.count_documents({})
-    kev_count = await db.findings.count_documents({"kev_flag": True})
+    open_total = await db.findings.count_documents({"status": {"$in": OPEN_STATUSES}})
+    kev_count = await db.findings.count_documents({"kev_flag": True, "status": {"$in": OPEN_STATUSES}})
     overdue = await db.findings.count_documents({
         "due_at": {"$lt": now_iso()},
         "status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]},
@@ -167,8 +197,10 @@ async def findings_stats(user: dict = Depends(get_current_user)):
         asset_types = sorted([t for t in await db.assets.distinct("asset_type") if t])
     except Exception:
         asset_types = []
-    return {"total": total, "by_severity": sev, "by_status": statuses, "kev": kev_count,
-            "overdue": overdue, "available_tags": tags, "available_asset_types": asset_types}
+    return {"total": total, "open_total": open_total, "by_severity": sev,
+            "by_severity_all": sev_all, "by_status": statuses, "kev": kev_count,
+            "overdue": overdue, "available_tags": tags, "available_asset_types": asset_types,
+            "resolved_statuses": RESOLVED_STATUSES}
 
 
 # --------------------------- FINDINGS-GROUPS (literal path before {finding_id}) ---------------------------
@@ -195,12 +227,7 @@ async def findings_group(
         # Same search fields as the flat /v1/findings list -- previously the grouped
         # (default) Findings view silently ignored the search box entirely, so
         # searching a QID/CVE/hostname only worked with grouping turned off.
-        flt["$or"] = [
-            {"title": {"$regex": q, "$options": "i"}},
-            {"cve": {"$regex": q, "$options": "i"}},
-            {"asset_hostname": {"$regex": q, "$options": "i"}},
-            {"qid": {"$regex": q, "$options": "i"}},
-        ]
+        flt["$or"] = _q_or_clauses(q)
 
     field_map = {
         "cve": "$cve", "os": "$asset_os", "title": "$title",
