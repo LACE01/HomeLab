@@ -17,6 +17,61 @@ import {
 const SEVS = ["Critical", "High", "Medium", "Low"];
 const STATUSES = ["New","Needs triage","Valid","Fixed pending validation","Fixed validated","Mitigated","Accepted risk","Reopened"];
 const EXPLOIT = [["kev","KEV"],["active_attacks","Active attacks"],["public_exploit","Public exploit"],["epss_high","EPSS ≥ 0.5"]];
+const RESOLVED = ["Fixed validated","Mitigated","False positive","Duplicate","Accepted risk","Closed administratively"];
+
+// Client-side progress over a BASELINE (findings open at add-time), so the Admin
+// vs My-work toggle can rescope stats/groups without another round-trip.
+function progressOf(findings, baseline) {
+  const scope = baseline ? findings.filter(f => baseline.has(f.id)) : findings;
+  const patched = scope.filter(f => RESOLVED.includes(f.status)).length;
+  const open = scope.filter(f => !RESOLVED.includes(f.status)).length;
+  const regressions = scope.filter(f => f.status === "Reopened").length;
+  const total = scope.length;
+  const now = Date.now();
+  const ages = scope.filter(f => !RESOLVED.includes(f.status) && f.first_seen_at)
+    .map(f => (now - new Date(f.first_seen_at).getTime()) / 86400000);
+  return {
+    total, patched, open, regressions,
+    percent_complete: total ? Math.round(100 * patched / total) : 0,
+    aging_over_30d: ages.filter(a => a > 30).length,
+    avg_open_age_days: ages.length ? Math.round(ages.reduce((a,b)=>a+b,0)/ages.length) : 0,
+    max_open_age_days: ages.length ? Math.round(Math.max(...ages)) : 0,
+  };
+}
+function groupBreak(findings, by, baseline) {
+  const keyer = by === "device" ? (f => f.asset_hostname || f.asset_id || "Unknown host")
+    : by === "vulnerability" ? (f => f.cve || f.title || "Unknown vuln")
+    : (f => f.owner_team || "Unassigned");
+  const g = {};
+  findings.forEach(f => { (g[keyer(f)] = g[keyer(f)] || []).push(f); });
+  return Object.entries(g).map(([key, fs]) => ({ key, ...progressOf(fs, baseline) }))
+    .sort((a,b) => (b.open - a.open) || (b.total - a.total));
+}
+
+function Dropdown({ label, options, selected, onChange }) {
+  const [open, setOpen] = useState(false);
+  const count = selected.length;
+  return (
+    <div className="relative">
+      <button type="button" onClick={()=>setOpen(o=>!o)}
+        className={`h-8 w-full px-2 text-[12px] rounded border flex items-center justify-between ${count?"border-blue-500/40 bg-blue-500/10 text-blue-200":"border-[#30363D] text-slate-300"}`}>
+        <span className="truncate">{count ? `${count} selected` : label}</span><CaretDown size={12}/>
+      </button>
+      {open && <>
+        <div className="fixed inset-0 z-10" onClick={()=>setOpen(false)}/>
+        <div className="absolute z-20 mt-1 w-full max-h-52 overflow-y-auto bg-[#161B22] border border-[#30363D] rounded-md p-1">
+          {options.length===0 && <div className="px-2 py-1.5 text-[11.5px] text-slate-500">No options</div>}
+          {options.map(o => { const on=selected.includes(o); return (
+            <label key={o} className="flex items-center gap-2 px-2 py-1.5 text-[12px] cursor-pointer hover:bg-slate-800/40 rounded">
+              <input type="checkbox" checked={on} onChange={()=>onChange(on?selected.filter(x=>x!==o):[...selected,o])}/>
+              <span className={on?"text-blue-200":"text-slate-300"}>{o}</span>
+            </label>
+          );})}
+        </div>
+      </>}
+    </div>
+  );
+}
 
 function Bar2({ pct }) {
   const color = pct >= 100 ? "bg-emerald-500" : pct >= 50 ? "bg-blue-500" : "bg-amber-500";
@@ -125,14 +180,16 @@ function CreateModal({ onClose, onCreated }) {
   const [name,setName]=useState(""); const [team,setTeam]=useState(""); const [due,setDue]=useState("");
   const [assignees,setAssignees]=useState(""); const [busy,setBusy]=useState(false);
   const [sev,setSev]=useState([]); const [status,setStatus]=useState([]); const [exp,setExp]=useState([]);
-  const [tags,setTags]=useState(""); const [devtype,setDevtype]=useState(""); const [q,setQ]=useState("");
+  const [tags,setTags]=useState([]); const [devtype,setDevtype]=useState([]); const [q,setQ]=useState("");
   const [kev,setKev]=useState(false); const [inet,setInet]=useState(false);
+  const [facets,setFacets]=useState({available_tags:[],available_asset_types:[]});
+  useEffect(()=>{api.get("/v1/findings/stats").then(r=>setFacets(r.data)).catch(()=>{});},[]);
   const create=async()=>{
     if(!name.trim()){toast.error("Name required");return;}
     const f={};
     if(sev.length)f.severity=sev; if(status.length)f.status=status; if(exp.length)f.exploitability=exp;
-    if(tags.trim())f.tags=tags.split(",").map(x=>x.trim()).filter(Boolean);
-    if(devtype.trim())f.asset_type=devtype.split(",").map(x=>x.trim()).filter(Boolean);
+    if(tags.length)f.tags=tags;
+    if(devtype.length)f.asset_type=devtype;
     if(q.trim())f.q=q.trim(); if(kev)f.kev=true; if(inet)f.internet_facing=true; if(team)f.owner_team=team;
     if(!Object.keys(f).length){toast.error("Pick at least one filter so the campaign has members");return;}
     setBusy(true);
@@ -165,10 +222,10 @@ function CreateModal({ onClose, onCreated }) {
           <MultiChips label="Status" options={STATUSES} selected={status} onChange={setStatus}/>
           <MultiChips label="Exploitability" options={EXPLOIT} selected={exp} onChange={setExp}/>
           <div className="grid grid-cols-2 gap-3">
-            <div><div className="text-[10.5px] uppercase tracking-wider font-mono text-slate-500 mb-1">Device type (comma-sep)</div>
-              <input value={devtype} onChange={e=>setDevtype(e.target.value)} placeholder="server, workstation" className="w-full h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"/></div>
-            <div><div className="text-[10.5px] uppercase tracking-wider font-mono text-slate-500 mb-1">Tags (comma-sep)</div>
-              <input value={tags} onChange={e=>setTags(e.target.value)} placeholder="pci, dmz" className="w-full h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"/></div>
+            <div><div className="text-[10.5px] uppercase tracking-wider font-mono text-slate-500 mb-1">Device type</div>
+              <Dropdown label="Any device type" options={facets.available_asset_types||[]} selected={devtype} onChange={setDevtype}/></div>
+            <div><div className="text-[10.5px] uppercase tracking-wider font-mono text-slate-500 mb-1">Tags</div>
+              <Dropdown label="Any tag" options={facets.available_tags||[]} selected={tags} onChange={setTags}/></div>
           </div>
           <div className="flex gap-1.5">
             <button onClick={()=>setKev(v=>!v)} className={`h-7 px-2.5 text-[11.5px] rounded border ${kev?"border-red-500/40 bg-red-500/10 text-red-200":"border-[#30363D] text-slate-400"}`}>KEV only</button>
@@ -192,12 +249,26 @@ function CampaignDetail({ id, onBack }) {
   const [tab, setTab] = useState("overview");
   const [mineOnly, setMineOnly] = useState(!isAdmin);
   const [sel, setSel] = useState(new Set());
+  const [drill, setDrill] = useState(null);   // {by, key} group drill-in
   const load = async () => { try { const r = await api.get(`/v1/remediation-campaigns/${id}`); setC(r.data); } catch { toast.error("Failed to load"); } };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [id]);
   if (!c) return <Layout title="Campaign"><div className="text-[12px] text-slate-500">Loading…</div></Layout>;
-  const p = c.progress;
   const mineIds = new Set(c.mine || []);
-  const findings = (c.findings || []).filter(f => !mineOnly || mineIds.has(f.id));
+  const baseline = new Set(c.baseline_open_ids || (c.findings||[]).map(f=>f.id));
+  // Everything (stats, groups, chart) is scoped to the active view so Admin and
+  // My work are genuinely different, not the same numbers on different tabs.
+  const scoped = (c.findings || []).filter(f => !mineOnly || mineIds.has(f.id));
+  const p = progressOf(scoped, baseline);
+  const groups = { device: groupBreak(scoped,"device",baseline),
+                   vulnerability: groupBreak(scoped,"vulnerability",baseline),
+                   team: groupBreak(scoped,"team",baseline) };
+  // findings shown on the Findings tab: scope + optional group drill-in
+  const drillMatch = (f) => !drill ? true
+    : drill.by==="device" ? (f.asset_hostname||f.asset_id||"Unknown host")===drill.key
+    : drill.by==="vulnerability" ? (f.cve||f.title||"Unknown vuln")===drill.key
+    : (f.owner_team||"Unassigned")===drill.key;
+  const findings = scoped.filter(drillMatch);
+  const openGroup = (by, key) => { setDrill({by, key}); setTab("findings"); };
   const toggle = (fid) => { const n = new Set(sel); n.has(fid)?n.delete(fid):n.add(fid); setSel(n); };
 
   const massNote = async () => {
@@ -220,7 +291,7 @@ function CampaignDetail({ id, onBack }) {
   // due-by histogram
   const dueBuckets = [{k:"Overdue",v:0},{k:"≤7d",v:0},{k:"8–30d",v:0},{k:">30d",v:0},{k:"No date",v:0}];
   const now = Date.now();
-  (c.findings||[]).forEach(f => {
+  scoped.forEach(f => {
     if (f.status && ["Fixed validated","Mitigated","Accepted risk","Duplicate","False positive"].includes(f.status)) return;
     if (!f.due_at) { dueBuckets[4].v++; return; }
     const d = (new Date(f.due_at).getTime()-now)/86400000;
@@ -271,7 +342,7 @@ function CampaignDetail({ id, onBack }) {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             {[["device","By device"],["vulnerability","By vulnerability"],["team","By team"]].map(([k,lbl])=>(
-              <GroupCard key={k} title={lbl} rows={c.groups?.[k]||[]}/>
+              <GroupCard key={k} title={lbl} rows={groups[k]||[]} onPick={(key)=>openGroup(k,key)}/>
             ))}
           </div>
         </div>
@@ -280,7 +351,8 @@ function CampaignDetail({ id, onBack }) {
       {tab==="findings" && (
         <div className="max-w-5xl">
           <div className="flex items-center gap-2 mb-2 flex-wrap">
-            {!isAdmin || mineOnly ? <span className="text-[11px] text-slate-500">Showing your team / assigned findings</span> : null}
+            {mineOnly ? <span className="text-[11px] text-slate-500">Showing your team / assigned findings</span> : null}
+            {drill && <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-200">{drill.by}: {drill.key}<button onClick={()=>setDrill(null)} className="text-blue-300/70 hover:text-red-300"><X size={10}/></button></span>}
             {sel.size>0 && <>
               <span className="text-[12px] text-slate-300">{sel.size} selected</span>
               <button onClick={massNote} className="h-7 px-2.5 text-[11.5px] rounded border border-[#30363D] text-blue-300 inline-flex items-center gap-1"><NotePencil size={12}/> Mass note</button>
@@ -299,13 +371,13 @@ function CampaignDetail({ id, onBack }) {
                 {findings.map(f=>(
                   <tr key={f.id} className="border-b border-[#30363D]/60 hover:bg-slate-800/20">
                     <td className="pl-3 pr-1 py-1.5"><input type="checkbox" checked={sel.has(f.id)} onChange={()=>toggle(f.id)}/></td>
-                    <td className="px-2 py-1.5 text-slate-200">{f.title}</td>
+                    <td className="px-2 py-1.5"><Link to={`/findings/${f.id}`} className="text-slate-100 hover:text-blue-300 hover:underline">{f.title}</Link></td>
                     <td className="px-2 py-1.5 text-slate-400 font-mono">{f.cve||f.qid||"—"}</td>
                     <td className="px-2 py-1.5"><SevBadge severity={f.severity}/></td>
                     <td className="px-2 py-1.5 text-slate-400">{f.asset_hostname||"—"}</td>
                     <td className="px-2 py-1.5 text-slate-300">{f.status}</td>
                     <td className="px-2 py-1.5 text-slate-400">{f.ticket ? (typeof f.ticket==="string"?f.ticket:(f.ticket.key||f.ticket.id||"linked")) : "—"}</td>
-                    <td className="px-2 py-1.5"><Link to={`/findings/${f.id}`} className="text-blue-300 hover:underline inline-flex items-center gap-0.5">Open <ArrowSquareOut size={11}/></Link></td>
+                    <td className="px-2 py-1.5"><Link to={`/findings/${f.id}`} className="text-blue-300 hover:underline inline-flex items-center gap-0.5">Remediate <ArrowSquareOut size={11}/></Link></td>
                   </tr>
                 ))}
                 {findings.length===0 && <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-500 text-[12px]">No findings in this view.</td></tr>}
@@ -342,15 +414,15 @@ function Stat({ label, value, tone }) {
     <div className={`text-[18px] font-semibold mt-0.5 ${t}`}>{value}</div></div>;
 }
 
-function GroupCard({ title, rows }) {
+function GroupCard({ title, rows, onPick }) {
   return <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-3">
     <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500 mb-2">{title}</div>
     <div className="space-y-1.5 max-h-56 overflow-y-auto">
-      {rows.slice(0,20).map((g,i)=>(
-        <div key={i}>
-          <div className="flex justify-between text-[11.5px]"><span className="text-slate-300 truncate mr-2">{g.key}</span><span className="text-slate-500">{g.patched}/{g.total}</span></div>
+      {rows.slice(0,25).map((g,i)=>(
+        <button key={i} onClick={()=>onPick && onPick(g.key)} className="w-full text-left group">
+          <div className="flex justify-between text-[11.5px]"><span className="text-slate-300 group-hover:text-blue-300 truncate mr-2">{g.key}</span><span className="text-slate-500">{g.patched}/{g.total}</span></div>
           <Bar2 pct={g.percent_complete}/>
-        </div>
+        </button>
       ))}
       {rows.length===0 && <div className="text-[11.5px] text-slate-500">None</div>}
     </div>
