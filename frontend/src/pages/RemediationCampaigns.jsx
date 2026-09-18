@@ -7,7 +7,7 @@ import { Chip, SevBadge } from "@/components/Badges";
 import TeamCombobox from "@/components/TeamCombobox";
 import { useAuth } from "@/lib/auth";
 import {
-  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell,
+  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell, LineChart, Line, Legend,
 } from "recharts";
 import {
   Target, Warning, ArrowClockwise, CheckCircle, Plus, X, CaretDown, CaretLeft,
@@ -18,12 +18,15 @@ const SEVS = ["Critical", "High", "Medium", "Low"];
 const STATUSES = ["New","Needs triage","Valid","Fixed pending validation","Fixed validated","Mitigated","Accepted risk","Reopened"];
 const EXPLOIT = [["kev","KEV"],["active_attacks","Active attacks"],["public_exploit","Public exploit"],["epss_high","EPSS ≥ 0.5"]];
 const RESOLVED = ["Fixed validated","Mitigated","False positive","Duplicate","Accepted risk","Closed administratively"];
+const VERIFIED = ["Fixed validated"]; const ACCEPTED = ["Accepted risk"];
 
 // Client-side progress over a BASELINE (findings open at add-time), so the Admin
 // vs My-work toggle can rescope stats/groups without another round-trip.
 function progressOf(findings, baseline) {
   const scope = baseline ? findings.filter(f => baseline.has(f.id)) : findings;
   const patched = scope.filter(f => RESOLVED.includes(f.status)).length;
+  const verified = scope.filter(f => VERIFIED.includes(f.status)).length;
+  const accepted = scope.filter(f => ACCEPTED.includes(f.status)).length;
   const open = scope.filter(f => !RESOLVED.includes(f.status)).length;
   const regressions = scope.filter(f => f.status === "Reopened").length;
   const total = scope.length;
@@ -31,8 +34,10 @@ function progressOf(findings, baseline) {
   const ages = scope.filter(f => !RESOLVED.includes(f.status) && f.first_seen_at)
     .map(f => (now - new Date(f.first_seen_at).getTime()) / 86400000);
   return {
-    total, patched, open, regressions,
+    total, patched, verified, accepted, open, regressions,
+    unverified_resolved: patched - verified - accepted,
     percent_complete: total ? Math.round(100 * patched / total) : 0,
+    percent_verified: total ? Math.round(100 * verified / total) : 0,
     aging_over_30d: ages.filter(a => a > 30).length,
     avg_open_age_days: ages.length ? Math.round(ages.reduce((a,b)=>a+b,0)/ages.length) : 0,
     max_open_age_days: ages.length ? Math.round(Math.max(...ages)) : 0,
@@ -183,6 +188,7 @@ function CreateModal({ onClose, onCreated }) {
   const [tags,setTags]=useState([]); const [devtype,setDevtype]=useState([]); const [q,setQ]=useState("");
   const [kev,setKev]=useState(false); const [inet,setInet]=useState(false);
   const [facets,setFacets]=useState({available_tags:[],available_asset_types:[]});
+  const [reqVerify,setReqVerify]=useState(true); const [mwStart,setMwStart]=useState(""); const [mwEnd,setMwEnd]=useState(""); const [chg,setChg]=useState("");
   useEffect(()=>{api.get("/v1/findings/stats").then(r=>setFacets(r.data)).catch(()=>{});},[]);
   const create=async()=>{
     if(!name.trim()){toast.error("Name required");return;}
@@ -197,6 +203,9 @@ function CreateModal({ onClose, onCreated }) {
       await api.post("/v1/remediation-campaigns",{name:name.trim(),owner_team:team||null,
         due_date:due?new Date(due).toISOString():null,
         assignees:assignees.split(",").map(x=>x.trim()).filter(Boolean),
+        require_verification:reqVerify,
+        maintenance_window:(mwStart&&mwEnd)?{start:new Date(mwStart).toISOString(),end:new Date(mwEnd).toISOString()}:null,
+        change_ticket:chg.trim()||null,
         findings_filter:f});
       toast.success("Campaign created"); onCreated();
     }catch(e){toast.error(e.response?.data?.detail||"Create failed");}finally{setBusy(false);}
@@ -232,7 +241,16 @@ function CreateModal({ onClose, onCreated }) {
             <button onClick={()=>setInet(v=>!v)} className={`h-7 px-2.5 text-[11.5px] rounded border ${inet?"border-amber-500/40 bg-amber-500/10 text-amber-200":"border-[#30363D] text-slate-400"}`}>Internet-facing</button>
           </div>
         </div>
-        <div className="text-[11px] text-slate-500 my-3">Members are snapshotted from these filters now; progress then tracks their live scanner status.</div>
+        <div className="border-t border-[#30363D] mt-3 pt-3 grid grid-cols-2 gap-3">
+          <div><div className="text-[10.5px] uppercase tracking-wider font-mono text-slate-500 mb-1">Maintenance window start</div>
+            <input type="datetime-local" value={mwStart} onChange={e=>setMwStart(e.target.value)} className="w-full h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"/></div>
+          <div><div className="text-[10.5px] uppercase tracking-wider font-mono text-slate-500 mb-1">Maintenance window end</div>
+            <input type="datetime-local" value={mwEnd} onChange={e=>setMwEnd(e.target.value)} className="w-full h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"/></div>
+          <div><div className="text-[10.5px] uppercase tracking-wider font-mono text-slate-500 mb-1">Change ticket</div>
+            <input value={chg} onChange={e=>setChg(e.target.value)} placeholder="CHG-1001" className="w-full h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"/></div>
+          <label className="flex items-center gap-2 text-[12px] text-slate-300 mt-5"><input type="checkbox" checked={reqVerify} onChange={e=>setReqVerify(e.target.checked)}/> Require scanner verification to close</label>
+        </div>
+        <div className="text-[11px] text-slate-500 my-3">Members are snapshotted from these filters now; progress then tracks their live scanner status. With verification required, the campaign only closes once a scan confirms the fixes.</div>
         <div className="flex justify-end gap-2">
           <button onClick={onClose} className="h-8 px-3 text-[12px] text-slate-400 rounded border border-[#30363D]">Cancel</button>
           <button onClick={create} disabled={busy} className="h-8 px-4 text-[12px] bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-white rounded">{busy?"Creating…":"Create"}</button>
@@ -250,8 +268,9 @@ function CampaignDetail({ id, onBack }) {
   const [mineOnly, setMineOnly] = useState(!isAdmin);
   const [sel, setSel] = useState(new Set());
   const [drill, setDrill] = useState(null);   // {by, key} group drill-in
+  const [burn, setBurn] = useState([]);
   const load = async () => { try { const r = await api.get(`/v1/remediation-campaigns/${id}`); setC(r.data); } catch { toast.error("Failed to load"); } };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [id]);
+  useEffect(() => { load(); api.get(`/v1/remediation-campaigns/${id}/burndown`).then(r=>setBurn(r.data.series||[])).catch(()=>{}); /* eslint-disable-next-line */ }, [id]);
   if (!c) return <Layout title="Campaign"><div className="text-[12px] text-slate-500">Loading…</div></Layout>;
   const mineIds = new Set(c.mine || []);
   const baseline = new Set(c.baseline_open_ids || (c.findings||[]).map(f=>f.id));
@@ -286,7 +305,16 @@ function CampaignDetail({ id, onBack }) {
     await api.patch(`/v1/remediation-campaigns/${id}`, { remove_finding_ids:[...sel] });
     setSel(new Set()); load();
   };
-  const close = async () => { await api.post(`/v1/remediation-campaigns/${id}/close`); toast.success("Closed"); load(); };
+  const close = async () => {
+    try { await api.post(`/v1/remediation-campaigns/${id}/close`); toast.success("Closed"); load(); }
+    catch (e) {
+      const msg = e.response?.data?.detail || "Close failed";
+      if (window.confirm(`${msg}\n\nForce-close anyway?`)) {
+        await api.post(`/v1/remediation-campaigns/${id}/close`, null, { params: { force: true } });
+        toast.success("Force-closed"); load();
+      } else toast.error(msg);
+    }
+  };
 
   // due-by histogram
   const dueBuckets = [{k:"Overdue",v:0},{k:"≤7d",v:0},{k:"8–30d",v:0},{k:">30d",v:0},{k:"No date",v:0}];
@@ -315,11 +343,18 @@ function CampaignDetail({ id, onBack }) {
       <div className="flex items-center gap-2 mb-3 max-w-5xl">
         <Bar2 pct={p.percent_complete}/><span className="text-[12px] text-slate-300 w-10 text-right">{p.percent_complete}%</span>
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-4 max-w-5xl">
-        <Stat label="Total" value={p.total}/><Stat label="Patched" value={p.patched} tone="green"/>
+      <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-4 max-w-5xl">
+        <Stat label="To patch" value={p.total}/><Stat label="Patched" value={p.patched} tone="green"/>
+        <Stat label="Verified" value={p.verified} tone="green"/>
         <Stat label="Open" value={p.open}/><Stat label="Regressions" value={p.regressions} tone="orange"/>
         <Stat label="Aging >30d" value={p.aging_over_30d} tone="amber"/>
       </div>
+      {(c.maintenance_window?.start || c.change_ticket) && (
+        <div className="flex items-center gap-3 mb-4 text-[11.5px] text-slate-400 max-w-5xl">
+          {c.maintenance_window?.start && <span>🛠 Maintenance window: {new Date(c.maintenance_window.start).toLocaleString()} → {new Date(c.maintenance_window.end).toLocaleString()}</span>}
+          {c.change_ticket && <span>· Change: <span className="text-slate-300 font-mono">{c.change_ticket}</span></span>}
+        </div>
+      )}
 
       <div className="flex gap-1 mb-3 border-b border-[#30363D] max-w-5xl">
         {[["overview","Overview"],["findings","Findings"],["timeline","Timeline"],["notes","Notes"]].map(([t,l])=>(
@@ -329,6 +364,21 @@ function CampaignDetail({ id, onBack }) {
 
       {tab==="overview" && (
         <div className="space-y-4 max-w-5xl">
+          {burn.length > 1 && (
+            <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+              <div className="text-[12px] text-slate-300 mb-2">Burndown ({p.percent_verified}% verified)</div>
+              <ResponsiveContainer width="100%" height={180}>
+                <LineChart data={burn} margin={{top:5,right:10,left:-15,bottom:0}}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1f2733"/>
+                  <XAxis dataKey="day" tick={{fontSize:10,fill:"#64748b"}}/><YAxis tick={{fontSize:10,fill:"#64748b"}}/>
+                  <Tooltip contentStyle={{background:"#0D1117",border:"1px solid #30363D",fontSize:12}}/>
+                  <Legend wrapperStyle={{fontSize:11}}/>
+                  <Line type="monotone" dataKey="open" name="Still open" stroke="#f59e0b" strokeWidth={2} dot={false}/>
+                  <Line type="monotone" dataKey="verified" name="Verified" stroke="#22c55e" strokeWidth={2} dot={false}/>
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
           <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
             <div className="text-[12px] text-slate-300 mb-2">Due window (open findings) · avg open age {p.avg_open_age_days}d, max {p.max_open_age_days}d</div>
             <ResponsiveContainer width="100%" height={160}>
