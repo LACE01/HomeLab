@@ -79,6 +79,7 @@ MODULE_REGISTRY = [
     {"key": "/attack-paths", "label": "Attack Paths", "group": "Vulnerability Management"},
     {"key": "/exposure", "label": "Exposure", "group": "Vulnerability Management"},
     {"key": "/app-inventory", "label": "Application Inventory", "group": "Vulnerability Management"},
+    {"key": "/remediation-campaigns", "label": "Remediation Campaigns", "group": "Vulnerability Management"},
     {"key": "/admin/tls-certs", "label": "TLS Certificates", "group": "Vulnerability Management"},
     {"key": "/admin/email-auth", "label": "Email Authentication (SPF/DKIM/DMARC)", "group": "Vulnerability Management"},
     {"key": "/admin/eol-tracking", "label": "End-of-Life Software", "group": "Vulnerability Management"},
