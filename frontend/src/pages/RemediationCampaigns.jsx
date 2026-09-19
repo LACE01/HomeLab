@@ -465,6 +465,7 @@ function CampaignDetail({ id, onBack }) {
   const [sel, setSel] = useState(new Set());
   const [drill, setDrill] = useState(null);   // {by, key} group drill-in
   const [burn, setBurn] = useState([]);
+  const [report, setReport] = useState(null);
   const load = async () => { try { const r = await api.get(`/v1/remediation-campaigns/${id}`); setC(r.data); } catch { toast.error("Failed to load"); } };
   useEffect(() => { load(); api.get(`/v1/remediation-campaigns/${id}/burndown`).then(r=>setBurn(r.data.series||[])).catch(()=>{}); /* eslint-disable-next-line */ }, [id]);
   if (!c) return <Layout title="Campaign"><div className="text-[12px] text-slate-500">Loading…</div></Layout>;
@@ -511,7 +512,6 @@ function CampaignDetail({ id, onBack }) {
     setSel(new Set()); load();
   };
   const exportCsv = () => { window.open(`/api/v1/remediation-campaigns/${id}/export.csv`, "_blank"); };
-  const [report, setReport] = useState(null);
   const openReport = async () => { try { const r = await api.get(`/v1/remediation-campaigns/${id}/report`); setReport(r.data); } catch { toast.error("Report failed"); } };
   const reassignSel = async () => {
     if (!sel.size) return;
