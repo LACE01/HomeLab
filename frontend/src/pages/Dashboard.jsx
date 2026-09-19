@@ -69,6 +69,8 @@ function VulnOverTime() {
   const [dayModal, setDayModal] = useState(null);   // {day, groups, findings_patched}
   const [days, setDays] = useState(90);
   const [gran, setGran] = useState("day");
+  const [changed, setChanged] = useState(null);
+  const explainDay = (day) => api.get("/v1/dashboards/findings-changed-on-day", { params: { day } }).then(r => setChanged(r.data)).catch(()=>{});
   useEffect(() => {
     api.get("/v1/dashboards/vuln-timeseries", { params: { days, granularity: gran } }).then(r => setData(r.data)).catch(() => {});
   }, [days, gran]);
@@ -129,7 +131,14 @@ function VulnOverTime() {
             </ComposedChart>
           </ResponsiveContainer>
         )}
+        {spikes.length > 0 && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] uppercase tracking-wider font-mono text-slate-500">Spikes</span>
+            {spikes.slice(-8).map((sp,i)=>(<button key={i} onClick={()=>explainDay(sp.day)} className="px-1.5 py-0.5 text-[11px] rounded border border-red-500/40 text-red-300 hover:bg-red-500/10">{sp.day}</button>))}
+          </div>
+        )}
       </div>
+      {changed && <ChangedDayModal data={changed} onClose={()=>setChanged(null)}/>}
       {dayModal && <PatchesDayModal data={dayModal} onClose={()=>setDayModal(null)} onVerify={createVerification}/>}
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4 flex flex-col">
         <div className="text-[13px] text-slate-200 font-medium mb-1">KEV Burndown</div>
@@ -271,6 +280,30 @@ function PatchesDayModal({ data, onClose, onVerify }) {
           {data.groups && data.groups.length>0 && onVerify && <button onClick={()=>onVerify(data)} className="h-8 px-3 text-[12px] bg-blue-500/15 border border-blue-500/40 text-blue-200 rounded hover:bg-blue-500/25">Create verification campaign</button>}
           <button onClick={onClose} className="h-8 px-3 text-[12px] text-slate-400 rounded border border-[#30363D]">Close</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+
+function ChangedDayModal({ data, onClose }) {
+  const Section = ({ title, rows, tone }) => (
+    <div className="mb-3">
+      <div className={`text-[11px] uppercase tracking-wider font-mono mb-1 ${tone}`}>{title} ({rows.length})</div>
+      {rows.length===0 ? <div className="text-[11.5px] text-slate-500">None</div> :
+      <ul className="text-[12px] divide-y divide-[#30363D]/50">
+        {rows.map(f=>(<li key={f.id} className="py-1 flex items-center gap-2"><span className="text-slate-500 w-16 truncate">{f.severity}</span><Link to={`/findings/${f.id}`} className="text-slate-200 hover:text-blue-300 hover:underline truncate flex-1">{f.title}</Link><span className="text-slate-500 font-mono">{f.asset_hostname||""}</span></li>))}
+      </ul>}
+    </div>
+  );
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" onClick={onClose}>
+      <div className="w-full max-w-2xl bg-[#0D1117] border border-[#30363D] rounded-lg p-5 max-h-[80vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
+        <div className="text-[15px] text-slate-100 font-medium mb-1">What changed on {data.day}</div>
+        <div className="text-[11px] text-slate-500 mb-3">{data.created_count} newly created · {data.reopened_count} reopened — the likely cause of the spike</div>
+        <Section title="Newly created" rows={data.created} tone="text-amber-300"/>
+        <Section title="Reopened (regressions)" rows={data.reopened} tone="text-red-300"/>
+        <div className="flex justify-end"><button onClick={onClose} className="h-8 px-3 text-[12px] text-slate-400 rounded border border-[#30363D]">Close</button></div>
       </div>
     </div>
   );

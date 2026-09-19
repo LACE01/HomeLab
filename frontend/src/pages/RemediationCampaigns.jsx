@@ -135,6 +135,98 @@ function MultiChips({ label, options, selected, onChange }) {
   );
 }
 
+function ReportModal({ report, onClose }) {
+  const p = report.progress || {};
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 print:bg-white" onClick={onClose}>
+      <div className="w-full max-w-2xl bg-[#0D1117] border border-[#30363D] rounded-lg p-6 max-h-[85vh] overflow-y-auto print:bg-white print:text-black" onClick={e=>e.stopPropagation()} id="campaign-report">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <div className="text-[16px] text-slate-100 font-semibold print:text-black">{report.name}</div>
+            <div className="text-[11px] text-slate-500">{report.owner_team||"—"} · {report.status} · generated {new Date(report.generated_at).toLocaleString()}</div>
+          </div>
+          <div className="print:hidden flex gap-2">
+            <button onClick={()=>window.print()} className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded">Print / Save PDF</button>
+            <button onClick={onClose} className="h-8 px-3 text-[12px] text-slate-400 rounded border border-[#30363D]">Close</button>
+          </div>
+        </div>
+        <div className="grid grid-cols-4 gap-2 mb-4">
+          {[["To patch",p.total],["Patched",p.patched],["Verified",p.verified],["Open",p.open]].map(([k,v])=>(
+            <div key={k} className="border border-[#30363D] rounded p-2"><div className="text-[10px] uppercase text-slate-500">{k}</div><div className="text-[18px] text-slate-100 print:text-black">{v}</div></div>
+          ))}
+        </div>
+        <div className="text-[12px] text-slate-300 print:text-black mb-1">{p.percent_complete}% complete · {p.regressions||0} regressions · {p.aging_over_30d||0} aging &gt;30d{p.overdue?" · OVERDUE":""}</div>
+        {(report.exceptions||[]).length>0 && <div className="text-[12px] text-amber-300 mb-2">{report.exceptions.length} exception(s) filed</div>}
+        <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500 mt-3 mb-1">By team</div>
+        <div className="text-[12px] text-slate-300 print:text-black">{(report.groups?.team||[]).map(g=>`${g.key}: ${g.patched}/${g.total}`).join(" · ")||"—"}</div>
+        <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500 mt-3 mb-1">Recent timeline</div>
+        <ul className="text-[12px] text-slate-300 print:text-black list-disc ml-4">
+          {(report.timeline||[]).slice(-8).reverse().map((e,i)=><li key={i}>{(e.at||"").slice(0,10)} — {e.type}: {e.detail}</li>)}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function RecurringModal({ onClose, onChange }) {
+  const [items, setItems] = useState([]);
+  const [templates, setTemplates] = useState([]);
+  const [name, setName] = useState("Monthly patch {month}");
+  const [tpl, setTpl] = useState("");
+  const [cadence, setCadence] = useState("monthly");
+  const [dueDays, setDueDays] = useState(30);
+  const [assignees, setAssignees] = useState("");
+  const load = () => api.get("/v1/remediation-campaigns/recurring").then(r=>setItems(r.data.items||[])).catch(()=>{});
+  useEffect(()=>{ load(); api.get("/v1/remediation-campaigns/scope-templates").then(r=>setTemplates(r.data.items||[])).catch(()=>{}); },[]);
+  const create = async () => {
+    const t = templates.find(x=>x.id===tpl);
+    if (!t) { toast.error("Pick a saved scope template"); return; }
+    await api.post("/v1/remediation-campaigns/recurring", { name_template:name.trim()||"Recurring {month}", scope:t.filter,
+      cadence, due_days:Number(dueDays)||30, assignees:assignees.split(",").map(x=>x.trim()).filter(Boolean) });
+    toast.success("Recurring campaign scheduled"); setAssignees(""); load(); onChange && onChange();
+  };
+  const runNow = async (r) => { const x=await api.post(`/v1/remediation-campaigns/recurring/${r.id}/run-now`); toast.success(`Created a campaign (${x.data.findings} findings)`); onChange && onChange(); load(); };
+  const del = async (r) => { if(!window.confirm(`Delete recurring "${r.name_template}"?`))return; await api.delete(`/v1/remediation-campaigns/recurring/${r.id}`); load(); };
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" onClick={onClose}>
+      <div className="w-full max-w-2xl bg-[#0D1117] border border-[#30363D] rounded-lg p-5 max-h-[85vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
+        <div className="text-[15px] text-slate-100 font-medium mb-3">Recurring campaigns</div>
+        <div className="border border-[#30363D] rounded-md p-3 mb-4">
+          <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500 mb-2">Schedule a new one</div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><div className="text-[10.5px] text-slate-500 mb-1">Name template</div><input value={name} onChange={e=>setName(e.target.value)} className="w-full h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"/></div>
+            <div><div className="text-[10.5px] text-slate-500 mb-1">Scope template</div>
+              <select value={tpl} onChange={e=>setTpl(e.target.value)} className="w-full h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"><option value="">Pick…</option>{templates.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select></div>
+            <div><div className="text-[10.5px] text-slate-500 mb-1">Cadence</div><select value={cadence} onChange={e=>setCadence(e.target.value)} className="w-full h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"><option value="monthly">Monthly</option><option value="weekly">Weekly</option></select></div>
+            <div><div className="text-[10.5px] text-slate-500 mb-1">Due in (days)</div><input type="number" value={dueDays} onChange={e=>setDueDays(e.target.value)} className="w-full h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"/></div>
+          </div>
+          <div className="mt-2"><div className="text-[10.5px] text-slate-500 mb-1">Assignees (comma emails)</div><input value={assignees} onChange={e=>setAssignees(e.target.value)} className="w-full h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"/></div>
+          {templates.length===0 && <div className="text-[11px] text-amber-300 mt-2">Save a scope template first (in New campaign → Save scope).</div>}
+          <div className="flex justify-end mt-3"><button onClick={create} className="h-8 px-4 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded">Schedule</button></div>
+        </div>
+        <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500 mb-2">Scheduled ({items.length})</div>
+        <div className="space-y-2">
+          {items.map(r=>(
+            <div key={r.id} className="border border-[#30363D] rounded p-2.5 flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-[12.5px] text-slate-200 truncate">{r.name_template}</div>
+                <div className="text-[11px] text-slate-500">{r.cadence} · next {(r.next_run_at||"").slice(0,10)} · due in {r.due_days}d{r.active?"":" · paused"}</div>
+              </div>
+              <div className="flex gap-2 shrink-0">
+                <button onClick={()=>runNow(r)} className="h-7 px-2.5 text-[11.5px] rounded border border-[#30363D] text-blue-300">Run now</button>
+                <button onClick={()=>del(r)} className="h-7 px-2 text-slate-500 hover:text-red-400"><X size={13}/></button>
+              </div>
+            </div>
+          ))}
+          {items.length===0 && <div className="text-[12px] text-slate-500">None scheduled.</div>}
+        </div>
+        <div className="flex justify-end mt-4"><button onClick={onClose} className="h-8 px-3 text-[12px] text-slate-400 rounded border border-[#30363D]">Close</button></div>
+      </div>
+    </div>
+  );
+}
+
+
 export default function RemediationCampaigns() {
   const [selected, setSelected] = useState(null);
   if (selected) return <CampaignDetail id={selected} onBack={()=>setSelected(null)} />;
@@ -149,6 +241,7 @@ function CampaignList({ onOpen }) {
   const [open, setOpen] = useState(false);
   const [mine, setMine] = useState(false);
   const [workload, setWorkload] = useState(null);
+  const [recurringOpen, setRecurringOpen] = useState(false);
   const load = async () => {
     setLoading(true);
     try {
@@ -172,9 +265,11 @@ function CampaignList({ onOpen }) {
         <button onClick={()=>{ if(workload===null) api.get("/v1/remediation-campaigns/workload").then(r=>setWorkload(r.data.items||[])).catch(()=>{}); else setWorkload(null); }}
           className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] rounded text-slate-300">Workload</button>
         <button onClick={notify} className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] rounded text-slate-300">Send alerts</button>
+        <button onClick={()=>setRecurringOpen(true)} className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] rounded text-slate-300">Recurring</button>
         <button onClick={()=>setOpen(true)} className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded inline-flex items-center gap-1.5"><Plus size={14}/> New campaign</button>
       </>}>
       {open && <CreateModal onClose={()=>setOpen(false)} onCreated={()=>{setOpen(false);load();}} />}
+      {recurringOpen && <RecurringModal onClose={()=>setRecurringOpen(false)} onChange={load} />}
       {alerts && (alerts.overdue.length||alerts.regressions.length||alerts.newly_complete.length)>0 && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
           <AlertCard tone="red" icon={Warning} label="Overdue" items={alerts.overdue} render={x=>`${x.name} · ${x.open} open`} onOpen={onOpen}/>
@@ -415,6 +510,15 @@ function CampaignDetail({ id, onBack }) {
     await api.patch(`/v1/remediation-campaigns/${id}`, { remove_finding_ids:[...sel] });
     setSel(new Set()); load();
   };
+  const exportCsv = () => { window.open(`/api/v1/remediation-campaigns/${id}/export.csv`, "_blank"); };
+  const [report, setReport] = useState(null);
+  const openReport = async () => { try { const r = await api.get(`/v1/remediation-campaigns/${id}/report`); setReport(r.data); } catch { toast.error("Report failed"); } };
+  const reassignSel = async () => {
+    if (!sel.size) return;
+    const who = window.prompt(`Reassign ${sel.size} finding(s) to (email):`); if (!who || !who.trim()) return;
+    await api.post(`/v1/remediation-campaigns/${id}/bulk-assign`, { finding_ids:[...sel], assignee:who.trim() });
+    toast.success(`Reassigned ${sel.size}`); setSel(new Set()); load();
+  };
   const close = async () => {
     try { await api.post(`/v1/remediation-campaigns/${id}/close`); toast.success("Closed"); load(); }
     catch (e) {
@@ -446,10 +550,13 @@ function CampaignDetail({ id, onBack }) {
             <button onClick={()=>setMineOnly(true)} className={`px-3 h-8 text-[12px] ${mineOnly?"bg-blue-500/15 text-blue-300":"text-slate-400"}`}>My work</button>
           </div>
         )}
+        <button onClick={exportCsv} className="h-8 px-3 text-[12px] border border-[#30363D] rounded text-slate-300">Export CSV</button>
+        <button onClick={openReport} className="h-8 px-3 text-[12px] border border-[#30363D] rounded text-slate-300">Report</button>
         {isAdmin && c.status!=="closed" && <button onClick={close} className="h-8 px-3 text-[12px] border border-[#30363D] rounded text-slate-300">Close</button>}
         <button onClick={onBack} className="h-8 px-3 text-[12px] border border-[#30363D] rounded text-slate-300 inline-flex items-center gap-1"><CaretLeft size={13}/> Back</button>
       </>}>
 
+      {report && <ReportModal report={report} onClose={()=>setReport(null)}/>}
       <div className="flex items-center gap-2 mb-3 max-w-5xl">
         <Bar2 pct={p.percent_complete}/><span className="text-[12px] text-slate-300 w-10 text-right">{p.percent_complete}%</span>
       </div>
@@ -521,6 +628,7 @@ function CampaignDetail({ id, onBack }) {
                 <option value="">Set status…</option>{STATUSES.map(s=><option key={s}>{s}</option>)}
               </select>
               <button onClick={requestExc} className="h-7 px-2.5 text-[11.5px] rounded border border-amber-500/40 text-amber-200">Can&apos;t patch → exception</button>
+              {isAdmin && <button onClick={reassignSel} className="h-7 px-2.5 text-[11.5px] rounded border border-[#30363D] text-emerald-300">Reassign</button>}
               {isAdmin && <button onClick={removeSel} className="h-7 px-2.5 text-[11.5px] rounded border border-[#30363D] text-red-300">Remove</button>}
             </>}
           </div>
@@ -528,7 +636,7 @@ function CampaignDetail({ id, onBack }) {
             <table className="w-full text-[12px]">
               <thead><tr className="border-b border-[#30363D] text-left text-slate-500 text-[10.5px] uppercase tracking-wider">
                 <th className="pl-3 pr-1 py-2 w-6"></th><th className="px-2 py-2">Finding</th><th className="px-2 py-2">CVE/QID</th>
-                <th className="px-2 py-2">Sev</th><th className="px-2 py-2">Asset</th><th className="px-2 py-2">Status</th><th className="px-2 py-2">Open</th><th className="px-2 py-2">Ticket</th><th className="px-2 py-2"></th></tr></thead>
+                <th className="px-2 py-2">Sev</th><th className="px-2 py-2">Asset</th><th className="px-2 py-2">Status</th><th className="px-2 py-2">Open</th><th className="px-2 py-2">Due in</th><th className="px-2 py-2">Ticket</th><th className="px-2 py-2"></th></tr></thead>
               <tbody>
                 {findings.map(f=>(
                   <tr key={f.id} className="border-b border-[#30363D]/60 hover:bg-slate-800/20">
@@ -539,11 +647,12 @@ function CampaignDetail({ id, onBack }) {
                     <td className="px-2 py-1.5 text-slate-400">{f.asset_hostname||"—"}</td>
                     <td className="px-2 py-1.5 text-slate-300">{f.status}</td>
                     <td className="px-2 py-1.5 text-slate-400">{ageDays(f)!=null?`${ageDays(f)}d`:"—"}</td>
+                    <td className="px-2 py-1.5">{(() => { if(!f.due_at||RESOLVED.includes(f.status))return <span className="text-slate-500">—</span>; const dd=Math.round((new Date(f.due_at).getTime()-Date.now())/86400000); return <span className={dd<0?"text-red-300":dd<=7?"text-amber-300":"text-slate-400"}>{dd<0?`${-dd}d over`:`${dd}d`}</span>; })()}</td>
                     <td className="px-2 py-1.5">{f.ticket_ref?.url ? (f.ticket_ref.url.startsWith("http") ? <a href={f.ticket_ref.url} target="_blank" rel="noreferrer" className="text-blue-300 hover:underline">{f.ticket_ref.external_id}</a> : <Link to={f.ticket_ref.url} className="text-blue-300 hover:underline">{f.ticket_ref.external_id}</Link>) : (f.ticket ? <span className="text-slate-400">{typeof f.ticket==="string"?f.ticket:(f.ticket.key||f.ticket.id||"linked")}</span> : <span className="text-slate-500">—</span>)}</td>
                     <td className="px-2 py-1.5"><Link to={`/findings/${f.id}`} className="text-blue-300 hover:underline inline-flex items-center gap-0.5">Remediate <ArrowSquareOut size={11}/></Link></td>
                   </tr>
                 ))}
-                {findings.length===0 && <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-500 text-[12px]">No findings in this view.</td></tr>}
+                {findings.length===0 && <tr><td colSpan={10} className="px-3 py-6 text-center text-slate-500 text-[12px]">No findings in this view.</td></tr>}
               </tbody>
             </table>
           </div>
