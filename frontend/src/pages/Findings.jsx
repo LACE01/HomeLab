@@ -156,6 +156,41 @@ function ExportModal({ onClose, onExport, selectedCount, total }) {
 }
 
 
+function AddToCampaignModal({ count, onClose, onAdd }) {
+  const [camps, setCamps] = useState([]);
+  const [pick, setPick] = useState("");
+  const [newName, setNewName] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api.get("/v1/remediation-campaigns").then(r => setCamps((r.data.items||[]).filter(c=>c.status!=="closed"))).catch(()=>{}); }, []);
+  const go = async () => {
+    setBusy(true);
+    try { await onAdd(pick || null, pick ? null : newName.trim()); }
+    catch (e) { toast.error(e.response?.data?.detail || "Failed"); } finally { setBusy(false); }
+  };
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" onClick={onClose}>
+      <div className="w-full max-w-md bg-[#0D1117] border border-[#30363D] rounded-lg p-5" onClick={e=>e.stopPropagation()}>
+        <div className="text-[15px] text-slate-100 font-medium mb-1">Add {count} finding(s) to a campaign</div>
+        <div className="text-[11px] text-slate-500 mb-3">Pick an existing campaign, or create a new one from the selection.</div>
+        <div className="text-[10.5px] uppercase tracking-wider font-mono text-slate-500 mb-1">Existing campaign</div>
+        <select value={pick} onChange={e=>setPick(e.target.value)} className="w-full h-8 px-2 mb-3 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100">
+          <option value="">— none —</option>
+          {camps.map(c=><option key={c.id} value={c.id}>{c.name} ({c.progress?.patched}/{c.progress?.total})</option>)}
+        </select>
+        {!pick && <>
+          <div className="text-[10.5px] uppercase tracking-wider font-mono text-slate-500 mb-1">Or new campaign name</div>
+          <input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="e.g. Sept emergency patch" className="w-full h-8 px-2 mb-3 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"/>
+        </>}
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} className="h-8 px-3 text-[12px] text-slate-400 rounded border border-[#30363D]">Cancel</button>
+          <button onClick={go} disabled={busy || (!pick && !newName.trim())} className="h-8 px-4 text-[12px] bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-white rounded">{busy?"Adding…":"Add"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 export default function Findings() {
   const { user } = useAuth();
   const { prefs, setSection } = usePreferences();
@@ -195,6 +230,7 @@ export default function Findings() {
   const [selected, setSelected] = useState(new Set());
   const [bulkStatus, setBulkStatus] = useState("Valid");
   const [bulkAssignee, setBulkAssignee] = useState("");
+  const [campaignPick, setCampaignPick] = useState(false);
   const [bulkOwnerTeam, setBulkOwnerTeam] = useState("");
   const [loading, setLoading] = useState(false);
   const [myQueue, setMyQueue] = useState(!!user?.team && !ownerTeamParam);
@@ -375,6 +411,17 @@ export default function Findings() {
     await api.post("/v1/findings/bulk-status", { ids: [...selected], status: bulkStatus });
     await load();
   };
+  const addToCampaign = async (campaign_id, newName) => {
+    const ids = [...selected];
+    if (campaign_id) {
+      await api.patch(`/v1/remediation-campaigns/${campaign_id}`, { add_finding_ids: ids });
+      toast.success(`Added ${ids.length} to campaign`);
+    } else if (newName) {
+      await api.post("/v1/remediation-campaigns", { name: newName, finding_ids: ids });
+      toast.success(`Created campaign "${newName}" with ${ids.length} finding(s)`);
+    }
+    setCampaignPick(false); setSelected(new Set());
+  };
   const doBulkAssign = async () => {
     if (!selected.size || !bulkAssignee) return;
     await api.post("/v1/findings/bulk-assign", { ids: [...selected], assignee: bulkAssignee });
@@ -419,6 +466,9 @@ export default function Findings() {
       {exportOpen && (
         <ExportModal onClose={()=>setExportOpen(false)} onExport={doExport}
           selectedCount={selected.size} total={total} />
+      )}
+      {campaignPick && (
+        <AddToCampaignModal count={selected.size} onClose={()=>setCampaignPick(false)} onAdd={addToCampaign}/>
       )}
 
       {nlInterpreted && (
@@ -573,6 +623,8 @@ export default function Findings() {
           <div className="h-5 w-px bg-blue-500/40"/>
           <TeamCombobox value={bulkOwnerTeam} onChange={setBulkOwnerTeam} testid="bulk-owner" placeholder="Owner team…" />
           <button data-testid="bulk-owner-apply" onClick={bulkAssignOwner} disabled={!bulkOwnerTeam} className="h-7 px-3 text-[12px] bg-amber-500/20 border border-amber-500/40 text-amber-300 rounded hover:bg-amber-500/30 disabled:opacity-40">Set Owner</button>
+          <div className="h-5 w-px bg-blue-500/40"/>
+          <button data-testid="bulk-add-campaign" onClick={()=>setCampaignPick(true)} className="h-7 px-3 text-[12px] bg-purple-500/20 border border-purple-500/40 text-purple-200 rounded hover:bg-purple-500/30">Add to campaign</button>
           <button data-testid="bulk-clear" onClick={()=>setSelected(new Set())} className="text-[12px] text-slate-400 hover:text-slate-200 ml-auto">Clear</button>
         </div>
       )}

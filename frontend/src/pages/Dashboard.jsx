@@ -11,7 +11,7 @@ import { fmtRel, isOverdue } from "@/lib/utils-fmt";
 import { Link, useNavigate } from "react-router-dom";
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid,
-  BarChart, Bar, Cell, PieChart, Pie, Legend, ComposedChart, Line,
+  BarChart, Bar, Cell, PieChart, Pie, Legend, ComposedChart, Line, ReferenceDot,
 } from "recharts";
 import { Lightning, Fire, Clock, ArrowsClockwise, Warning, UserCircle, ChartLineUp, FileArrowDown, Sparkle } from "@phosphor-icons/react";
 import { toast } from "sonner";
@@ -64,11 +64,22 @@ const TILE_CATALOG = [
 const SEV_FILL = { Critical: "#ef4444", High: "#f97316", Medium: "#eab308", Low: "#3b82f6" };
 
 function VulnOverTime() {
+  const nav = useNavigate();
   const [data, setData] = useState(null);
   const [dayModal, setDayModal] = useState(null);   // {day, groups, findings_patched}
+  const [days, setDays] = useState(90);
+  const [gran, setGran] = useState("day");
   useEffect(() => {
-    api.get("/v1/dashboards/vuln-timeseries", { params: { days: 90 } }).then(r => setData(r.data)).catch(() => {});
-  }, []);
+    api.get("/v1/dashboards/vuln-timeseries", { params: { days, granularity: gran } }).then(r => setData(r.data)).catch(() => {});
+  }, [days, gran]);
+  const createVerification = async (dayModalData) => {
+    const ids = (dayModalData.groups || []).flatMap(g => g.finding_ids || []);
+    if (!ids.length) { toast.error("No findings to verify"); return; }
+    try {
+      const r = await api.post("/v1/remediation-campaigns", { name: `Verify patches ${dayModalData.day}`, finding_ids: ids });
+      toast.success("Verification campaign created"); setDayModal(null); nav("/remediation-campaigns");
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed"); }
+  };
   const openDay = (day) => {
     if (!day) return;
     api.get("/v1/dashboards/patches-on-day", { params: { day } })
@@ -76,12 +87,25 @@ function VulnOverTime() {
   };
   const series = data?.series || [];
   const burn = data?.kev_burndown || { start: 0, current: 0, reduced: 0 };
+  const spikes = [];
+  for (let i = 1; i < series.length; i++) {
+    const prev = series[i-1].total_open || 0, cur = series[i].total_open || 0;
+    if (prev > 0 && cur > prev * 1.1) spikes.push({ day: series[i].day, value: cur });   // >10% jump
+  }
   return (
     <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 mb-4">
       <div className="lg:col-span-3 border border-[#30363D] bg-[#0D1117] rounded-md p-4">
-        <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
           <div className="text-[13px] text-slate-200 font-medium">Vulnerabilities Over Time</div>
-          <div className="text-[10px] text-slate-500">click a day to see what was patched</div>
+          <div className="flex items-center gap-2">
+            <div className="flex border border-[#30363D] rounded overflow-hidden">
+              {[30,90,180].map(d=>(<button key={d} onClick={()=>setDays(d)} className={`px-2 h-6 text-[11px] ${days===d?"bg-blue-500/15 text-blue-300":"text-slate-400"}`}>{d}d</button>))}
+            </div>
+            <div className="flex border border-[#30363D] rounded overflow-hidden">
+              {[["day","Day"],["week","Week"]].map(([g,l])=>(<button key={g} onClick={()=>setGran(g)} className={`px-2 h-6 text-[11px] ${gran===g?"bg-blue-500/15 text-blue-300":"text-slate-400"}`}>{l}</button>))}
+            </div>
+            <span className="text-[10px] text-slate-500">click a day → patched</span>
+          </div>
         </div>
         {series.length === 0 ? (
           <div className="h-[220px] flex items-center justify-center text-[12px] text-slate-500">
@@ -101,11 +125,12 @@ function VulnOverTime() {
               ))}
               <Line type="monotone" dataKey="total_open" name="Total open (remediation)" stroke="#e2e8f0" strokeWidth={2} dot={false} />
               <Line type="monotone" dataKey="patched" name="Patches applied" stroke="#22c55e" strokeWidth={2} strokeDasharray="5 4" dot={false} />
+              {spikes.map((sp,i)=>(<ReferenceDot key={i} x={sp.day} y={sp.value} r={4} fill="#ef4444" stroke="#0D1117" ifOverflow="extendDomain"><title>Spike in open findings</title></ReferenceDot>))}
             </ComposedChart>
           </ResponsiveContainer>
         )}
       </div>
-      {dayModal && <PatchesDayModal data={dayModal} onClose={()=>setDayModal(null)}/>}
+      {dayModal && <PatchesDayModal data={dayModal} onClose={()=>setDayModal(null)} onVerify={createVerification}/>}
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4 flex flex-col">
         <div className="text-[13px] text-slate-200 font-medium mb-1">KEV Burndown</div>
         <div className="text-[11px] text-slate-500 mb-3">Known-Exploited, open</div>
@@ -216,7 +241,7 @@ function SankeySVG({ data }) {
 }
 
 
-function PatchesDayModal({ data, onClose }) {
+function PatchesDayModal({ data, onClose, onVerify }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" onClick={onClose}>
       <div className="w-full max-w-2xl bg-[#0D1117] border border-[#30363D] rounded-lg p-5 max-h-[80vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
@@ -242,7 +267,10 @@ function PatchesDayModal({ data, onClose }) {
             </tbody>
           </table>
         )}
-        <div className="flex justify-end mt-4"><button onClick={onClose} className="h-8 px-3 text-[12px] text-slate-400 rounded border border-[#30363D]">Close</button></div>
+        <div className="flex justify-end gap-2 mt-4">
+          {data.groups && data.groups.length>0 && onVerify && <button onClick={()=>onVerify(data)} className="h-8 px-3 text-[12px] bg-blue-500/15 border border-blue-500/40 text-blue-200 rounded hover:bg-blue-500/25">Create verification campaign</button>}
+          <button onClick={onClose} className="h-8 px-3 text-[12px] text-slate-400 rounded border border-[#30363D]">Close</button>
+        </div>
       </div>
     </div>
   );

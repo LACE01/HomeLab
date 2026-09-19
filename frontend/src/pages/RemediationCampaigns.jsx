@@ -148,6 +148,7 @@ function CampaignList({ onOpen }) {
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [mine, setMine] = useState(false);
+  const [workload, setWorkload] = useState(null);
   const load = async () => {
     setLoading(true);
     try {
@@ -168,6 +169,8 @@ function CampaignList({ onOpen }) {
           <button onClick={()=>setMine(false)} className={`px-3 h-8 text-[12px] ${!mine?"bg-blue-500/15 text-blue-300":"text-slate-400"}`}>All</button>
           <button onClick={()=>setMine(true)} className={`px-3 h-8 text-[12px] ${mine?"bg-blue-500/15 text-blue-300":"text-slate-400"}`}>My work</button>
         </div>
+        <button onClick={()=>{ if(workload===null) api.get("/v1/remediation-campaigns/workload").then(r=>setWorkload(r.data.items||[])).catch(()=>{}); else setWorkload(null); }}
+          className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] rounded text-slate-300">Workload</button>
         <button onClick={notify} className="h-8 px-3 text-[12px] border border-[#30363D] hover:border-[#484F58] rounded text-slate-300">Send alerts</button>
         <button onClick={()=>setOpen(true)} className="h-8 px-3 text-[12px] bg-blue-500 hover:bg-blue-400 text-white rounded inline-flex items-center gap-1.5"><Plus size={14}/> New campaign</button>
       </>}>
@@ -177,6 +180,14 @@ function CampaignList({ onOpen }) {
           <AlertCard tone="red" icon={Warning} label="Overdue" items={alerts.overdue} render={x=>`${x.name} · ${x.open} open`} onOpen={onOpen}/>
           <AlertCard tone="amber" icon={ArrowClockwise} label="Regressions" items={alerts.regressions} render={x=>`${x.name} · ${x.regressions} reopened`} onOpen={onOpen}/>
           <AlertCard tone="green" icon={CheckCircle} label="Newly complete" items={alerts.newly_complete} render={x=>x.name} onOpen={onOpen}/>
+        </div>
+      )}
+      {workload && (
+        <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-3 mb-4 max-w-3xl">
+          <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500 mb-2">Assignee workload (open campaigns)</div>
+          {workload.length===0 ? <div className="text-[12px] text-slate-500">No assignees on open campaigns.</div> :
+          <table className="w-full text-[12px]"><thead><tr className="text-left text-slate-500 text-[10.5px] uppercase tracking-wider"><th className="py-1 pr-3">Assignee</th><th className="py-1 pr-3">Campaigns</th><th className="py-1 pr-3">Open findings</th><th className="py-1">Overdue</th></tr></thead>
+          <tbody>{workload.map(w=>(<tr key={w.assignee} className="border-t border-[#30363D]/50"><td className="py-1 pr-3 text-slate-200">{w.assignee}</td><td className="py-1 pr-3 text-slate-300">{w.campaigns}</td><td className="py-1 pr-3 text-slate-300">{w.open}</td><td className="py-1">{w.overdue_campaigns>0?<span className="text-red-300">{w.overdue_campaigns}</span>:<span className="text-slate-500">0</span>}</td></tr>))}</tbody></table>}
         </div>
       )}
       {loading ? <div className="text-[12px] text-slate-500">Loading…</div>
@@ -226,16 +237,43 @@ function CreateModal({ onClose, onCreated }) {
   const [facets,setFacets]=useState({available_tags:[],available_asset_types:[]});
   const [cveSel,setCveSel]=useState([]); const [qidSel,setQidSel]=useState([]); const [hostSel,setHostSel]=useState([]); const [titleSel,setTitleSel]=useState([]);
   const [reqVerify,setReqVerify]=useState(true); const [mwStart,setMwStart]=useState(""); const [mwEnd,setMwEnd]=useState(""); const [chg,setChg]=useState("");
+  const [preview,setPreview]=useState(null); const [templates,setTemplates]=useState([]);
   useEffect(()=>{api.get("/v1/findings/stats").then(r=>setFacets(r.data)).catch(()=>{});
-    api.get("/v1/remediation-campaigns/assignable-users").then(r=>setUsers(r.data.items||[])).catch(()=>{});},[]);
-  const create=async()=>{
-    if(!name.trim()){toast.error("Name required");return;}
+    api.get("/v1/remediation-campaigns/assignable-users").then(r=>setUsers(r.data.items||[])).catch(()=>{});
+    loadTemplates();},[]);
+  const loadTemplates=()=>api.get("/v1/remediation-campaigns/scope-templates").then(r=>setTemplates(r.data.items||[])).catch(()=>{});
+  const buildFilter=()=>{
     const f={};
     if(sev.length)f.severity=sev; if(status.length)f.status=status; if(exp.length)f.exploitability=exp;
-    if(tags.length)f.tags=tags;
-    if(devtype.length)f.asset_type=devtype;
+    if(tags.length)f.tags=tags; if(devtype.length)f.asset_type=devtype;
     if(q.trim())f.q=q.trim(); if(kev)f.kev=true; if(inet)f.internet_facing=true; if(team)f.owner_team=team;
     if(cveSel.length)f.cve=cveSel; if(qidSel.length)f.qid=qidSel; if(hostSel.length)f.hostname=hostSel; if(titleSel.length)f.title=titleSel;
+    return f;
+  };
+  const scopeKey=[sev,status,exp,tags,devtype,cveSel,qidSel,hostSel,titleSel].map(x=>x.join(",")).join("|")+`|${q}|${kev}|${inet}|${team}`;
+  useEffect(()=>{
+    const f=buildFilter();
+    if(!Object.keys(f).length){setPreview(null);return;}
+    let live=true; const t=setTimeout(()=>{
+      api.post("/v1/remediation-campaigns/preview",{findings_filter:f}).then(r=>{if(live)setPreview(r.data);}).catch(()=>{});
+    },300);
+    return ()=>{live=false;clearTimeout(t);};
+  /* eslint-disable-next-line */ },[scopeKey]);
+  const applyTemplate=(tpl)=>{
+    const f=tpl.filter||{};
+    setSev(f.severity||[]); setStatus(f.status||[]); setExp(f.exploitability||[]);
+    setTags(f.tags||[]); setDevtype(f.asset_type||[]); setQ(f.q||""); setKev(!!f.kev); setInet(!!f.internet_facing);
+    setTeam(f.owner_team||""); setCveSel(f.cve||[]); setQidSel(f.qid||[]); setHostSel(f.hostname||[]); setTitleSel(f.title||[]);
+    toast.success(`Loaded scope "${tpl.name}"`);
+  };
+  const saveTemplate=async()=>{
+    const nm=window.prompt("Save this scope as a template named:"); if(!nm||!nm.trim())return;
+    await api.post("/v1/remediation-campaigns/scope-templates",{name:nm.trim(),filter:buildFilter()});
+    toast.success("Scope template saved"); loadTemplates();
+  };
+  const create=async()=>{
+    if(!name.trim()){toast.error("Name required");return;}
+    const f=buildFilter();
     if(!Object.keys(f).length){toast.error("Pick at least one filter so the campaign has members");return;}
     setBusy(true);
     try{
@@ -264,6 +302,13 @@ function CreateModal({ onClose, onCreated }) {
             <Dropdown label="Pick users…" options={users.map(u=>u.email)} selected={assignees} onChange={setAssignees}/></div>
         </div>
         <div className="border-t border-[#30363D] pt-3 mb-1 text-[10.5px] uppercase tracking-wider font-mono text-slate-500">Scope — same filters as the Findings tab</div>
+        <div className="flex items-center gap-2 my-2">
+          <select onChange={e=>{const t=templates.find(x=>x.id===e.target.value); if(t)applyTemplate(t); e.target.value="";}} className="h-7 bg-[#161B22] border border-[#30363D] rounded px-2 text-[11.5px] text-slate-300">
+            <option value="">Load scope template…</option>{templates.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+          <button type="button" onClick={saveTemplate} className="h-7 px-2.5 text-[11.5px] rounded border border-dashed border-[#30363D] text-blue-300">+ Save scope</button>
+          {preview && <span className="ml-auto text-[12px] text-slate-300">Preview: <b className="text-blue-300">{preview.to_patch}</b> to patch{preview.already_resolved>0?` (+${preview.already_resolved} already resolved)`:""} · {preview.total} total</span>}
+        </div>
         <input value={q} onChange={e=>setQ(e.target.value)} placeholder='Free-text search — supports qid: cve: owner: source: entity:' className="w-full h-8 px-2 my-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"/>
         <div className="grid grid-cols-2 gap-3 mb-2">
           <Typeahead label="Vulnerability" field="title" selected={titleSel} onChange={setTitleSel}/>
@@ -286,6 +331,17 @@ function CreateModal({ onClose, onCreated }) {
             <button onClick={()=>setInet(v=>!v)} className={`h-7 px-2.5 text-[11.5px] rounded border ${inet?"border-amber-500/40 bg-amber-500/10 text-amber-200":"border-[#30363D] text-slate-400"}`}>Internet-facing</button>
           </div>
         </div>
+        {preview && preview.total>0 && (
+          <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-3 my-2">
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {Object.entries(preview.by_severity).map(([k,v])=>(<span key={k} className="text-[11px] px-1.5 py-0.5 rounded bg-slate-700/40 text-slate-200">{k}: {v}</span>))}
+            </div>
+            <div className="max-h-32 overflow-y-auto text-[11.5px] divide-y divide-[#30363D]/50">
+              {preview.sample.map(f=>(<div key={f.id} className="py-1 flex items-center gap-2"><span className="text-slate-500 w-16 truncate">{f.severity}</span><span className="text-slate-200 truncate flex-1">{f.title}</span><span className="text-slate-500 font-mono">{f.asset_hostname||""}</span></div>))}
+            </div>
+            <div className="text-[10.5px] text-slate-500 mt-1">Showing {preview.sample.length} of {preview.total}. Only the {preview.to_patch} open one(s) count toward progress.</div>
+          </div>
+        )}
         <div className="border-t border-[#30363D] mt-3 pt-3 grid grid-cols-2 gap-3">
           <div><div className="text-[10.5px] uppercase tracking-wider font-mono text-slate-500 mb-1">Maintenance window start</div>
             <input type="datetime-local" value={mwStart} onChange={e=>setMwStart(e.target.value)} className="w-full h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"/></div>
