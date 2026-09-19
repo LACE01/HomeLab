@@ -63,6 +63,90 @@ async def campaign_alerts(user: dict = Depends(require_module(MODULE_KEY))):
     return await rc.alerts(db)
 
 
+class PreviewBody(BaseModel):
+    findings_filter: Optional[dict] = None
+    finding_ids: Optional[list] = None
+
+
+@router.post("/v1/remediation-campaigns/preview")
+async def preview_scope(body: PreviewBody, user: dict = Depends(require_module(MODULE_KEY))):
+    """Preview what a scope will pull in BEFORE creating the campaign: total, how
+    many are open (what you'd actually be committing to patch) vs already resolved,
+    a severity breakdown, and a small sample."""
+    ids = set(body.finding_ids or [])
+    if body.findings_filter:
+        ids |= set(await _ids_from_findings_filter(user, body.findings_filter))
+    ids = list(ids)
+    if not ids:
+        return {"total": 0, "to_patch": 0, "already_resolved": 0, "by_severity": {}, "sample": []}
+    from routes.common import OPEN_STATUSES
+    rows = await db.findings.find(
+        {"id": {"$in": ids}},
+        {"_id": 0, "id": 1, "title": 1, "cve": 1, "qid": 1, "severity": 1, "status": 1,
+         "asset_hostname": 1, "owner_team": 1, "kev_flag": 1, "risk_score": 1}).to_list(100000)
+    by_sev = {}
+    to_patch = 0
+    for f in rows:
+        by_sev[f.get("severity") or "Info"] = by_sev.get(f.get("severity") or "Info", 0) + 1
+        if f.get("status") in OPEN_STATUSES:
+            to_patch += 1
+    sample = sorted(rows, key=lambda f: -(f.get("risk_score") or 0))[:12]
+    return {"total": len(rows), "to_patch": to_patch, "already_resolved": len(rows) - to_patch,
+            "by_severity": by_sev, "sample": sample}
+
+
+@router.get("/v1/remediation-campaigns/workload")
+async def workload(user: dict = Depends(require_module(MODULE_KEY))):
+    """Per-assignee workload across all open campaigns: campaigns, open findings,
+    and how many of their campaigns are overdue -- so an admin can balance load."""
+    agg: dict = {}
+    for camp in await rc.list_campaigns(db):
+        if camp.get("status") == "closed":
+            continue
+        p = camp["progress"]
+        for a in (camp.get("assignees") or []):
+            w = agg.setdefault(a, {"assignee": a, "campaigns": 0, "open": 0, "overdue_campaigns": 0})
+            w["campaigns"] += 1
+            w["open"] += p["open"]
+            if p["overdue"]:
+                w["overdue_campaigns"] += 1
+    return {"items": sorted(agg.values(), key=lambda w: -w["open"])}
+
+
+class ScopeTemplateBody(BaseModel):
+    name: str
+    filter: dict = {}
+
+
+@router.get("/v1/remediation-campaigns/scope-templates")
+async def list_scope_templates(user: dict = Depends(require_module(MODULE_KEY))):
+    owner = user.get("email") or user.get("id")
+    items = await db.remediation_scope_templates.find(
+        {"$or": [{"owner": owner}, {"shared": True}]}, {"_id": 0}).sort("name", 1).to_list(200)
+    return {"items": items}
+
+
+@router.post("/v1/remediation-campaigns/scope-templates")
+async def save_scope_template(body: ScopeTemplateBody, user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    if not body.name.strip():
+        raise HTTPException(400, "A template name is required")
+    owner = user.get("email") or user.get("id")
+    doc = {"owner": owner, "name": body.name.strip(), "filter": body.filter or {},
+           "updated_at": rc._now_iso()}
+    existing = await db.remediation_scope_templates.find_one({"owner": owner, "name": doc["name"]}, {"_id": 0})
+    doc["id"] = existing["id"] if existing else __import__("uuid").uuid4().hex
+    await db.remediation_scope_templates.update_one({"owner": owner, "name": doc["name"]},
+                                                    {"$set": doc}, upsert=True)
+    return {"ok": True, "id": doc["id"], "name": doc["name"]}
+
+
+@router.delete("/v1/remediation-campaigns/scope-templates/{template_id}")
+async def delete_scope_template(template_id: str, user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    owner = user.get("email") or user.get("id")
+    await db.remediation_scope_templates.delete_one({"owner": owner, "id": template_id})
+    return {"ok": True}
+
+
 @router.get("/v1/remediation-campaigns/assignable-users")
 async def assignable_users(user: dict = Depends(require_module(MODULE_KEY))):
     """Users to pick as campaign assignees (for the assignee dropdown)."""

@@ -489,7 +489,8 @@ async def dashboard_soc(
 # ============ #61 Vulnerabilities-over-time + KEV burndown ============
 
 @router.get("/v1/dashboards/vuln-timeseries")
-async def vuln_timeseries(days: int = 90, user: dict = Depends(get_current_user),
+async def vuln_timeseries(days: int = 90, granularity: str = "day",
+                          user: dict = Depends(get_current_user),
                           _rbac: dict = Depends(require_module("/"))):
     """Daily open-findings-by-severity + total + KEV, from posture_snapshots, for
     the full-width vulnerabilities-over-time chart and the KEV-burndown tile."""
@@ -520,6 +521,23 @@ async def vuln_timeseries(days: int = 90, user: dict = Depends(get_current_user)
             "overdue": c.get("overdue", 0),
             "patched": patches_by_day.get(day, 0),
         })
+    if granularity == "week" and series:
+        from datetime import date as _date
+        weekly = {}
+        order = []
+        for row in series:
+            try:
+                d = _date.fromisoformat(row["day"])
+                wk = (d.fromordinal(d.toordinal() - d.weekday())).isoformat()
+            except Exception:
+                wk = row["day"]
+            if wk not in weekly:
+                weekly[wk] = dict(row); weekly[wk]["day"] = wk; weekly[wk]["patched"] = 0; order.append(wk)
+            # open/severity = latest snapshot in the week; patched = sum over the week
+            for k in ("Critical", "High", "Medium", "Low", "total_open", "kev", "overdue"):
+                weekly[wk][k] = row[k]
+            weekly[wk]["patched"] += row["patched"]
+        series = [weekly[w] for w in order]
     first_kev = series[0]["kev"] if series else 0
     last_kev = series[-1]["kev"] if series else 0
     return {"series": series, "points": len(series),
