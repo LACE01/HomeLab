@@ -216,33 +216,50 @@ async def list_campaigns(db, *, owner_team=None) -> list:
 _SEV_WEIGHT = {"Critical": 100, "High": 70, "Medium": 40, "Low": 15, "Info": 5}
 
 
+def _as_iso(v):
+    """Coerce a timestamp that may be a native datetime OR an ISO string to a
+    comparable ISO string (Mongo stores dates as BSON datetimes, not strings)."""
+    if v is None:
+        return None
+    if hasattr(v, "isoformat"):
+        try:
+            return v.isoformat()
+        except Exception:
+            return None
+    return str(v)
+
+
 def priority_score(f: dict) -> int:
     """SLA x severity x exploitability x age -> a single work-next score. Higher =
     do sooner. Resolved findings sink to the bottom so the queue is always the live
-    work in priority order."""
-    if f.get("status") in RESOLVED_STATUSES:
-        return -1
-    score = _SEV_WEIGHT.get(f.get("severity"), 20)
-    if f.get("kev_flag"):
-        score += 50
-    due = f.get("due_at")
-    now = _now_iso()
-    if due:
-        if due < now:
-            score += 40                      # overdue
-        elif due < (datetime.now(timezone.utc) + timedelta(days=7)).isoformat():
-            score += 20                      # due this week
-    epss = f.get("epss_score")
-    if isinstance(epss, (int, float)):
-        score += round(epss * 30)
-    fs = f.get("first_seen_at")
-    if fs:
-        try:
-            age = (datetime.now(timezone.utc) - datetime.fromisoformat(str(fs).replace("Z","+00:00")).replace(tzinfo=timezone.utc)).days
-            score += min(age // 10, 20)      # older nudges up, capped
-        except Exception:
-            pass
-    return score
+    work in priority order. Fully defensive -- a bad field must never 500 the page."""
+    try:
+        if f.get("status") in RESOLVED_STATUSES:
+            return -1
+        score = _SEV_WEIGHT.get(f.get("severity"), 20)
+        if f.get("kev_flag"):
+            score += 50
+        due = _as_iso(f.get("due_at"))
+        now = _now_iso()
+        if due:
+            if due < now:
+                score += 40                  # overdue
+            elif due < (datetime.now(timezone.utc) + timedelta(days=7)).isoformat():
+                score += 20                  # due this week
+        epss = f.get("epss_score")
+        if isinstance(epss, (int, float)):
+            score += round(epss * 30)
+        fs = _as_iso(f.get("first_seen_at"))
+        if fs:
+            try:
+                age = (datetime.now(timezone.utc)
+                       - datetime.fromisoformat(fs.replace("Z", "+00:00")).replace(tzinfo=timezone.utc)).days
+                score += min(age // 10, 20)
+            except Exception:
+                pass
+        return score
+    except Exception:
+        return 0
 
 
 # Big campaigns (e.g. an "all open" push with thousands of findings) must not blow

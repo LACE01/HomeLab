@@ -68,5 +68,16 @@ a(sp["created_count"]==1 and sp["reopened_count"]==1, sp)
 a(sp["created"][0]["id"]=="f1" and sp["reopened"][0]["id"]=="f2")
 print("PASS: findings-changed-on-day explains a spike (1 created + 1 reopened on that day)")
 
+# ============ regression: due_at / first_seen_at as native datetime (BSON date) ----
+# real Mongo stores dates as datetimes, not ISO strings; priority_score must not 500
+run(db.findings.insert_one({"id":"dt1","title":"native date","severity":"High","status":"New",
+  "owner_team":"SecOps","asset_id":"hd","asset_hostname":"hd",
+  "due_at": now - timedelta(days=1), "first_seen_at": now - timedelta(days=40)}))
+dc=c.post("/api/v1/remediation-campaigns", json={"name":"native dates","finding_ids":["dt1"]}).json()
+det=c.get(f"/api/v1/remediation-campaigns/{dc['id']}")
+a(det.status_code==200, det.text)
+a(det.json()["findings"][0]["priority_score"] > 0, det.json()["findings"][0])
+print("PASS: campaign detail handles native-datetime due_at/first_seen_at without 500 (the reported bug)")
+
 server.app.dependency_overrides.clear()
 print("\nALL CAMPAIGN ADVANCED TESTS PASSED")
