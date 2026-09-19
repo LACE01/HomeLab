@@ -65,22 +65,32 @@ const SEV_FILL = { Critical: "#ef4444", High: "#f97316", Medium: "#eab308", Low:
 
 function VulnOverTime() {
   const [data, setData] = useState(null);
+  const [dayModal, setDayModal] = useState(null);   // {day, groups, findings_patched}
   useEffect(() => {
     api.get("/v1/dashboards/vuln-timeseries", { params: { days: 90 } }).then(r => setData(r.data)).catch(() => {});
   }, []);
+  const openDay = (day) => {
+    if (!day) return;
+    api.get("/v1/dashboards/patches-on-day", { params: { day } })
+      .then(r => setDayModal(r.data)).catch(() => {});
+  };
   const series = data?.series || [];
   const burn = data?.kev_burndown || { start: 0, current: 0, reduced: 0 };
   return (
     <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 mb-4">
       <div className="lg:col-span-3 border border-[#30363D] bg-[#0D1117] rounded-md p-4">
-        <div className="text-[13px] text-slate-200 font-medium mb-2">Vulnerabilities Over Time</div>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-[13px] text-slate-200 font-medium">Vulnerabilities Over Time</div>
+          <div className="text-[10px] text-slate-500">click a day to see what was patched</div>
+        </div>
         {series.length === 0 ? (
           <div className="h-[220px] flex items-center justify-center text-[12px] text-slate-500">
             No snapshots yet — history builds daily.
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={240}>
-            <ComposedChart data={series} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
+            <ComposedChart data={series} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}
+              onClick={(e)=> e && e.activeLabel && openDay(e.activeLabel)} style={{cursor:"pointer"}}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1f2733" />
               <XAxis dataKey="day" tick={{ fontSize: 10, fill: "#64748b" }} />
               <YAxis tick={{ fontSize: 10, fill: "#64748b" }} />
@@ -95,6 +105,7 @@ function VulnOverTime() {
           </ResponsiveContainer>
         )}
       </div>
+      {dayModal && <PatchesDayModal data={dayModal} onClose={()=>setDayModal(null)}/>}
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4 flex flex-col">
         <div className="text-[13px] text-slate-200 font-medium mb-1">KEV Burndown</div>
         <div className="text-[11px] text-slate-500 mb-3">Known-Exploited, open</div>
@@ -201,6 +212,39 @@ function SankeySVG({ data }) {
         ))}
       </svg>
     </ResponsiveContainer>
+  );
+}
+
+
+function PatchesDayModal({ data, onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" onClick={onClose}>
+      <div className="w-full max-w-2xl bg-[#0D1117] border border-[#30363D] rounded-lg p-5 max-h-[80vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-[15px] text-slate-100 font-medium">Patched on {data.day}</div>
+          <div className="text-[12px] text-slate-400">{data.count} item(s) · {data.findings_patched} finding(s)</div>
+        </div>
+        {(!data.groups || data.groups.length === 0) ? (
+          <div className="text-[12px] text-slate-500 py-6 text-center">Nothing recorded as patched on this day.</div>
+        ) : (
+          <table className="w-full text-[12px]">
+            <thead><tr className="text-left text-slate-500 text-[10.5px] uppercase tracking-wider border-b border-[#30363D]">
+              <th className="py-1.5 px-2">Host</th><th className="py-1.5 px-2">Vulnerability</th><th className="py-1.5 px-2">CVEs</th><th className="py-1.5 px-2">Findings</th></tr></thead>
+            <tbody>
+              {data.groups.map((g,i)=>(
+                <tr key={i} className="border-b border-[#30363D]/60">
+                  <td className="py-1.5 px-2 text-slate-300">{g.asset_id ? <Link to={`/assets/${g.asset_id}`} className="text-blue-300 hover:underline">{g.asset_hostname||g.asset_id}</Link> : (g.asset_hostname||"—")}</td>
+                  <td className="py-1.5 px-2 text-slate-200">{(g.finding_ids&&g.finding_ids[0]) ? <Link to={`/findings/${g.finding_ids[0]}`} className="hover:text-blue-300 hover:underline">{g.title}</Link> : g.title}</td>
+                  <td className="py-1.5 px-2 text-slate-400 font-mono">{(g.cves||[]).join(", ")||"—"}</td>
+                  <td className="py-1.5 px-2 text-slate-400">{g.finding_count||(g.finding_ids||[]).length}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <div className="flex justify-end mt-4"><button onClick={onClose} className="h-8 px-3 text-[12px] text-slate-400 rounded border border-[#30363D]">Close</button></div>
+      </div>
+    </div>
   );
 }
 

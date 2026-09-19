@@ -78,7 +78,7 @@ async def _build_findings_filter(
     exploitability=None, include_resolved=False, cve=None, cwe=None, view=None,
     platform=None, min_risk_score=None, source_tool=None,
     sla=None, age_days=None, entity=None, confidence=None,
-    qid=None, hostname=None,
+    qid=None, hostname=None, title=None,
 ) -> dict:
     """Shared filter builder for the findings list AND the CSV export, so an export
     reflects exactly the same filters (and team scoping, and hide-resolved default)
@@ -143,6 +143,9 @@ async def _build_findings_filter(
     if hostname:
         hl = hostname if isinstance(hostname, list) else [hostname]
         and_clauses.append({"asset_hostname": {"$in": hl}})
+    if title:
+        tl = title if isinstance(title, list) else [title]
+        and_clauses.append({"title": {"$in": tl}})
     if cwe:
         flt["cwe"] = cwe
     if platform:

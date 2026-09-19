@@ -57,6 +57,38 @@ function groupBreak(findings, by, baseline) {
     .sort((a,b) => (b.open - a.open) || (b.total - a.total));
 }
 
+function Typeahead({ label, field, selected, onChange }) {
+  const [q, setQ] = useState(""); const [opts, setOpts] = useState([]); const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!q) { setOpts([]); return; }
+    let live = true;
+    const t = setTimeout(() => {
+      api.get("/v1/findings/suggest", { params: { field, q, limit: 12 } })
+        .then(r => { if (live) setOpts((r.data.items||[]).filter(o => !selected.includes(o))); }).catch(()=>{});
+    }, 180);
+    return () => { live = false; clearTimeout(t); };
+  }, [q, field, selected]);
+  const add = (v) => { onChange([...selected, v]); setQ(""); setOpts([]); setOpen(false); };
+  return (
+    <div>
+      <div className="text-[10.5px] uppercase tracking-wider font-mono text-slate-500 mb-1">{label}</div>
+      {selected.length > 0 && <div className="flex flex-wrap gap-1 mb-1">
+        {selected.map(v => <span key={v} className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] rounded bg-blue-500/15 border border-blue-500/30 text-blue-200">{v}<button onClick={()=>onChange(selected.filter(x=>x!==v))} className="text-blue-300/70 hover:text-red-300"><X size={9}/></button></span>)}
+      </div>}
+      <div className="relative">
+        <input value={q} onChange={e=>{setQ(e.target.value);setOpen(true);}} onFocus={()=>setOpen(true)}
+          placeholder={`Type to search ${label.toLowerCase()}…`}
+          className="w-full h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"/>
+        {open && opts.length > 0 && (
+          <div className="absolute z-20 mt-1 w-full max-h-48 overflow-y-auto bg-[#161B22] border border-[#30363D] rounded-md p-1">
+            {opts.map(o => <button key={o} onClick={()=>add(o)} className="block w-full text-left px-2 py-1.5 text-[12px] text-slate-200 hover:bg-slate-800/50 rounded truncate">{o}</button>)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Dropdown({ label, options, selected, onChange }) {
   const [open, setOpen] = useState(false);
   const count = selected.length;
@@ -192,6 +224,7 @@ function CreateModal({ onClose, onCreated }) {
   const [tags,setTags]=useState([]); const [devtype,setDevtype]=useState([]); const [q,setQ]=useState("");
   const [kev,setKev]=useState(false); const [inet,setInet]=useState(false);
   const [facets,setFacets]=useState({available_tags:[],available_asset_types:[]});
+  const [cveSel,setCveSel]=useState([]); const [qidSel,setQidSel]=useState([]); const [hostSel,setHostSel]=useState([]); const [titleSel,setTitleSel]=useState([]);
   const [reqVerify,setReqVerify]=useState(true); const [mwStart,setMwStart]=useState(""); const [mwEnd,setMwEnd]=useState(""); const [chg,setChg]=useState("");
   useEffect(()=>{api.get("/v1/findings/stats").then(r=>setFacets(r.data)).catch(()=>{});
     api.get("/v1/remediation-campaigns/assignable-users").then(r=>setUsers(r.data.items||[])).catch(()=>{});},[]);
@@ -202,6 +235,7 @@ function CreateModal({ onClose, onCreated }) {
     if(tags.length)f.tags=tags;
     if(devtype.length)f.asset_type=devtype;
     if(q.trim())f.q=q.trim(); if(kev)f.kev=true; if(inet)f.internet_facing=true; if(team)f.owner_team=team;
+    if(cveSel.length)f.cve=cveSel; if(qidSel.length)f.qid=qidSel; if(hostSel.length)f.hostname=hostSel; if(titleSel.length)f.title=titleSel;
     if(!Object.keys(f).length){toast.error("Pick at least one filter so the campaign has members");return;}
     setBusy(true);
     try{
@@ -230,7 +264,13 @@ function CreateModal({ onClose, onCreated }) {
             <Dropdown label="Pick users…" options={users.map(u=>u.email)} selected={assignees} onChange={setAssignees}/></div>
         </div>
         <div className="border-t border-[#30363D] pt-3 mb-1 text-[10.5px] uppercase tracking-wider font-mono text-slate-500">Scope — same filters as the Findings tab</div>
-        <input value={q} onChange={e=>setQ(e.target.value)} placeholder='Search — supports qid: cve: owner: source: entity:' className="w-full h-8 px-2 my-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"/>
+        <input value={q} onChange={e=>setQ(e.target.value)} placeholder='Free-text search — supports qid: cve: owner: source: entity:' className="w-full h-8 px-2 my-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100"/>
+        <div className="grid grid-cols-2 gap-3 mb-2">
+          <Typeahead label="Vulnerability" field="title" selected={titleSel} onChange={setTitleSel}/>
+          <Typeahead label="Device" field="hostname" selected={hostSel} onChange={setHostSel}/>
+          <Typeahead label="CVE-ID" field="cve" selected={cveSel} onChange={setCveSel}/>
+          <Typeahead label="QID" field="qid" selected={qidSel} onChange={setQidSel}/>
+        </div>
         <div className="space-y-2.5">
           <MultiChips label="Severity" options={SEVS} selected={sev} onChange={setSev}/>
           <MultiChips label="Status" options={STATUSES} selected={status} onChange={setStatus}/>
