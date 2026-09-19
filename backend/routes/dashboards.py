@@ -533,6 +533,20 @@ async def vuln_timeseries(days: int = 90, user: dict = Depends(get_current_user)
 SANKEY_SEVERITIES = ["Critical", "High", "Medium", "Low", "Info"]
 
 
+@router.get("/v1/dashboards/patches-on-day")
+async def patches_on_day(day: str, user: dict = Depends(get_current_user),
+                         _rbac: dict = Depends(require_module("/"))):
+    """What actually got patched on a given day -- the click-through for the
+    Vulnerabilities-Over-Time chart. Returns the patch-completion records for that
+    date (host, title, CVEs, and the finding ids so the UI can drill in)."""
+    rows = await db.patches_applied.find(
+        {"resolved_at": {"$regex": f"^{day}"}},
+        {"_id": 0, "asset_hostname": 1, "asset_id": 1, "title": 1, "cves": 1,
+         "finding_count": 1, "finding_ids": 1, "resolved_at": 1}).to_list(5000)
+    total_findings = sum(r.get("finding_count") or len(r.get("finding_ids") or []) for r in rows)
+    return {"day": day, "groups": rows, "count": len(rows), "findings_patched": total_findings}
+
+
 @router.get("/v1/dashboards/sankey")
 async def findings_sankey(
     owner_team: Optional[str] = None,

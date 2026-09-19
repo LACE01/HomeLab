@@ -78,6 +78,7 @@ async def _build_findings_filter(
     exploitability=None, include_resolved=False, cve=None, cwe=None, view=None,
     platform=None, min_risk_score=None, source_tool=None,
     sla=None, age_days=None, entity=None, confidence=None,
+    qid=None, hostname=None,
 ) -> dict:
     """Shared filter builder for the findings list AND the CSV export, so an export
     reflects exactly the same filters (and team scoping, and hide-resolved default)
@@ -131,7 +132,17 @@ async def _build_findings_filter(
         if or_conds:
             and_clauses.append({"$or": or_conds})
     if cve:
-        flt["cve"] = cve
+        flt["cve"] = {"$in": cve} if isinstance(cve, list) else cve
+    if qid:
+        ql = qid if isinstance(qid, list) else [qid]
+        qor = [{"qid": {"$in": ql}}]
+        ints = [int(x) for x in ql if str(x).isdigit()]
+        if ints:
+            qor.append({"qid": {"$in": ints}})
+        and_clauses.append({"$or": qor})
+    if hostname:
+        hl = hostname if isinstance(hostname, list) else [hostname]
+        and_clauses.append({"asset_hostname": {"$in": hl}})
     if cwe:
         flt["cwe"] = cwe
     if platform:
@@ -244,6 +255,28 @@ async def list_findings(
     items = await cursor.to_list(length=limit)
     total = await db.findings.count_documents(flt)
     return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+@router.get("/v1/findings/suggest")
+async def findings_suggest(field: str, q: str = "", limit: int = 15,
+                           user: dict = Depends(get_current_user),
+                           _rbac: dict = Depends(require_module("/findings"))):
+    """Autocomplete for the campaign scope picker (and anywhere else): distinct
+    values of a field matching q, so users pick real values instead of having to
+    type an exact string. field: cve | qid | title | hostname."""
+    col = {"cve": "cve", "qid": "qid", "title": "title", "hostname": "asset_hostname"}.get(field)
+    if not col:
+        raise HTTPException(400, "field must be one of cve, qid, title, hostname")
+    ql = (q or "").strip()
+    query = {col: {"$regex": re.escape(ql), "$options": "i"}} if ql else {col: {"$ne": None}}
+    try:
+        vals = await db.findings.distinct(col, query)
+    except Exception:
+        vals = []
+    # qid can be stored as int -> stringify + also match numeric prefix
+    out = sorted({str(v) for v in vals if v not in (None, "")},
+                 key=lambda x: (not x.lower().startswith(ql.lower()), x))
+    return {"items": out[:limit]}
 
 
 @router.get("/v1/findings/stats")

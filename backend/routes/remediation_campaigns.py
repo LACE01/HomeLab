@@ -27,6 +27,7 @@ async def _ids_from_findings_filter(user, flt: dict) -> list:
         platform=flt.get("platform"), min_risk_score=flt.get("min_risk_score"),
         source_tool=flt.get("source_tool"), sla=flt.get("sla"),
         age_days=flt.get("age_days"), entity=flt.get("entity"), confidence=flt.get("confidence"),
+        qid=flt.get("qid"), hostname=flt.get("hostname"),
     )
     rows = await db.findings.find(q, {"_id": 0, "id": 1}).limit(100000).to_list(100000)
     return [r["id"] for r in rows]
