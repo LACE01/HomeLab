@@ -473,3 +473,93 @@ def in_maintenance_window(campaign: dict) -> bool:
     mw = campaign.get("maintenance_window") or {}
     now = _now_iso()
     return bool(mw.get("start") and mw.get("end") and mw["start"] <= now <= mw["end"])
+
+
+# ------------------------------------------------------- recurring campaigns
+def _advance(iso_day: str, cadence: str) -> str:
+    from datetime import date, timedelta
+    d = date.fromisoformat(iso_day[:10])
+    d = d + timedelta(days=7 if cadence == "weekly" else 30)
+    return d.isoformat()
+
+
+async def run_due_recurring(db, resolver, *, now: str = None) -> dict:
+    """Create campaigns for any recurring definitions that are due. `resolver` maps
+    a stored findings_filter -> finding_ids (the campaign scope resolver). Meant to
+    run nightly; also runnable on demand."""
+    now = now or _now_iso()
+    created = []
+    for rec in await db.remediation_recurring.find({"active": True}, {"_id": 0}).to_list(500):
+        nxt = rec.get("next_run_at") or now
+        if nxt > now:
+            continue
+        ids = await resolver(rec.get("scope") or {})
+        camp = await create_campaign(
+            db, name=_expand_name(rec.get("name_template") or rec.get("name") or "Recurring campaign"),
+            description=rec.get("description", ""), owner_team=rec.get("owner_team"),
+            due_date=_due_from(rec.get("due_days")), finding_ids=ids, filt=rec.get("scope"),
+            assignees=rec.get("assignees"), created_by="recurring",
+            require_verification=rec.get("require_verification", True))
+        await db.remediation_recurring.update_one({"id": rec["id"]}, {"$set": {
+            "last_run_at": now, "next_run_at": _advance(now, rec.get("cadence", "monthly")),
+            "last_campaign_id": camp["id"]}})
+        created.append({"recurring_id": rec["id"], "campaign_id": camp["id"], "findings": len(ids)})
+    return {"created": created, "count": len(created)}
+
+
+def _expand_name(tmpl: str) -> str:
+    from datetime import date
+    d = date.today()
+    return (tmpl.replace("{month}", d.strftime("%B %Y"))
+                .replace("{date}", d.isoformat())
+                .replace("{week}", d.strftime("W%V %Y")))
+
+
+def _due_from(due_days):
+    if not due_days:
+        return None
+    from datetime import datetime, timezone, timedelta
+    return (datetime.now(timezone.utc) + timedelta(days=int(due_days))).isoformat()
+
+
+# ------------------------------------------------------- overdue escalation
+async def escalate_overdue(db, *, escalate_after_days: int = 7) -> dict:
+    """Ladder: assignees are already nudged by notify_alerts. Here we ESCALATE
+    campaigns overdue by >= escalate_after_days to the owner team + managers/admins."""
+    from datetime import datetime, timezone, timedelta, date
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=escalate_after_days)).isoformat()
+    today = date.today().isoformat()
+    escalated = 0
+    for camp in await list_campaigns(db):
+        if camp.get("status") == "closed" or not camp["progress"]["overdue"]:
+            continue
+        due = camp.get("due_date")
+        thresh = camp.get("escalate_after_days", escalate_after_days)
+        cut = (datetime.now(timezone.utc) - timedelta(days=thresh)).isoformat()
+        if not due or due > cut:
+            continue
+        # recipients: owner-team leads + managers/admins
+        recips = set()
+        mgrs = await db.users.find({"role": {"$in": ["manager", "admin"]}}, {"_id": 0, "email": 1}).to_list(200)
+        recips.update(u["email"] for u in mgrs if u.get("email"))
+        key = f"campaign_escalated:{camp['id']}:{today}"
+        if await db.notifications_outbox.find_one({"dedupe_key": key}, {"_id": 0}):
+            continue
+        for r in recips:
+            await db.notifications_outbox.insert_one({
+                "id": str(uuid.uuid4()), "dedupe_key": f"{key}:{r}", "recipient": r,
+                "kind": "campaign_escalated", "title": f"ESCALATION: {camp['name']} overdue",
+                "body": f"Campaign '{camp['name']}' is >{thresh}d overdue with {camp['progress']['open']} open.",
+                "link": "/remediation-campaigns", "created_at": _now_iso(), "read": False})
+        await db.notifications_outbox.insert_one({
+            "id": str(uuid.uuid4()), "dedupe_key": key, "kind": "campaign_escalated",
+            "title": f"ESCALATION: {camp['name']} overdue", "body": f"{camp['progress']['open']} open, >{thresh}d overdue.",
+            "link": "/remediation-campaigns", "created_at": _now_iso(), "read": False})
+        try:
+            from notifier import dispatch
+            await dispatch("remediation_escalated", {"campaign": camp["name"], "owner_team": camp.get("owner_team"),
+                                                     "link": "/remediation-campaigns"}, db)
+        except Exception:
+            pass
+        escalated += 1
+    return {"escalated": escalated}

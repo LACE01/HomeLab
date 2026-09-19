@@ -540,9 +540,14 @@ async def nightly_loop(db, interval_hours: int = 24):
             logger.exception(f"Patch completion sweep failed: {e}")
             ok, detail["patch_completions_error"] = False, str(e)
         try:
-            from remediation_campaigns import snapshot_progress, notify_alerts
+            from remediation_campaigns import snapshot_progress, notify_alerts, escalate_overdue, run_due_recurring
             detail["campaign_snapshots"] = await snapshot_progress(db)
             detail["campaign_alerts"] = await notify_alerts(db)
+            detail["campaign_escalations"] = await escalate_overdue(db)
+            from routes.remediation_campaigns import _ids_from_findings_filter
+            async def _resolver(flt):
+                return await _ids_from_findings_filter({"role": "admin", "email": "recurring@system"}, flt)
+            detail["campaign_recurring"] = await run_due_recurring(db, _resolver)
         except Exception as e:
             logger.exception(f"Remediation campaign nightly failed: {e}")
             ok, detail["campaign_nightly_error"] = False, str(e)

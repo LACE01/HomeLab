@@ -565,6 +565,18 @@ async def patches_on_day(day: str, user: dict = Depends(get_current_user),
     return {"day": day, "groups": rows, "count": len(rows), "findings_patched": total_findings}
 
 
+@router.get("/v1/dashboards/findings-changed-on-day")
+async def findings_changed_on_day(day: str, user: dict = Depends(get_current_user),
+                                  _rbac: dict = Depends(require_module("/"))):
+    """Explain a spike: findings CREATED (first seen) or REOPENED on a given day."""
+    proj = {"_id": 0, "id": 1, "title": 1, "cve": 1, "severity": 1, "asset_hostname": 1, "status": 1}
+    created = await db.findings.find({"first_seen_at": {"$regex": f"^{day}"}}, proj).limit(500).to_list(500)
+    reopened = await db.findings.find(
+        {"status": "Reopened", "last_changed_at": {"$regex": f"^{day}"}}, proj).limit(500).to_list(500)
+    return {"day": day, "created": created, "reopened": reopened,
+            "created_count": len(created), "reopened_count": len(reopened)}
+
+
 @router.get("/v1/dashboards/sankey")
 async def findings_sankey(
     owner_team: Optional[str] = None,
