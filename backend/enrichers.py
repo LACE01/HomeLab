@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 
 import httpx
 
+from blocking_io import run_blocking
+
 logger = logging.getLogger("vulnops.enrichers")
 
 CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
@@ -159,6 +161,35 @@ async def flag_active_attacks(db, recency_days: int = 45) -> dict:
             'synced_at': _now_iso()}
 
 
+def _parse_exploitdb_csv(text: str) -> dict:
+    """Pure, CPU-bound parse of the Exploit-DB CSV index into {CVE: [entries]}.
+
+    Kept synchronous and free of any DB/network work so it can be handed to
+    blocking_io.run_blocking -- the file is ~25k rows and iterating it on the
+    event loop froze the whole API (logins + healthchecks included) for seconds
+    at a time. Returns a plain dict; the caller does all the awaitable I/O."""
+    cve_map: dict = {}
+    reader = csv.DictReader(io.StringIO(text))
+    for row in reader:
+        codes = row.get("codes") or row.get("Codes") or ""
+        cves = set(m.upper() for m in CVE_IN_CODES_RE.findall(codes))
+        if not cves:
+            continue
+        edb_id = row.get("id") or row.get("ID")
+        entry = {
+            "edb_id": edb_id,
+            "title": (row.get("description") or row.get("Description") or "").strip()[:200],
+            "url": f"https://www.exploit-db.com/exploits/{edb_id}" if edb_id else None,
+            "date_published": row.get("date_published") or row.get("Date Published"),
+            "verified": (row.get("verified") or row.get("Verified") or "").strip() in ("1", "True", "true"),
+            "type": row.get("type") or row.get("Type"),
+            "platform": row.get("platform") or row.get("Platform"),
+        }
+        for cve in cves:
+            cve_map.setdefault(cve, []).append(entry)
+    return cve_map
+
+
 async def sync_exploitdb(db) -> dict:
     """Download the Exploit-DB CSV index (community-maintained, no API key needed --
     the same source that powers exploit-db.com / searchsploit) and match entries to
@@ -175,26 +206,12 @@ async def sync_exploitdb(db) -> dict:
     except Exception as e:
         return {"status": "failed", "error": str(e), "matched": 0}
 
-    cve_map: dict = {}
+    # Parse off the event loop -- ~25k rows is CPU-bound and iterating it inline
+    # froze the whole API (logins + healthchecks) for seconds. Generous ceiling:
+    # the point is that the loop stays responsive, not that we abandon the parse.
     try:
-        reader = csv.DictReader(io.StringIO(text))
-        for row in reader:
-            codes = row.get("codes") or row.get("Codes") or ""
-            cves = set(m.upper() for m in CVE_IN_CODES_RE.findall(codes))
-            if not cves:
-                continue
-            edb_id = row.get("id") or row.get("ID")
-            entry = {
-                "edb_id": edb_id,
-                "title": (row.get("description") or row.get("Description") or "").strip()[:200],
-                "url": f"https://www.exploit-db.com/exploits/{edb_id}" if edb_id else None,
-                "date_published": row.get("date_published") or row.get("Date Published"),
-                "verified": (row.get("verified") or row.get("Verified") or "").strip() in ("1", "True", "true"),
-                "type": row.get("type") or row.get("Type"),
-                "platform": row.get("platform") or row.get("Platform"),
-            }
-            for cve in cves:
-                cve_map.setdefault(cve, []).append(entry)
+        cve_map = await run_blocking(_parse_exploitdb_csv, text, timeout=90.0,
+                                     label="exploitdb csv parse")
     except Exception as e:
         return {"status": "failed", "error": f"CSV parse error: {e}", "matched": 0}
 
