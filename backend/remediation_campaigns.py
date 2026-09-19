@@ -188,15 +188,19 @@ async def _campaign_findings(db, campaign: dict) -> list:
         {"_id": 0, "id": 1, "title": 1, "cve": 1, "qid": 1, "severity": 1, "status": 1,
          "asset_id": 1, "asset_hostname": 1, "owner_team": 1, "due_at": 1, "kev_flag": 1,
          "first_seen_at": 1, "assigned_to": 1, "ticket": 1, "entity_name": 1, "epss_score": 1}).to_list(100000)
-    # attach the real ticket (db.tickets, e.g. a risk-acceptance ticket) per finding
-    tix = {}
-    async for t in db.tickets.find({"finding_id": {"$in": ids}}, {"_id": 0}):
-        tix.setdefault(t.get("finding_id"), t)
-    for f in findings:
-        t = tix.get(f["id"])
-        if t:
-            f["ticket_ref"] = {"external_id": t.get("external_id") or t.get("id"),
-                               "url": t.get("url"), "system": t.get("system"), "status": t.get("status")}
+    # attach the real ticket (db.tickets, e.g. a risk-acceptance ticket) per finding.
+    # Best-effort: never let ticket enrichment break the campaign detail.
+    try:
+        tix = {}
+        async for t in db.tickets.find({"finding_id": {"$in": ids}}, {"_id": 0}):
+            tix.setdefault(t.get("finding_id"), t)
+        for f in findings:
+            t = tix.get(f["id"])
+            if t:
+                f["ticket_ref"] = {"external_id": t.get("external_id") or t.get("id"),
+                                   "url": t.get("url"), "system": t.get("system"), "status": t.get("status")}
+    except Exception:
+        pass
     return findings
 
 
@@ -241,21 +245,39 @@ def priority_score(f: dict) -> int:
     return score
 
 
+# Big campaigns (e.g. an "all open" push with thousands of findings) must not blow
+# up or time out the detail view: progress/groups are computed over ALL members
+# server-side, but only the top-N findings by priority are returned for the table.
+DETAIL_FINDINGS_CAP = 1000
+
+
 async def campaign_detail(db, campaign_id: str, *, for_user: dict = None) -> dict | None:
+    import logging
+    log = logging.getLogger("vulnops.remediation")
     camp = await db.remediation_campaigns.find_one({"id": campaign_id}, {"_id": 0})
     if not camp:
         return None
     findings = await _campaign_findings(db, camp)
-    camp["progress"] = compute_progress(findings, camp.get("due_date"), _baseline(camp), camp.get("require_verification", True))
     _bl = _baseline(camp)
-    camp["groups"] = {
-        "device": group_breakdown(findings, "device", _bl),
-        "vulnerability": group_breakdown(findings, "vulnerability", _bl),
-        "team": group_breakdown(findings, "team", _bl),
-    }
-    camp["activity"] = await activity(db, campaign_id)
-    camp["timeline"] = await timeline(db, camp)
-    # a "mine" slice for the tech view: findings assigned to the user or their team
+    camp["progress"] = compute_progress(findings, camp.get("due_date"), _bl, camp.get("require_verification", True))
+    # optional enrichments -- a failure or slowness in any one of these must not
+    # take down the whole page, so each is best-effort.
+    try:
+        camp["groups"] = {
+            "device": group_breakdown(findings, "device", _bl),
+            "vulnerability": group_breakdown(findings, "vulnerability", _bl),
+            "team": group_breakdown(findings, "team", _bl),
+        }
+    except Exception as e:
+        log.warning("campaign groups failed: %s", e); camp["groups"] = {"device": [], "vulnerability": [], "team": []}
+    try:
+        camp["activity"] = await activity(db, campaign_id)
+    except Exception as e:
+        log.warning("campaign activity failed: %s", e); camp["activity"] = []
+    try:
+        camp["timeline"] = await timeline(db, camp)
+    except Exception as e:
+        log.warning("campaign timeline failed: %s", e); camp["timeline"] = []
     if for_user:
         teams = set(for_user.get("teams") or ([for_user["team"]] if for_user.get("team") else []))
         email = for_user.get("email")
@@ -263,7 +285,9 @@ async def campaign_detail(db, campaign_id: str, *, for_user: dict = None) -> dic
                         if f.get("assigned_to") == email or f.get("owner_team") in teams]
     for f in findings:
         f["priority_score"] = priority_score(f)
-    camp["findings"] = sorted(findings, key=lambda f: -f["priority_score"])   # highest-impact first
+    findings.sort(key=lambda f: -f["priority_score"])   # highest-impact first
+    camp["findings_total"] = len(findings)
+    camp["findings"] = findings[:DETAIL_FINDINGS_CAP]   # bounded payload for the table
     return camp
 
 
@@ -347,7 +371,7 @@ async def timeline(db, campaign: dict) -> list:
     events = []
     if ids:
         async for pa in db.patches_applied.find(
-                {"finding_ids": {"$elemMatch": {"$in": list(ids)}}}, {"_id": 0}):
+                {"finding_ids": {"$in": list(ids)}}, {"_id": 0}):
             hits = [fid for fid in (pa.get("finding_ids") or []) if fid in ids]
             if hits:
                 events.append({"at": pa.get("resolved_at"), "type": "patch",

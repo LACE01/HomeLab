@@ -620,6 +620,7 @@ function CampaignDetail({ id, onBack }) {
           <div className="flex items-center gap-2 mb-2 flex-wrap">
             {mineOnly ? <span className="text-[11px] text-slate-500">Showing your team / assigned findings</span> : null}
             <span className="text-[11px] text-slate-500">· sorted by priority (SLA × severity × KEV × EPSS × age)</span>
+            {c.findings_total > (c.findings||[]).length && <span className="text-[11px] text-amber-300">· showing top {(c.findings||[]).length} of {c.findings_total} — narrow with a group or export CSV for all</span>}
             {drill && <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-200">{drill.by}: {drill.key}<button onClick={()=>setDrill(null)} className="text-blue-300/70 hover:text-red-300"><X size={10}/></button></span>}
             {sel.size>0 && <>
               <span className="text-[12px] text-slate-300">{sel.size} selected</span>
