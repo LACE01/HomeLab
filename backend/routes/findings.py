@@ -465,6 +465,29 @@ async def delete_saved_view(view_id: str, user: dict = Depends(get_current_user)
     return {"ok": True}
 
 
+class ViewAlertBody(BaseModel):
+    enabled: bool
+
+
+@router.patch("/v1/findings/views/{view_id}/alert")
+async def toggle_view_alert(view_id: str, body: ViewAlertBody,
+                            user: dict = Depends(get_current_user),
+                            _rbac: dict = Depends(require_module("/findings"))):
+    """Turn a saved view into a standing alert (or off). Enabling baselines the
+    checkpoint to now, so it only fires on findings that appear AFTER you enable it,
+    never on the backlog the view already matches."""
+    owner = user.get("email") or user.get("id")
+    v = await db.saved_findings_views.find_one({"owner": owner, "id": view_id}, {"_id": 0})
+    if not v:
+        raise HTTPException(404, "View not found")
+    upd = {"alert_enabled": bool(body.enabled)}
+    if body.enabled:
+        upd["alert_enabled_at"] = now_iso()
+        upd["alert_last_checked_at"] = now_iso()
+    await db.saved_findings_views.update_one({"owner": owner, "id": view_id}, {"$set": upd})
+    return {"ok": True, "alert_enabled": bool(body.enabled)}
+
+
 # --------------------------- FINDINGS-GROUPS (literal path before {finding_id}) ---------------------------
 @router.get("/v1/findings-groups")
 async def findings_group(

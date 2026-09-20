@@ -346,3 +346,7 @@ async def _run_startup():
     # archiving to a compressed JSON file first (see retention.py)
     from retention import retention_loop
     _a.create_task(retention_loop(db, interval_hours=24))
+    # Saved-search alerting: notify a saved Findings view's owner when NEW findings
+    # start matching that saved filter (hourly).
+    from saved_search_alerts import saved_search_alert_loop
+    _a.create_task(saved_search_alert_loop(db, interval_minutes=60))

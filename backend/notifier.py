@@ -32,6 +32,7 @@ TRIGGERS = [
     "stale_accounts_found", "edr_high_risk_device_found", "email_auth_issue",
     "eol_software_issue", "secret_leak_found", "aws_cspm_finding",
     "remediation_assigned", "remediation_overdue", "remediation_regression", "remediation_escalated",
+    "saved_search_match",
 ]
 
 CHANNELS = ["email", "discord", "slack", "teams", "webhook", "sms"]

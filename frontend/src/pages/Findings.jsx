@@ -8,7 +8,7 @@ import Layout from "@/components/Layout";
 import { SevBadge, Chip, RiskBar } from "@/components/Badges";
 import { fmtRel, isOverdue } from "@/lib/utils-fmt";
 import { Link } from "react-router-dom";
-import { MagnifyingGlass, FileArrowDown, FunnelSimple, CaretDown, CaretRight, CaretLeft, StackSimple, ListBullets, GridFour, Sparkle, X, SortAscending, SortDescending } from "@phosphor-icons/react";
+import { MagnifyingGlass, FileArrowDown, FunnelSimple, CaretDown, CaretRight, CaretLeft, StackSimple, ListBullets, GridFour, Sparkle, X, SortAscending, SortDescending, Bell, BellSlash } from "@phosphor-icons/react";
 import TeamCombobox from "@/components/TeamCombobox";
 
 const VIEWS = [
@@ -324,6 +324,14 @@ export default function Findings() {
     if (!window.confirm(`Delete saved view "${v.name}"?`)) return;
     await api.delete(`/v1/findings/views/${v.id}`); loadViews();
   };
+  const toggleViewAlert = async (v) => {
+    try {
+      await api.patch(`/v1/findings/views/${v.id}/alert`, { enabled: !v.alert_enabled });
+      toast.success(v.alert_enabled ? `Alerts off for "${v.name}"`
+        : `Alerting on — you'll be notified when new findings match "${v.name}"`);
+      loadViews();
+    } catch { toast.error("Could not change alert"); }
+  };
 
   // Keep the URL in sync with the current filters (replace, not push, so we don't
   // pollute history). This is what makes the back arrow from a Finding Detail
@@ -547,6 +555,7 @@ export default function Findings() {
           {savedViews.map(v => (
             <span key={v.id} className="inline-flex items-center rounded-sm border border-[#30363D] text-slate-300 hover:border-[#484F58]">
               <button onClick={()=>applyView(v)} className="px-2 py-1 text-[11.5px]">{v.name}</button>
+              <button onClick={()=>toggleViewAlert(v)} title={v.alert_enabled?"Alerting on — click to turn off":"Alert me when new findings match this view"} className={`px-1 ${v.alert_enabled?"text-amber-400 hover:text-amber-300":"text-slate-500 hover:text-slate-300"}`}>{v.alert_enabled?<Bell size={11} weight="fill"/>:<BellSlash size={11}/>}</button>
               <button onClick={()=>deleteView(v)} title="Delete view" className="px-1.5 text-slate-500 hover:text-red-400"><X size={11}/></button>
             </span>
           ))}
