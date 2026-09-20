@@ -58,4 +58,23 @@ a([q["id"] for q in my["queue"]][0]=="f1", "queue sorted by priority, f1 first")
 a(any(x["host"]=="mac-pro" for x in my["by_device"]), "batch-by-device present")
 print("PASS: my-work stats, priority queue, batch-by-device")
 
+# SLA-breach forecast: cumulative windows with due-count + at-risk (velocity known -> not None)
+a(all(k in ov["sla_forecast"] for k in ("7","14","30")), "forecast has 7/14/30 windows")
+a(all("due" in ov["sla_forecast"][k] and "at_risk" in ov["sla_forecast"][k] for k in ("7","14","30")), "each window has due + at_risk")
+print("PASS: SLA-breach forecast present with due + at-risk")
+
+# Stalled: f1 open, first_seen 40d ago, never status-changed -> stalled (>14d)
+a(ov["stalled"]["days"]==14, "stalled window is 14d")
+a("f1" in [x["id"] for x in ov["stalled"]["items"]], "long-open untouched finding is stalled")
+print("PASS: stalled panel flags no-progress findings")
+
+# notify assignee queues: tech@x owns the one open assigned finding; f4 open+unassigned
+res=run(rc.notify_assignee_queues(db, run(db.remediation_campaigns.find_one({"id":camp["id"]},{"_id":0}))))
+a(res["assignees"]==1 and res["notified"]==1, "one assignee nudged")
+a(res["unassigned_open"]==1, "open+unassigned surfaced")
+a(run(db.notifications_outbox.count_documents({"recipient":"tech@x"}))>=1, "outbox record written")
+print("PASS: notify-assignee-queues messages each assignee their own queue")
+
+print("\nALL CAMPAIGN OVERVIEW EXTRAS PASSED")
+
 print("\nALL CAMPAIGN OVERVIEW TESTS PASSED")

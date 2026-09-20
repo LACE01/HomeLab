@@ -187,7 +187,8 @@ async def _campaign_findings(db, campaign: dict) -> list:
         {"id": {"$in": ids}},
         {"_id": 0, "id": 1, "title": 1, "cve": 1, "qid": 1, "severity": 1, "status": 1,
          "asset_id": 1, "asset_hostname": 1, "owner_team": 1, "due_at": 1, "kev_flag": 1,
-         "first_seen_at": 1, "assigned_to": 1, "ticket": 1, "entity_name": 1, "epss_score": 1}).to_list(100000)
+         "first_seen_at": 1, "assigned_to": 1, "ticket": 1, "entity_name": 1, "epss_score": 1,
+         "last_changed_at": 1}).to_list(100000)
     # attach the real ticket (db.tickets, e.g. a risk-acceptance ticket) per finding.
     # Best-effort: never let ticket enrichment break the campaign detail.
     try:
@@ -354,6 +355,33 @@ async def campaign_overview(db, camp: dict, findings: list, baseline_ids, progre
         for f in scope if f.get("status") == "Reopened"
     ][:25]
 
+    # SLA-breach forecast: how many OPEN findings come due inside the next 7/14/30
+    # days (cumulative windows), and -- at the current patch pace -- roughly how many
+    # of those we won't clear in time ("at risk"). at_risk is a heuristic, so it is
+    # only shown when we actually have a velocity to project from.
+    forecast = {}
+    for n in (7, 14, 30):
+        end = (now + timedelta(days=n)).isoformat()
+        due_n = sum(1 for f in open_f
+                    if (_as_iso(f.get("due_at")) or "") and now_i < _as_iso(f.get("due_at")) <= end)
+        cap = round(per_day * n) if per_day else None
+        forecast[str(n)] = {"due": due_n, "capacity": cap,
+                            "at_risk": (max(0, due_n - cap) if cap is not None else None)}
+
+    # Stalled: open findings with no status change in STALLED_DAYS. last_changed_at
+    # is stamped on every bulk status change; findings that were never touched fall
+    # back to first_seen_at, so "never worked" also counts as stalled.
+    stalled_days = 14
+    cutoff = (now - timedelta(days=stalled_days)).isoformat()
+    stalled_all = []
+    for f in open_f:
+        ts = _as_iso(f.get("last_changed_at")) or _as_iso(f.get("first_seen_at"))
+        if ts and ts < cutoff:
+            stalled_all.append({**{k: f.get(k) for k in
+                                   ("id", "title", "cve", "severity", "asset_hostname", "assigned_to")},
+                                "since": ts})
+    stalled_all.sort(key=lambda x: x["since"])
+
     return {
         "risk": {
             "severity": sev,
@@ -375,6 +403,8 @@ async def campaign_overview(db, camp: dict, findings: list, baseline_ids, progre
             "target": target,
         },
         "regressions": regressions,
+        "sla_forecast": forecast,
+        "stalled": {"days": stalled_days, "count": len(stalled_all), "items": stalled_all[:25]},
     }
 
 
@@ -640,6 +670,33 @@ async def notify_assignees(db, campaign: dict, recipients, kind: str, body: str)
     except Exception:
         pass
     return sent
+
+
+async def notify_assignee_queues(db, campaign: dict) -> dict:
+    """One-click nudge: message each assignee a summary of THEIR open queue in this
+    campaign (open count + overdue count). Deduped per campaign+recipient+day by
+    notify_assignees, so pressing it twice in a day won't spam."""
+    findings = await _campaign_findings(db, campaign)
+    now = _now_iso()
+    per: dict = {}
+    for f in findings:
+        if f.get("status") not in OPEN_STATUSES:
+            continue
+        who = f.get("assigned_to")
+        if not who:
+            continue
+        d = per.setdefault(who, {"open": 0, "overdue": 0})
+        d["open"] += 1
+        due = _as_iso(f.get("due_at"))
+        if due and due < now:
+            d["overdue"] += 1
+    sent = 0
+    for who, st in per.items():
+        body = (f"You have {st['open']} open finding(s) in campaign '{campaign.get('name')}'"
+                + (f", {st['overdue']} overdue" if st["overdue"] else "") + ".")
+        sent += await notify_assignees(db, campaign, [who], "assigned", body)
+    return {"assignees": len(per), "notified": sent, "unassigned_open":
+            sum(1 for f in findings if f.get("status") in OPEN_STATUSES and not f.get("assigned_to"))}
 
 
 # ------------------------------------------------------- burndown history

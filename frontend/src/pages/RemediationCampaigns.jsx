@@ -521,6 +521,12 @@ function CampaignDetail({ id, onBack }) {
     await api.post(`/v1/remediation-campaigns/${id}/mass-note`, { finding_ids:[fid], text:t.trim() });
     toast.success("Noted"); load();
   };
+  const notifyAssignees = async () => {
+    if (!window.confirm("Message each assignee a summary of their open queue in this campaign?")) return;
+    try { const r = await api.post(`/v1/remediation-campaigns/${id}/notify-assignees`);
+      toast.success(`Notified ${r.data.notified} assignee(s)` + (r.data.unassigned_open?` · ${r.data.unassigned_open} open unassigned`:"")); }
+    catch { toast.error("Notify failed"); }
+  };
   const openReport = async () => { try { const r = await api.get(`/v1/remediation-campaigns/${id}/report`); setReport(r.data); } catch { toast.error("Report failed"); } };
   const reassignSel = async () => {
     if (!sel.size) return;
@@ -551,6 +557,7 @@ function CampaignDetail({ id, onBack }) {
   const DUE_COLORS = ["#ef4444","#f97316","#eab308","#3b82f6","#475569"];
   const ov = c.overview || {}; const vel = ov.velocity || {}; const risk = ov.risk || {};
   const exc = ov.exceptions || {}; const tix = ov.tickets || {}; const my = c.my || {};
+  const fc = ov.sla_forecast || {}; const stalled = ov.stalled || {};
   const SEV = [["Critical","#ef4444"],["High","#f97316"],["Medium","#eab308"],["Low","#3b82f6"],["Info","#475569"]];
   const sevTotal = SEV.reduce((a,[k])=>a+(risk.severity?.[k]||0),0) || 1;
   const fmtDate = (d)=> d ? new Date(d).toLocaleDateString(undefined,{month:"short",day:"numeric",year:"numeric"}) : "—";
@@ -569,6 +576,7 @@ function CampaignDetail({ id, onBack }) {
         )}
         <button onClick={exportCsv} className="h-8 px-3 text-[12px] border border-[#30363D] rounded text-slate-300">Export CSV</button>
         <button onClick={openReport} className="h-8 px-3 text-[12px] border border-[#30363D] rounded text-slate-300">Report</button>
+        {isAdmin && c.status!=="closed" && <button onClick={notifyAssignees} className="h-8 px-3 text-[12px] border border-[#30363D] rounded text-slate-300">Notify assignees</button>}
         {isAdmin && c.status!=="closed" && <button onClick={close} className="h-8 px-3 text-[12px] border border-[#30363D] rounded text-slate-300">Close</button>}
         <button onClick={onBack} className="h-8 px-3 text-[12px] border border-[#30363D] rounded text-slate-300 inline-flex items-center gap-1"><CaretLeft size={13}/> Back</button>
       </>}>
@@ -661,6 +669,23 @@ function CampaignDetail({ id, onBack }) {
               </div>
             </div>
           )}
+          {!mineOnly && (
+            <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+              <div className="text-[12px] text-slate-300 mb-3">SLA-breach forecast — open findings coming due</div>
+              <div className="grid grid-cols-3 gap-3">
+                {[["7","Next 7 days"],["14","Next 14 days"],["30","Next 30 days"]].map(([n,lbl])=>{
+                  const w = fc[n]||{};
+                  return (
+                    <div key={n} className="border border-[#30363D] rounded p-3">
+                      <div className="text-[10.5px] text-slate-500 uppercase tracking-wide mb-1">{lbl}</div>
+                      <div className="text-[20px] font-semibold text-slate-100">{w.due ?? 0} <span className="text-[11px] text-slate-500">due</span></div>
+                      {w.at_risk!=null && <div className={`text-[11px] mt-1 ${w.at_risk>0?"text-red-300":"text-green-300"}`}>{w.at_risk>0?`~${w.at_risk} at risk at current pace`:"on pace to clear"}</div>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           {!mineOnly && (ov.regressions||[]).length>0 && (
             <div className="border border-orange-500/30 bg-orange-500/5 rounded-md p-4">
               <div className="text-[12px] text-orange-300 mb-2">⚠ Regressions — patched then reopened ({ov.regressions.length})</div>
@@ -668,6 +693,22 @@ function CampaignDetail({ id, onBack }) {
                 {ov.regressions.map(r=>(
                   <button key={r.id} onClick={()=>{setDrill(null);setTab("findings");}} className="text-[11px] px-2 py-1 rounded border border-orange-500/30 text-slate-300 hover:bg-orange-500/10">
                     <span className="font-mono text-slate-400">{r.asset_hostname||"host"}</span> · {r.cve||r.title}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {!mineOnly && stalled.count>0 && (
+            <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+              <div className="text-[12px] text-slate-300 mb-2">Stalled — no progress in {stalled.days}+ days ({stalled.count})</div>
+              <div className="space-y-1.5 max-h-[190px] overflow-auto">
+                {(stalled.items||[]).map(sv=>(
+                  <button key={sv.id} onClick={()=>{setDrill(null);setTab("findings");}} className="w-full text-left text-[11.5px] flex items-center gap-2 border border-[#30363D] rounded px-2 py-1 hover:bg-slate-500/10">
+                    <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{background: sv.severity==="Critical"?"#ef4444":sv.severity==="High"?"#f97316":"#eab308"}}/>
+                    <span className="text-slate-200 truncate flex-1">{sv.cve||sv.title}</span>
+                    <span className="text-slate-500 font-mono truncate max-w-[140px] hidden md:inline">{sv.asset_hostname||""}</span>
+                    <span className="text-slate-500 shrink-0 hidden md:inline">{sv.assigned_to?sv.assigned_to.split("@")[0]:"unassigned"}</span>
+                    <span className="text-amber-300 shrink-0 w-20 text-right">{fmtDate(sv.since)}</span>
                   </button>
                 ))}
               </div>

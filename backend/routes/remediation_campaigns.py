@@ -232,6 +232,16 @@ async def campaign_notify(user: dict = Depends(require_module(MODULE_KEY, level=
     return await rc.notify_alerts(db)
 
 
+@router.post("/v1/remediation-campaigns/{campaign_id}/notify-assignees")
+async def notify_assignee_queues(campaign_id: str,
+                                 user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+    """Nudge every assignee with a summary of their own open queue in this campaign."""
+    camp = await db.remediation_campaigns.find_one({"id": campaign_id}, {"_id": 0})
+    if not camp:
+        raise HTTPException(404, "Campaign not found")
+    return await rc.notify_assignee_queues(db, camp)
+
+
 @router.post("/v1/remediation-campaigns")
 async def create_campaign(body: CampaignBody,
                           user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
