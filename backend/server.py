@@ -225,6 +225,25 @@ async def _run_startup():
         ("security_events", [("dedupe_key", 1), ("status", 1)], {}),
         ("security_events", [("entity_id", 1), ("status", 1)], {}),
         ("security_events", [("status", 1), ("last_seen_at", -1)], {}),
+        # audit-log viewer + per-entity history
+        ("activity_log", [("actor", 1), ("timestamp", -1)]),
+        ("activity_log", "action"),
+        ("activity_log", "entity_id"),
+        ("activity_log", "finding_id"),
+        ("activity_log", [("created_at", -1)]),
+        # scan-coverage + per-asset observation lookups
+        ("observations", "asset_id"),
+        ("observations", [("asset_id", 1), ("observed_at", -1)]),
+        ("observations", "observed_at"),
+        # asset attribute filters (tags / asset_type) + by-id lookups
+        ("assets", "id"),
+        ("assets", "tags"),
+        ("assets", "asset_type"),
+        # saved-search alerting + settings
+        ("saved_findings_views", "owner"),
+        ("saved_findings_views", "alert_enabled"),
+        ("app_settings", "id"),
+        ("notifications_outbox", "recipient"),
     ]
     for spec in _indexes:
         coll, keys = spec[0], spec[1]

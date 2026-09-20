@@ -9,13 +9,22 @@ from typing import Optional
 JWT_ALGORITHM = "HS256"
 
 
+def _pw_bytes(password: str) -> bytes:
+    # bcrypt only ever uses the first 72 bytes of the input; bcrypt 4.x RAISES on a
+    # longer input instead of silently truncating like older versions. Truncate to
+    # 72 bytes ourselves so a long passphrase can't 500 login/registration. This is
+    # byte-for-byte compatible with existing stored hashes, which bcrypt also
+    # computed from only the first 72 bytes.
+    return (password or "").encode("utf-8")[:72]
+
+
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    return bcrypt.hashpw(_pw_bytes(password), bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
     try:
-        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+        return bcrypt.checkpw(_pw_bytes(plain), (hashed or "").encode("utf-8"))
     except Exception:
         return False
 
