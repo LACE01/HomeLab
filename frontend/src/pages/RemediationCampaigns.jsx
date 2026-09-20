@@ -512,6 +512,15 @@ function CampaignDetail({ id, onBack }) {
     setSel(new Set()); load();
   };
   const exportCsv = () => { window.open(`/api/v1/remediation-campaigns/${id}/export.csv`, "_blank"); };
+  const quickPatch = async (fid) => {
+    await api.post(`/v1/remediation-campaigns/${id}/bulk-status`, { finding_ids:[fid], status:"Fixed pending validation" });
+    toast.success("Marked patched (pending validation)"); load();
+  };
+  const quickNote = async (fid) => {
+    const t = window.prompt("Note for this finding:"); if (!t || !t.trim()) return;
+    await api.post(`/v1/remediation-campaigns/${id}/mass-note`, { finding_ids:[fid], text:t.trim() });
+    toast.success("Noted"); load();
+  };
   const openReport = async () => { try { const r = await api.get(`/v1/remediation-campaigns/${id}/report`); setReport(r.data); } catch { toast.error("Report failed"); } };
   const reassignSel = async () => {
     if (!sel.size) return;
@@ -540,6 +549,14 @@ function CampaignDetail({ id, onBack }) {
     if (d<0) dueBuckets[0].v++; else if (d<=7) dueBuckets[1].v++; else if (d<=30) dueBuckets[2].v++; else dueBuckets[3].v++;
   });
   const DUE_COLORS = ["#ef4444","#f97316","#eab308","#3b82f6","#475569"];
+  const ov = c.overview || {}; const vel = ov.velocity || {}; const risk = ov.risk || {};
+  const exc = ov.exceptions || {}; const tix = ov.tickets || {}; const my = c.my || {};
+  const SEV = [["Critical","#ef4444"],["High","#f97316"],["Medium","#eab308"],["Low","#3b82f6"],["Info","#475569"]];
+  const sevTotal = SEV.reduce((a,[k])=>a+(risk.severity?.[k]||0),0) || 1;
+  const fmtDate = (d)=> d ? new Date(d).toLocaleDateString(undefined,{month:"short",day:"numeric",year:"numeric"}) : "—";
+  const trackBadge = vel.on_track===true ? ["On track","text-green-300 bg-green-500/10 border-green-500/30"]
+                    : vel.on_track===false ? ["Behind schedule","text-red-300 bg-red-500/10 border-red-500/30"]
+                    : ["No deadline set","text-slate-400 bg-slate-500/10 border-slate-500/30"];
 
   return (
     <Layout title={c.name} subtitle={`${p.patched}/${p.total} patched · ${p.percent_complete}% · ${c.status==="closed"?"closed":c.owner_team||"no team"}`}
@@ -557,30 +574,149 @@ function CampaignDetail({ id, onBack }) {
       </>}>
 
       {report && <ReportModal report={report} onClose={()=>setReport(null)}/>}
-      <div className="flex items-center gap-2 mb-3 max-w-5xl">
+      <div className="flex items-center gap-2 mb-3 max-w-7xl">
         <Bar2 pct={p.percent_complete}/><span className="text-[12px] text-slate-300 w-10 text-right">{p.percent_complete}%</span>
       </div>
-      <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-4 max-w-5xl">
+      <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-4 max-w-7xl">
         <Stat label="To patch" value={p.total}/><Stat label="Patched" value={p.patched} tone="green"/>
         <Stat label="Verified" value={p.verified} tone="green"/>
         <Stat label="Open" value={p.open}/><Stat label="Regressions" value={p.regressions} tone="orange"/>
         <Stat label="Aging >30d" value={p.aging_over_30d} tone="amber"/>
       </div>
       {(c.maintenance_window?.start || c.change_ticket) && (
-        <div className="flex items-center gap-3 mb-4 text-[11.5px] text-slate-400 max-w-5xl">
+        <div className="flex items-center gap-3 mb-4 text-[11.5px] text-slate-400 max-w-7xl">
           {c.maintenance_window?.start && <span>🛠 Maintenance window: {new Date(c.maintenance_window.start).toLocaleString()} → {new Date(c.maintenance_window.end).toLocaleString()}</span>}
           {c.change_ticket && <span>· Change: <span className="text-slate-300 font-mono">{c.change_ticket}</span></span>}
         </div>
       )}
 
-      <div className="flex gap-1 mb-3 border-b border-[#30363D] max-w-5xl">
+      <div className="flex gap-1 mb-3 border-b border-[#30363D] max-w-7xl">
         {[["overview","Overview"],["findings","Findings"],["timeline","Timeline"],["notes","Notes"]].map(([t,l])=>(
           <button key={t} onClick={()=>setTab(t)} className={`px-3 py-1.5 text-[12px] border-b-2 -mb-px ${tab===t?"border-blue-500 text-blue-300":"border-transparent text-slate-400 hover:text-slate-200"}`}>{l}</button>
         ))}
       </div>
 
       {tab==="overview" && (
-        <div className="space-y-4 max-w-5xl">
+        <div className="space-y-4 max-w-7xl">
+          {!mineOnly && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {/* Velocity + ETA */}
+              <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-[12px] text-slate-300">Velocity &amp; projected close</div>
+                  <span className={`text-[10.5px] px-2 py-0.5 rounded border ${trackBadge[1]}`}>{trackBadge[0]}</span>
+                </div>
+                <div className="grid grid-cols-3 gap-3">
+                  <div><div className="text-[18px] font-semibold text-slate-100">{vel.patched_per_week ?? "—"}</div><div className="text-[10.5px] text-slate-500 uppercase tracking-wide">Patched / wk</div></div>
+                  <div><div className="text-[18px] font-semibold text-slate-100">{fmtDate(vel.eta)}</div><div className="text-[10.5px] text-slate-500 uppercase tracking-wide">Projected close</div></div>
+                  <div><div className={`text-[18px] font-semibold ${vel.days_to_due!=null&&vel.days_to_due<0?"text-red-300":"text-slate-100"}`}>{vel.days_to_due!=null?`${vel.days_to_due}d`:"—"}</div><div className="text-[10.5px] text-slate-500 uppercase tracking-wide">To deadline</div></div>
+                </div>
+                {vel.target && <div className="text-[10.5px] text-slate-500 mt-3">Deadline: {fmtDate(vel.target)} · {vel.patched_total||0} patched so far</div>}
+              </div>
+              {/* Risk composition */}
+              <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+                <div className="text-[12px] text-slate-300 mb-3">Risk composition · {risk.open_total||0} open</div>
+                <div className="flex h-2.5 w-full rounded overflow-hidden mb-2 bg-[#161b22]">
+                  {SEV.map(([k,col])=>{const w=100*(risk.severity?.[k]||0)/sevTotal; return w>0?<div key={k} style={{width:`${w}%`,background:col}} title={`${k}: ${risk.severity?.[k]||0}`}/>:null;})}
+                </div>
+                <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10.5px] mb-3">
+                  {SEV.map(([k,col])=><span key={k} className="inline-flex items-center gap-1 text-slate-400"><span className="w-2 h-2 rounded-full" style={{background:col}}/>{k} {risk.severity?.[k]||0}</span>)}
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-[11px]">
+                  <div className="flex justify-between border border-[#30363D] rounded px-2 py-1"><span className="text-slate-400">KEV (exploited)</span><span className="text-red-300 font-semibold">{risk.kev_open||0}</span></div>
+                  <div className="flex justify-between border border-[#30363D] rounded px-2 py-1"><span className="text-slate-400">EPSS ≥ 0.5</span><span className="text-orange-300 font-semibold">{risk.high_epss_open||0}</span></div>
+                  <div className="flex justify-between border border-[#30363D] rounded px-2 py-1"><span className="text-slate-400">Overdue</span><span className="text-red-300 font-semibold">{risk.overdue_open||0}</span></div>
+                  <div className="flex justify-between border border-[#30363D] rounded px-2 py-1"><span className="text-slate-400">Due ≤ 7d</span><span className="text-amber-300 font-semibold">{risk.due_7d_open||0}</span></div>
+                </div>
+              </div>
+            </div>
+          )}
+          {!mineOnly && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {/* Exceptions + tickets */}
+              <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+                <div className="text-[12px] text-slate-300 mb-3">Exceptions &amp; tickets</div>
+                <div className="grid grid-cols-3 gap-2 text-center mb-3">
+                  <div><div className="text-[17px] font-semibold text-amber-300">{exc.pending||0}</div><div className="text-[10px] text-slate-500 uppercase">Pending</div></div>
+                  <div><div className="text-[17px] font-semibold text-blue-300">{exc.active||0}</div><div className="text-[10px] text-slate-500 uppercase">Accepted</div></div>
+                  <div><div className="text-[17px] font-semibold text-slate-400">{exc.denied||0}</div><div className="text-[10px] text-slate-500 uppercase">Denied</div></div>
+                </div>
+                <div className="text-[11px] text-slate-400 flex items-center justify-between border-t border-[#30363D] pt-2">
+                  <span>Ticket coverage (open)</span>
+                  <span className="text-slate-200">{tix.with_ticket||0} linked · <span className="text-slate-500">{tix.without_ticket||0} none</span></span>
+                </div>
+              </div>
+              {/* Recent activity */}
+              <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+                <div className="text-[12px] text-slate-300 mb-2">Recent activity</div>
+                {(c.activity||[]).length===0 && <div className="text-[11px] text-slate-500">No activity yet.</div>}
+                <div className="space-y-1.5 max-h-[150px] overflow-auto">
+                  {(c.activity||[]).slice(0,8).map((a,i)=>(
+                    <div key={i} className="text-[11px] flex gap-2">
+                      <span className="text-slate-500 shrink-0 w-14">{a.at?new Date(a.at).toLocaleDateString(undefined,{month:"short",day:"numeric"}):""}</span>
+                      <span className="text-slate-300"><span className="text-slate-400">{a.actor||"system"}</span> · {(a.detail||a.action||"").slice(0,80)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+          {!mineOnly && (ov.regressions||[]).length>0 && (
+            <div className="border border-orange-500/30 bg-orange-500/5 rounded-md p-4">
+              <div className="text-[12px] text-orange-300 mb-2">⚠ Regressions — patched then reopened ({ov.regressions.length})</div>
+              <div className="flex flex-wrap gap-2">
+                {ov.regressions.map(r=>(
+                  <button key={r.id} onClick={()=>{setDrill(null);setTab("findings");}} className="text-[11px] px-2 py-1 rounded border border-orange-500/30 text-slate-300 hover:bg-orange-500/10">
+                    <span className="font-mono text-slate-400">{r.asset_hostname||"host"}</span> · {r.cve||r.title}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {mineOnly && (
+            <>
+              <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
+                <Stat label="Assigned to me" value={my.total||0}/>
+                <Stat label="Patched by me" value={my.patched||0} tone="green"/>
+                <Stat label="Still open" value={my.open||0}/>
+                <Stat label="Overdue" value={my.overdue||0} tone="orange"/>
+                <Stat label="Due ≤ 7d" value={my.due_7d||0} tone="amber"/>
+                <Stat label="Soonest due" value={my.soonest_due?fmtDate(my.soonest_due):"—"}/>
+              </div>
+              <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+                <div className="text-[12px] text-slate-300 mb-3">My priority queue — work these next</div>
+                {(my.queue||[]).length===0 && <div className="text-[11px] text-slate-500">Nothing open assigned to you. 🎉</div>}
+                <div className="space-y-1.5">
+                  {(my.queue||[]).map(q=>{
+                    const overdue = q.due_at && new Date(q.due_at).getTime()<Date.now();
+                    return (
+                    <div key={q.id} className="flex items-center gap-2 text-[11.5px] border border-[#30363D] rounded px-2 py-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{background: q.priority_score>=150?"#ef4444":q.priority_score>=80?"#f97316":"#eab308"}}/>
+                      <span className="text-slate-500 w-8 text-right shrink-0">{q.priority_score}</span>
+                      <span className="text-slate-200 truncate flex-1">{q.cve||q.title}{q.kev_flag&&<span className="ml-1 text-[9px] px-1 rounded bg-red-500/15 text-red-300 align-middle">KEV</span>}</span>
+                      <span className="text-slate-500 font-mono truncate max-w-[140px] hidden md:inline">{q.asset_hostname||""}</span>
+                      <span className={`w-16 text-right shrink-0 ${overdue?"text-red-300":"text-slate-500"}`}>{q.due_at?fmtDate(q.due_at):"no date"}</span>
+                      <button onClick={()=>quickPatch(q.id)} className="shrink-0 text-[10.5px] px-2 py-0.5 rounded border border-green-500/30 text-green-300 hover:bg-green-500/10">Patched</button>
+                      <button onClick={()=>quickNote(q.id)} className="shrink-0 text-[10.5px] px-2 py-0.5 rounded border border-[#30363D] text-slate-300 hover:bg-slate-500/10">Note</button>
+                    </div>
+                  );})}
+                </div>
+              </div>
+              {(my.by_device||[]).length>0 && (
+                <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+                  <div className="text-[12px] text-slate-300 mb-3">Batch by device — clear a host in one pass</div>
+                  <div className="flex flex-wrap gap-2">
+                    {my.by_device.map(d=>(
+                      <button key={d.host} onClick={()=>openGroup("device",d.host)} className="text-[11px] px-2.5 py-1.5 rounded border border-[#30363D] text-slate-300 hover:bg-slate-500/10 inline-flex items-center gap-2">
+                        <span className="font-mono truncate max-w-[180px]">{d.host}</span>
+                        <span className="text-[10px] px-1.5 rounded bg-blue-500/15 text-blue-300">{d.open} open</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
           {burn.length > 1 && (
             <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
               <div className="text-[12px] text-slate-300 mb-2">Burndown ({p.percent_verified}% verified)</div>

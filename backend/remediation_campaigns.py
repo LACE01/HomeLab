@@ -14,7 +14,7 @@ Signals the spreadsheet couldn't give you:
                             didn't hold, or the vuln came back) -- the thing you
                             most want an alert on and least want to hunt for by eye
 """
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import uuid
 
 from routes.common import OPEN_STATUSES, RESOLVED_STATUSES
@@ -229,6 +229,19 @@ def _as_iso(v):
     return str(v)
 
 
+def _to_dt(v):
+    """Parse a timestamp (native datetime OR ISO string) to an aware UTC datetime,
+    or None. Mongo stores BSON datetimes; mongomock/older docs store ISO strings."""
+    iso = _as_iso(v)
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+    except Exception:
+        return None
+
+
 def priority_score(f: dict) -> int:
     """SLA x severity x exploitability x age -> a single work-next score. Higher =
     do sooner. Resolved findings sink to the bottom so the queue is always the live
@@ -268,6 +281,141 @@ def priority_score(f: dict) -> int:
 DETAIL_FINDINGS_CAP = 1000
 
 
+async def campaign_overview(db, camp: dict, findings: list, baseline_ids, progress: dict) -> dict:
+    """Admin-view Overview extras, all derived from findings already in memory plus
+    two cheap reads (exceptions, nothing else). Everything is scoped to the campaign
+    BASELINE so the numbers agree with the progress bar."""
+    import math
+    now = datetime.now(timezone.utc)
+    now_i = now.isoformat()
+    week_i = (now + timedelta(days=7)).isoformat()
+    base = set(baseline_ids) if baseline_ids is not None else {f.get("id") for f in findings}
+    scope = [f for f in findings if f.get("id") in base]
+    open_f = [f for f in scope if f.get("status") in OPEN_STATUSES]
+
+    sev = {k: 0 for k in ("Critical", "High", "Medium", "Low", "Info")}
+    kev_open = high_epss_open = overdue_open = due_7d_open = no_due_open = with_ticket = 0
+    for f in open_f:
+        s2 = f.get("severity") or "Info"
+        sev[s2] = sev.get(s2, 0) + 1
+        if f.get("kev_flag"):
+            kev_open += 1
+        e = f.get("epss_score")
+        if isinstance(e, (int, float)) and e >= 0.5:
+            high_epss_open += 1
+        due = _as_iso(f.get("due_at"))
+        if not due:
+            no_due_open += 1
+        elif due < now_i:
+            overdue_open += 1
+        elif due < week_i:
+            due_7d_open += 1
+        if f.get("ticket") or f.get("ticket_ref"):
+            with_ticket += 1
+
+    # exceptions filed against this campaign's findings (real workflow, db.exceptions)
+    exc = {"pending": 0, "active": 0, "denied": 0, "total": 0}
+    try:
+        ids = [f.get("id") for f in scope]
+        async for e in db.exceptions.find({"finding_id": {"$in": ids}}, {"_id": 0, "status": 1}):
+            st = e.get("status")
+            exc["total"] += 1
+            if st == "pending_approval":
+                exc["pending"] += 1
+            elif st == "active":
+                exc["active"] += 1
+            elif st in ("denied", "rejected"):
+                exc["denied"] += 1
+    except Exception:
+        pass
+
+    # velocity + ETA: patched-so-far / elapsed -> project remaining open to a date,
+    # then compare against the deadline (maintenance-window end, else due_date).
+    patched = progress.get("patched", 0)
+    open_ct = progress.get("open", 0)
+    sdt = _to_dt(camp.get("created_at"))
+    elapsed_days = max(1, (now - sdt).days) if sdt else None
+    per_day = (patched / elapsed_days) if elapsed_days else None
+    per_week = round(per_day * 7, 1) if per_day is not None else None
+    eta = None
+    if open_ct == 0:
+        eta = now_i
+    elif per_day and per_day > 0:
+        eta = (now + timedelta(days=math.ceil(open_ct / per_day))).isoformat()
+    target = _as_iso((camp.get("maintenance_window") or {}).get("end")) or _as_iso(camp.get("due_date"))
+    tdt = _to_dt(target)
+    days_to_due = (tdt - now).days if tdt else None
+    on_track = None
+    if eta and tdt:
+        on_track = _to_dt(eta) <= tdt
+
+    regressions = [
+        {k: f.get(k) for k in ("id", "title", "cve", "severity", "asset_hostname")}
+        for f in scope if f.get("status") == "Reopened"
+    ][:25]
+
+    return {
+        "risk": {
+            "severity": sev,
+            "kev_open": kev_open,
+            "high_epss_open": high_epss_open,
+            "overdue_open": overdue_open,
+            "due_7d_open": due_7d_open,
+            "no_due_open": no_due_open,
+            "open_total": len(open_f),
+        },
+        "tickets": {"with_ticket": with_ticket, "without_ticket": len(open_f) - with_ticket},
+        "exceptions": exc,
+        "velocity": {
+            "patched_per_week": per_week,
+            "patched_total": patched,
+            "eta": eta,
+            "days_to_due": days_to_due,
+            "on_track": on_track,
+            "target": target,
+        },
+        "regressions": regressions,
+    }
+
+
+def campaign_my(findings: list, mine_ids: list) -> dict:
+    """My-work Overview: everything a tech needs, scoped to their own findings.
+    Computed over the FULL findings list (not the capped table payload) so counts
+    are correct even for very large campaigns."""
+    now = datetime.now(timezone.utc)
+    now_i = now.isoformat()
+    week_i = (now + timedelta(days=7)).isoformat()
+    mine = set(mine_ids or [])
+    mf = [f for f in findings if f.get("id") in mine]
+    open_f = [f for f in mf if f.get("status") in OPEN_STATUSES]
+    patched = sum(1 for f in mf if f.get("status") in RESOLVED_STATUSES)
+    overdue = due_7d = 0
+    soonest = None
+    for f in open_f:
+        due = _as_iso(f.get("due_at"))
+        if due and due < now_i:
+            overdue += 1
+        elif due and due < week_i:
+            due_7d += 1
+        if due and (soonest is None or due < soonest):
+            soonest = due
+    queue = sorted(open_f, key=lambda f: -priority_score(f))[:10]
+    q = [{**{k: f.get(k) for k in ("id", "title", "cve", "qid", "severity",
+                                   "asset_hostname", "due_at", "status", "kev_flag")},
+          "priority_score": priority_score(f)} for f in queue]
+    dev: dict = {}
+    for f in open_f:
+        h = f.get("asset_hostname") or f.get("asset_id") or "unknown"
+        dev[h] = dev.get(h, 0) + 1
+    by_device = sorted(({"host": h, "open": n} for h, n in dev.items()),
+                       key=lambda x: -x["open"])[:8]
+    return {
+        "total": len(mf), "patched": patched, "open": len(open_f),
+        "overdue": overdue, "due_7d": due_7d, "soonest_due": soonest,
+        "queue": q, "by_device": by_device,
+    }
+
+
 async def campaign_detail(db, campaign_id: str, *, for_user: dict = None) -> dict | None:
     import logging
     log = logging.getLogger("vulnops.remediation")
@@ -300,6 +448,15 @@ async def campaign_detail(db, campaign_id: str, *, for_user: dict = None) -> dic
         email = for_user.get("email")
         camp["mine"] = [f["id"] for f in findings
                         if f.get("assigned_to") == email or f.get("owner_team") in teams]
+    try:
+        camp["overview"] = await campaign_overview(db, camp, findings, _bl, camp["progress"])
+    except Exception as e:
+        log.warning("campaign overview failed: %s", e); camp["overview"] = {}
+    if for_user:
+        try:
+            camp["my"] = campaign_my(findings, camp.get("mine") or [])
+        except Exception as e:
+            log.warning("campaign my-stats failed: %s", e); camp["my"] = {}
     for f in findings:
         f["priority_score"] = priority_score(f)
     findings.sort(key=lambda f: -f["priority_score"])   # highest-impact first
