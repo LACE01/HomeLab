@@ -288,89 +288,20 @@ async def _run_startup():
     except Exception as e:
         logger.exception(f"Patch completion backfill failed: {e}")
 
-    # Nightly rescore loop (24h)
+    # Background loops. The event-loop lag watchdog ALWAYS runs in this (API) process
+    # so an API stall is visible regardless of where the schedulers live. The periodic
+    # scheduler loops run in the worker process by default (process isolation) --
+    # set RUN_SCHEDULERS=api to keep them here, or =both (duplicates work, not advised).
     import asyncio as _a
-    from nightly import nightly_loop, threat_intel_loop, digest_dispatch_loop
-    from qualys_sync import qualys_poll_loop
-    from tenable_sync import tenable_poll_loop
-    from aws_cspm import aws_cspm_poll_loop
-    from routes.nmap import nmap_scan_loop
-    from routes.nikto import nikto_scan_loop
-    from routes.reconng import recon_scheduled_loop
-    from cert_monitor import cert_monitor_loop
-    from domain_email_security import domain_email_monitor_loop
-    from eol_tracking import eol_monitor_loop
-    from container_scan import container_scan_loop
-    from secrets_scan import secrets_scan_loop
-    from easm import easm_scan_loop
-    from backup import backup_loop
-    from routes.automation import automation_scheduler_loop
-    from routes.splunk import splunk_sync_loop
-    from routes.wazuh import wazuh_sync_loop
-    from routes.threat_intel import threat_intel_watchlist_sync_loop
-    # Watchdog first: it logs a warning whenever the event loop stalls. Without it
-    # a blocking call in any of the loops below is invisible from the server side --
-    # the log just goes quiet, which reads like "no traffic" rather than "the
-    # process stopped answering everything", and that ambiguity is expensive.
-    from correlation_loop import correlation_loop
-    from posture_loop import posture_snapshot_loop
-    from selfcheck_loop import self_check_loop
     from blocking_io import loop_lag_monitor
     _a.create_task(loop_lag_monitor())
-    _a.create_task(correlation_loop(db, interval_hours=6))
-    _a.create_task(posture_snapshot_loop(db, interval_hours=24))
-    _a.create_task(self_check_loop(db, interval_hours=1))
-    _a.create_task(nightly_loop(db, interval_hours=24))
-    # KEV / EPSS / active-attacks sync loop (12h) — was previously manual-trigger only
-    _a.create_task(threat_intel_loop(db, interval_hours=12))
-    _a.create_task(digest_dispatch_loop(db, interval_hours=1))
-    # Qualys live sync loop (60min) — skips when integration is not configured
-    _a.create_task(qualys_poll_loop(db, interval_minutes=60))
-    # Tenable Nessus live sync loop (60min) — skips when integration is not configured
-    _a.create_task(tenable_poll_loop(db, interval_minutes=60))
-    # AWS CSPM scan loop (24h) — skips when integration is not configured
-    _a.create_task(aws_cspm_poll_loop(db, interval_hours=24))
-    # Scheduled Nmap scan loop (15min poll) — runs at most one config's scan at a time
-    _a.create_task(nmap_scan_loop(db, interval_minutes=15))
-    # Scheduled Nikto web-app scan loop (15min poll) — runs at most one scan at a time
-    _a.create_task(nikto_scan_loop(db, interval_minutes=15))
-    # Scheduled recon-ng OSINT module loop (30min poll) — runs at most one module at a time
-    _a.create_task(recon_scheduled_loop(db, interval_minutes=30))
-    # TLS cert expiry loop (once/day -- certs don't change often)
-    _a.create_task(cert_monitor_loop(db, interval_hours=24))
-    # Email authentication (SPF/DKIM/DMARC) monitoring loop (once/day -- DNS
-    # records like these change rarely)
-    _a.create_task(domain_email_monitor_loop(db, interval_hours=24))
-    # End-of-life software/OS tracking loop (once/day -- EOL dates don't change often)
-    _a.create_task(eol_monitor_loop(db, interval_hours=24))
-    # Container image vulnerability scan loop (once/day)
-    _a.create_task(container_scan_loop(db, interval_hours=24))
-    # Secrets/credential leak scan loop (once/day)
-    _a.create_task(secrets_scan_loop(db, interval_hours=24))
-    # EASM passive subdomain discovery loop (once/day)
-    _a.create_task(easm_scan_loop(db, interval_hours=24))
-    # Scheduled DB backup loop -- no-ops unless BACKUP_SCHEDULE_ENABLED=true (see backup.py)
-    _a.create_task(backup_loop(db, interval_hours=24))
-    # Automation rules with a daily/weekly/monthly schedule -- separate from the nightly
-    # sweep so they can fire at a specific configured time (15min poll resolution)
-    _a.create_task(automation_scheduler_loop(db, interval_minutes=15))
-    # Splunk scheduled saved-search polling loop (5min poll resolution) -- runs at
-    # most one configured search at a time, same reasoning as the other scanner loops
-    _a.create_task(splunk_sync_loop(db, interval_minutes=5))
-    # Wazuh scheduled indexer polling loop (5min poll resolution)
-    _a.create_task(wazuh_sync_loop(db, interval_minutes=5))
-    # Threat intel watchlist: bulk-pulls ThreatFox's recent IOC feed on a schedule
-    # (in addition to manual add/import) -- no-ops quietly if abuse.ch isn't configured
-    _a.create_task(threat_intel_watchlist_sync_loop(db, interval_hours=12))
-    from cti import cti_loop
-    _a.create_task(cti_loop(db, interval_hours=12))
-    from attack_telemetry import attack_telemetry_loop
-    _a.create_task(attack_telemetry_loop(db))
-    # Data retention/archival: purges old records from enabled policies once a day,
-    # archiving to a compressed JSON file first (see retention.py)
-    from retention import retention_loop
-    _a.create_task(retention_loop(db, interval_hours=24))
-    # Saved-search alerting: notify a saved Findings view's owner when NEW findings
-    # start matching that saved filter (hourly).
-    from saved_search_alerts import saved_search_alert_loop
-    _a.create_task(saved_search_alert_loop(db, interval_minutes=60))
+    _sched_mode = os.environ.get("RUN_SCHEDULERS", "worker").lower()
+    if _sched_mode in ("api", "both"):
+        try:
+            from scheduler_loops import start_scheduler_loops
+            n = start_scheduler_loops(db)
+            logger.info("Scheduler loops running IN THE API process (RUN_SCHEDULERS=%s): %d", _sched_mode, n)
+        except Exception as e:
+            logger.exception("Failed to start scheduler loops in API: %s", e)
+    else:
+        logger.info("Scheduler loops delegated to the worker (RUN_SCHEDULERS=%s)", _sched_mode)

@@ -28,6 +28,20 @@ async def main():
     concurrency = int(os.environ.get("WORKER_CONCURRENCY", "2"))
     logger.info("Starting worker: kinds=%s concurrency=%d registered=%s",
                  kinds or "all", concurrency, jobqueue.registered_kinds())
+
+    # Periodic scheduler loops run here by default (RUN_SCHEDULERS=worker) so heavy
+    # scans are isolated from the API process. A lag watchdog monitors this loop too.
+    sched_mode = os.environ.get("RUN_SCHEDULERS", "worker").lower()
+    if sched_mode in ("worker", "both"):
+        try:
+            from blocking_io import loop_lag_monitor
+            asyncio.create_task(loop_lag_monitor())
+            from scheduler_loops import start_scheduler_loops
+            n = start_scheduler_loops(db)
+            logger.info("Scheduler loops running IN THE WORKER (RUN_SCHEDULERS=%s): %d", sched_mode, n)
+        except Exception as e:
+            logger.exception("Failed to start scheduler loops in worker: %s", e)
+
     await jobqueue.worker(db, kinds=kinds or None, concurrency=concurrency)
 
 
