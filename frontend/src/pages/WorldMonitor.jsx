@@ -94,7 +94,7 @@ export default function WorldMonitor() {
 
   // Refresh every 2 minutes so the board stays live without a manual reload.
   useEffect(() => {
-    const t = setInterval(load, 120000);
+    const t = setInterval(() => { if (!document.hidden) load(); }, 120000);
     return () => clearInterval(t);
   }, [load]);
 

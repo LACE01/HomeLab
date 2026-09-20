@@ -736,7 +736,7 @@ export function IRCaseDetail() {
   // Auto-refresh so simultaneous responders see each other's updates without a
   // realtime backend -- matches the rest of the app's collaboration model.
   useEffect(() => {
-    const t = setInterval(load, 8000);
+    const t = setInterval(() => { if (!document.hidden) load(); }, 8000);
     return () => clearInterval(t);
   }, [load]);
 

@@ -171,7 +171,7 @@ async def create_recurring(body: RecurringBody, user: dict = Depends(require_mod
     import uuid as _uuid
     if not body.name_template.strip():
         raise HTTPException(400, "A name template is required")
-    doc = {"id": _uuid.uuid4().hex, **body.dict(), "created_by": user.get("email") or user.get("id"),
+    doc = {"id": _uuid.uuid4().hex, **body.model_dump(), "created_by": user.get("email") or user.get("id"),
            "created_at": rc._now_iso(), "last_run_at": None, "last_campaign_id": None,
            "next_run_at": body.next_run_at or rc._now_iso()}
     await db.remediation_recurring.insert_one(dict(doc))

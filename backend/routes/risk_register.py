@@ -189,7 +189,7 @@ async def create_risk(body: RiskBody, user: dict = Depends(require_module("/risk
         raise HTTPException(400, f"review_cadence must be one of {list(CADENCES.keys())}")
 
     ts = now_iso()
-    doc = body.dict()
+    doc = body.model_dump()
     doc["id"] = str(uuid.uuid4())
     doc["inherent_score"] = _score(body.likelihood, body.impact)
     doc["inherent_band"] = _band(doc["inherent_score"])
@@ -254,7 +254,7 @@ async def update_risk(risk_id: str, body: RiskUpdateBody, user: dict = Depends(r
     if not doc:
         raise HTTPException(404, "Risk not found")
 
-    updates = {k: v for k, v in body.dict().items() if v is not None}
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
     if "category" in updates and updates["category"] not in CATEGORIES:
         raise HTTPException(400, f"category must be one of {CATEGORIES}")
     if "treatment_strategy" in updates and updates["treatment_strategy"] not in STRATEGIES:

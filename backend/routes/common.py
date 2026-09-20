@@ -1,6 +1,43 @@
 """Shared helpers used by multiple route modules."""
+import functools
+import hashlib
+import json
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+
+
+# --- lightweight in-process TTL cache for read-only dashboard endpoints ---------
+# Dashboard rollups scan the whole findings set; several widgets reload together and
+# users refresh often. A short TTL collapses a burst of identical requests into one
+# computation without changing results (reads only). Keyed by endpoint + query args
+# + the caller's RBAC scope so two teams never see each other's numbers.
+_DASH_CACHE: dict = {}
+_DASH_CACHE_MAX = 500
+
+
+def dashboard_cache(ttl: float = 30.0):
+    def deco(fn):
+        @functools.wraps(fn)
+        async def wrap(*args, **kwargs):
+            u = kwargs.get("user") or {}
+            keyparts = {k: v for k, v in kwargs.items()
+                        if k not in ("user", "_rbac") and isinstance(v, (str, int, float, bool, type(None)))}
+            keyparts["_scope"] = f"{u.get('role')}:{u.get('team')}:{','.join(u.get('teams') or [])}"
+            key = fn.__name__ + ":" + hashlib.md5(
+                json.dumps(keyparts, sort_keys=True, default=str).encode()).hexdigest()
+            now = time.monotonic()
+            hit = _DASH_CACHE.get(key)
+            if hit and hit[0] > now:
+                return hit[1]
+            res = await fn(*args, **kwargs)
+            if len(_DASH_CACHE) > _DASH_CACHE_MAX:
+                for k in [k for k, v in _DASH_CACHE.items() if v[0] <= now]:
+                    _DASH_CACHE.pop(k, None)
+            _DASH_CACHE[key] = (now + ttl, res)
+            return res
+        return wrap
+    return deco
 
 
 def now_iso():

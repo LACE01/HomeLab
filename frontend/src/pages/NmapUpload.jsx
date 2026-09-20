@@ -211,7 +211,7 @@ function ScheduledScans() {
   useEffect(() => {
     load();
     // Light poll so status/last_result update while a scan runs, without a manual refresh
-    pollRef.current = setInterval(load, 8000);
+    pollRef.current = setInterval(() => { if (!document.hidden) load(); }, 8000);
     return () => clearInterval(pollRef.current);
   }, []);
 

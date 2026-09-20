@@ -469,8 +469,8 @@ async def delete_saved_view(view_id: str, user: dict = Depends(get_current_user)
 @router.get("/v1/findings-groups")
 async def findings_group(
     user: dict = Depends(get_current_user),
-    group_by: str = Query("cve", regex="^(cve|os|title|severity|asset|none)$"),
-    view_mode: str = Query("by_asset", regex="^(by_asset|by_vulnerability)$"),
+    group_by: str = Query("cve", pattern="^(cve|os|title|severity|asset|none)$"),
+    view_mode: str = Query("by_asset", pattern="^(by_asset|by_vulnerability)$"),
     severity: Optional[str] = None,
     status: Optional[str] = None,
     owner_team: Optional[str] = None,

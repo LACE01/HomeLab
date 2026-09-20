@@ -9,6 +9,7 @@ All business-logic endpoints live under routes/.
 """
 import os
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -84,7 +85,16 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("vulnops")
 
 
-app = FastAPI(title="Nightwatch API", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app):
+    # Replaces the deprecated @app.on_event("startup") hook. _run_startup is defined
+    # further down (late-bound at call time, which is fine -- lifespan runs at app
+    # boot, long after the module has finished importing).
+    await _run_startup()
+    yield
+
+
+app = FastAPI(title="Nightwatch API", version="1.0.0", lifespan=lifespan)
 api = APIRouter(prefix="/api")
 
 
@@ -175,22 +185,54 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-async def on_startup():
-    await db.users.create_index("email", unique=True)
-    await db.findings.create_index("canonical_key")
-    await db.findings.create_index("asset_id")
-    await db.findings.create_index("status")
-    await db.findings.create_index("severity")
-    await db.observations.create_index("finding_id")
-    await db.api_keys.create_index("key", unique=True)
-    await db.active_sessions.create_index("jti", unique=True)
-    await db.active_sessions.create_index("user_id")
-    await db.login_audit.create_index([("email", 1), ("timestamp", -1)])
-    await db.login_audit.create_index([("ip", 1), ("timestamp", -1)])
-    await db.security_events.create_index([("dedupe_key", 1), ("status", 1)])
-    await db.security_events.create_index([("entity_id", 1), ("status", 1)])
-    await db.security_events.create_index([("status", 1), ("last_seen_at", -1)])
+async def _run_startup():
+    # Index creation is resilient: a single failing index (option conflict with an
+    # existing one, a historical duplicate, etc.) must never abort startup and take
+    # the whole API down. Each is attempted independently and logged on failure.
+    # (findings.id is intentionally NON-unique: it is a UUID so duplicates should
+    # not exist, but building a UNIQUE index over any historical dup would raise at
+    # boot -- the lookup speedup does not depend on uniqueness.)
+    _indexes = [
+        ("users", "email", {"unique": True}),
+        ("findings", "id", {}),               # queried/updated by id in ~80 places -- was a full scan
+        ("findings", "canonical_key", {}),
+        ("findings", "asset_id", {}),
+        ("findings", "status", {}),
+        ("findings", "severity", {}),
+        ("findings", "owner_team", {}),
+        ("findings", "cve", {}),
+        ("findings", "qid", {}),
+        ("findings", "kev_flag", {}),
+        ("findings", "assigned_to", {}),
+        ("findings", "due_at", {}),
+        ("findings", "first_seen_at", {}),
+        ("findings", [("status", 1), ("severity", 1)], {}),   # hot dashboard filter combo
+        ("observations", "finding_id", {}),
+        ("tickets", "finding_id", {}),
+        ("exceptions", "finding_id", {}),
+        ("exceptions", "status", {}),
+        ("patches_applied", "finding_ids", {}),
+        ("patches_applied", "resolved_at", {}),
+        ("remediation_campaigns", "owner_team", {}),
+        ("remediation_campaign_activity", [("campaign_id", 1), ("at", -1)]),
+        ("remediation_campaign_snapshots", [("campaign_id", 1), ("day", 1)], {}),
+        ("notifications_outbox", "dedupe_key", {}),
+        ("api_keys", "key", {"unique": True}),
+        ("active_sessions", "jti", {"unique": True}),
+        ("active_sessions", "user_id", {}),
+        ("login_audit", [("email", 1), ("timestamp", -1)], {}),
+        ("login_audit", [("ip", 1), ("timestamp", -1)], {}),
+        ("security_events", [("dedupe_key", 1), ("status", 1)], {}),
+        ("security_events", [("entity_id", 1), ("status", 1)], {}),
+        ("security_events", [("status", 1), ("last_seen_at", -1)], {}),
+    ]
+    for spec in _indexes:
+        coll, keys = spec[0], spec[1]
+        opts = spec[2] if len(spec) > 2 else {}
+        try:
+            await db[coll].create_index(keys, **opts)
+        except Exception as e:
+            logger.warning("index %s on %s skipped: %s", keys, coll, e)
     # Hot-load SLA policy overrides if user has saved any
     try:
         from scoring import load_sla_overrides

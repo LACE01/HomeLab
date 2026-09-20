@@ -7,12 +7,47 @@ from fastapi import APIRouter, Depends
 from db import db
 from rbac import require_module
 from auth_utils import get_current_user
-from routes.common import now_iso, parse_time_range
+from routes.common import now_iso, parse_time_range, dashboard_cache
+
+
+def _iso(v):
+    """Coerce a timestamp (native BSON datetime OR ISO string) to an ISO string, or
+    None. Real Mongo stores dates as datetimes; comparing datetime < str raises."""
+    if v is None:
+        return None
+    if hasattr(v, "isoformat"):
+        try:
+            return v.isoformat()
+        except Exception:
+            return None
+    return str(v)
+
+
+def _dt(v):
+    iso = _iso(v)
+    if not iso:
+        return None
+    try:
+        d = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        return d.replace(tzinfo=timezone.utc) if d.tzinfo is None else d
+    except Exception:
+        return None
+
+
+def _before(a, ref_iso):
+    ia = _iso(a)
+    return bool(ia and ref_iso and ia < ref_iso)
+
+
+def _lte(a, b):
+    ia, ib = _iso(a), _iso(b)
+    return bool(ia and ib and ia <= ib)
 
 router = APIRouter()
 
 
 @router.get("/v1/dashboards/analyst")
+@dashboard_cache(ttl=30)
 async def dashboard_analyst(
     user: dict = Depends(get_current_user),
     range: Optional[str] = "30d",
@@ -52,6 +87,7 @@ async def dashboard_analyst(
 
 
 @router.get("/v1/dashboards/manager")
+@dashboard_cache(ttl=30)
 async def dashboard_manager(
     user: dict = Depends(get_current_user),
     range: Optional[str] = "30d",
@@ -63,7 +99,7 @@ async def dashboard_manager(
         t = f.get("owner_team", "Unassigned")
         teams.setdefault(t, {"open": 0, "overdue": 0, "critical": 0})
         teams[t]["open"] += 1
-        if f.get("due_at") and f["due_at"] < now_iso():
+        if _before(f.get("due_at"), now_iso()):
             teams[t]["overdue"] += 1
         if f.get("severity") == "Critical":
             teams[t]["critical"] += 1
@@ -81,6 +117,7 @@ async def dashboard_manager(
 
 
 @router.get("/v1/dashboards/executive")
+@dashboard_cache(ttl=30)
 async def dashboard_executive(
     user: dict = Depends(get_current_user),
     range: Optional[str] = "30d",
@@ -149,6 +186,7 @@ async def dashboard_executive(
 
 
 @router.get("/v1/dashboards/exposure")
+@dashboard_cache(ttl=30)
 async def dashboard_exposure(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/exposure"))):
     """Attack-surface-centric view: what's actually reachable from the internet, and how
     exposed is it -- rather than severity counts across the whole portfolio regardless of
@@ -204,6 +242,7 @@ async def dashboard_exposure(user: dict = Depends(get_current_user), _rbac: dict
 
 
 @router.get("/v1/dashboards/operational")
+@dashboard_cache(ttl=30)
 async def dashboard_operational(user: dict = Depends(get_current_user), team: Optional[str] = None,
                                  _rbac: dict = Depends(require_module("/operational"))):
     base_flt: dict = {}
@@ -231,8 +270,10 @@ async def dashboard_operational(user: dict = Depends(get_current_user), team: Op
         if f.get("reopened_count", 0):
             reopened_total += 1
         try:
-            fs = datetime.fromisoformat((f.get("first_seen_at") or "").replace("Z", "+00:00"))
-            age = (now_dt - fs).days
+            fs = _dt(f.get("first_seen_at"))
+            age = (now_dt - fs).days if fs else None
+            if age is None:
+                raise ValueError("no first_seen_at")
             if age <= 7:
                 buckets["0-7"] += 1
             elif age <= 30:
@@ -247,7 +288,7 @@ async def dashboard_operational(user: dict = Depends(get_current_user), team: Op
             buckets["Unknown"] += 1
         a = f.get("assigned_to") or f.get("owner_team") or "Unassigned"
         by_assignee[a] = by_assignee.get(a, 0) + 1
-        if f.get("due_at") and f["due_at"] < now_iso():
+        if _before(f.get("due_at"), now_iso()):
             overdue_by_sev[f.get("severity", "Info")] = overdue_by_sev.get(f.get("severity", "Info"), 0) + 1
 
     throughput = []
@@ -264,9 +305,9 @@ async def dashboard_operational(user: dict = Depends(get_current_user), team: Op
     async for f in db.findings.find({**base_flt, "status": {"$in": ["Fixed validated", "Mitigated"]}},
                                     {"first_seen_at": 1, "last_changed_at": 1}).limit(500):
         try:
-            fs = datetime.fromisoformat(f["first_seen_at"].replace("Z", "+00:00"))
-            lc = datetime.fromisoformat(f["last_changed_at"].replace("Z", "+00:00"))
-            mttr_samples.append((lc - fs).days)
+            fs = _dt(f.get("first_seen_at")); lc = _dt(f.get("last_changed_at"))
+            if fs and lc:
+                mttr_samples.append((lc - fs).days)
         except Exception:
             pass
     mttr = round(sum(mttr_samples) / len(mttr_samples), 1) if mttr_samples else 0
@@ -293,7 +334,7 @@ async def dashboard_operational(user: dict = Depends(get_current_user), team: Op
         {"_id": 0, "due_at": 1, "last_changed_at": 1},
     ).to_list(20000)
     if resolved_90d:
-        on_time = sum(1 for f in resolved_90d if f.get("due_at") and f.get("last_changed_at") and f["last_changed_at"] <= f["due_at"])
+        on_time = sum(1 for f in resolved_90d if _lte(f.get("last_changed_at"), f.get("due_at")))
         sla_compliance = round((on_time / len(resolved_90d)) * 100, 1)
     else:
         sla_compliance = None
@@ -313,6 +354,7 @@ async def dashboard_operational(user: dict = Depends(get_current_user), team: Op
 
 
 @router.get("/v1/dashboards/teams-leaderboard")
+@dashboard_cache(ttl=30)
 async def dashboards_teams_leaderboard(user: dict = Depends(get_current_user)):
     """Side-by-side SLA health for every team, so a manager/exec can see who's
     falling behind without clicking into each team's dashboard one at a time. Each
@@ -332,7 +374,7 @@ async def dashboards_teams_leaderboard(user: dict = Depends(get_current_user)):
                                     {"_id": 0, "owner_team": 1, "due_at": 1, "severity": 1, "kev_flag": 1}):
         row = _row(f.get("owner_team") or "Unassigned")
         row["open"] += 1
-        if f.get("due_at") and f["due_at"] < now:
+        if _before(f.get("due_at"), now):
             row["overdue"] += 1
         if (f.get("severity") or "").lower() == "critical":
             row["critical_open"] += 1
@@ -346,13 +388,13 @@ async def dashboards_teams_leaderboard(user: dict = Depends(get_current_user)):
     ):
         row = _row(f.get("owner_team") or "Unassigned")
         row["_resolved_90d"] += 1
-        if f.get("due_at") and f.get("last_changed_at") and f["last_changed_at"] <= f["due_at"]:
+        if _lte(f.get("last_changed_at"), f.get("due_at")):
             row["_on_time_90d"] += 1
         try:
-            fs = datetime.fromisoformat((f.get("first_seen_at") or "").replace("Z", "+00:00"))
-            lc = datetime.fromisoformat((f.get("last_changed_at") or "").replace("Z", "+00:00"))
-            row["_ttr_sum"] += max(0, (lc - fs).total_seconds() / 86400)
-            row["_ttr_n"] += 1
+            fs = _dt(f.get("first_seen_at")); lc = _dt(f.get("last_changed_at"))
+            if fs and lc:
+                row["_ttr_sum"] += max(0, (lc - fs).total_seconds() / 86400)
+                row["_ttr_n"] += 1
         except Exception:
             pass
 
@@ -370,6 +412,7 @@ async def dashboards_teams_leaderboard(user: dict = Depends(get_current_user)):
 
 
 @router.get("/v1/dashboards/soc")
+@dashboard_cache(ttl=15)
 async def dashboard_soc(
     user: dict = Depends(get_current_user),
     _rbac: dict = Depends(require_module("/soc")),
@@ -406,18 +449,18 @@ async def dashboard_soc(
         close_flt["closed_at"] = {"$gte": start_iso, "$lte": end_iso}
     async for ev in db.security_events.find(ack_flt, {"_id": 0, "created_at": 1, "acknowledged_at": 1}):
         try:
-            c = datetime.fromisoformat(ev["created_at"].replace("Z", "+00:00"))
-            a = datetime.fromisoformat(ev["acknowledged_at"].replace("Z", "+00:00"))
-            mtta_sum += max(0, (a - c).total_seconds() / 60)
-            mtta_n += 1
+            c = _dt(ev.get("created_at")); a = _dt(ev.get("acknowledged_at"))
+            if c and a:
+                mtta_sum += max(0, (a - c).total_seconds() / 60)
+                mtta_n += 1
         except Exception:
             pass
     async for ev in db.security_events.find(close_flt, {"_id": 0, "created_at": 1, "closed_at": 1}):
         try:
-            c = datetime.fromisoformat(ev["created_at"].replace("Z", "+00:00"))
-            z = datetime.fromisoformat(ev["closed_at"].replace("Z", "+00:00"))
-            mttr_sum += max(0, (z - c).total_seconds() / 3600)
-            mttr_n += 1
+            c = _dt(ev.get("created_at")); z = _dt(ev.get("closed_at"))
+            if c and z:
+                mttr_sum += max(0, (z - c).total_seconds() / 3600)
+                mttr_n += 1
         except Exception:
             pass
     mtta_minutes = round(mtta_sum / mtta_n, 1) if mtta_n else None

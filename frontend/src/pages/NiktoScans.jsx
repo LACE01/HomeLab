@@ -40,7 +40,7 @@ export default function NiktoScans() {
 
   useEffect(() => {
     load();
-    pollRef.current = setInterval(load, 8000);
+    pollRef.current = setInterval(() => { if (!document.hidden) load(); }, 8000);
     return () => clearInterval(pollRef.current);
   }, []);
 

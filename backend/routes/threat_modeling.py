@@ -211,7 +211,7 @@ async def update_threat(model_id: str, threat_id: str, body: ThreatUpdateBody,
     t = await db.threat_model_threats.find_one({"id": threat_id, "model_id": model_id}, {"_id": 0})
     if not t:
         raise HTTPException(404, "Threat not found")
-    changes = {k: v for k, v in body.dict().items() if v is not None}
+    changes = {k: v for k, v in body.model_dump().items() if v is not None}
     if "stride" in changes and changes["stride"] not in STRIDE:
         raise HTTPException(400, f"stride must be one of {STRIDE}")
     if "status" in changes and changes["status"] not in ("open", "mitigated", "accepted"):

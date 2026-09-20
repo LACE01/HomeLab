@@ -39,7 +39,7 @@ export default function Easm() {
 
   useEffect(() => {
     load();
-    pollRef.current = setInterval(load, 15000);
+    pollRef.current = setInterval(() => { if (!document.hidden) load(); }, 15000);
     return () => clearInterval(pollRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statusFilter]);

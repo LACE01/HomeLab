@@ -217,9 +217,19 @@ async def _fetch_knowledgebase(endpoint: str, username: str, password: str, qids
     async with httpx.AsyncClient(timeout=120, auth=(username, password)) as c:
         r = await c.post(url, params=params, headers=headers)
         r.raise_for_status()
+    # The KB response can list thousands of QIDs; parse it off the event loop so a
+    # large pull doesn't freeze the API (see blocking_io / the loop-lag monitor).
+    from blocking_io import run_blocking
+    return await run_blocking(_parse_knowledgebase, r.content, timeout=90, label="qualys KB parse")
+
+
+def _parse_knowledgebase(content: bytes) -> dict:
+    """Pure CPU-bound parse of a Qualys knowledgebase XML response into
+    {QID: {title, cve, cvss, cwe, ...}}. Kept synchronous so it can run on a
+    worker thread via run_blocking."""
     kb: dict = {}
     try:
-        root = ET.fromstring(r.content)
+        root = ET.fromstring(content)
     except ET.ParseError:
         return {}
     for v in root.iter("VULN"):
@@ -229,9 +239,6 @@ async def _fetch_knowledgebase(endpoint: str, username: str, password: str, qids
             "title": v.findtext("TITLE") or f"QID {qid}",
             "cve": cves[0] if cves else None,
             "cvss": float(v.findtext("CVSS_V3/BASE") or v.findtext("CVSS/BASE") or 0) or None,
-            # Item 33: Qualys returns a BARE number here ("89"), while the
-            # CWE->ATT&CK table is keyed "CWE-89" -- so every mapping silently
-            # missed and the ATT&CK panel never populated. Normalize on ingest.
             "cwe": _norm_cwe(v.findtext("CWE/CWE_ID") or v.findtext("CWE") or None),
             "category": v.findtext("CATEGORY"),
             "consequence": v.findtext("CONSEQUENCE"),
@@ -480,7 +487,8 @@ async def _reconcile_fixed_detections(db, endpoint: str, username: str, password
     strictly fresher than a Fixed record that may be from an earlier scan window, so
     it wins -- skip auto-closing anything Stage 1 just confirmed is still open."""
     xml_body = await _fetch_qualys_detections(endpoint, username, password, statuses="Fixed", truncation_limit=1000)
-    fixed_dets, _ = _parse_detections(xml_body)
+    from blocking_io import run_blocking
+    fixed_dets, _ = await run_blocking(_parse_detections, xml_body, timeout=90, label="qualys detections parse")
     if not fixed_dets:
         return {"fixed_detections": 0, "auto_closed": 0}
     active_keys = active_keys or set()
@@ -571,7 +579,8 @@ async def run_qualys_sync(db) -> dict:
                 severities=severities, statuses=statuses,
                 id_min=next_id_min, truncation_limit=page_size,
             )
-            page_dets, next_id_min = _parse_detections(xml_body)
+            from blocking_io import run_blocking
+            page_dets, next_id_min = await run_blocking(_parse_detections, xml_body, timeout=90, label="qualys detections parse")
             detections.extend(page_dets)
             pages_fetched += 1
             if not next_id_min:

@@ -441,7 +441,8 @@ async def _create_port_finding(db, asset: dict, port_info: dict, severity: str, 
 async def import_nmap_xml(db, content: bytes, vantage: str = "internal", source_label: str | None = None) -> dict:
     if vantage not in ("internal", "external"):
         vantage = "internal"
-    hosts = parse_nmap_xml(content)
+    from blocking_io import run_blocking
+    hosts = await run_blocking(parse_nmap_xml, content, timeout=90, label="nmap xml parse")
     started = _now_iso()
 
     assets_touched = 0

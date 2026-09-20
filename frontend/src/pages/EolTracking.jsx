@@ -50,7 +50,7 @@ export default function EolTracking() {
 
   useEffect(() => {
     load();
-    pollRef.current = setInterval(load, 20000);
+    pollRef.current = setInterval(() => { if (!document.hidden) load(); }, 20000);
     return () => clearInterval(pollRef.current);
   }, []);
 

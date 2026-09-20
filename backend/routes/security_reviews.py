@@ -597,7 +597,7 @@ async def update_review(review_id: str, body: ReviewUpdateBody,
                          user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
     await _get_review_or_404(review_id)
     await _reject_if_closed(review_id)
-    changes = {k: v for k, v in body.dict().items() if v is not None}
+    changes = {k: v for k, v in body.model_dump().items() if v is not None}
     if not changes:
         return {"ok": True, "updated": 0}
     if "data_classifications" in changes:
@@ -1080,7 +1080,7 @@ async def update_review_finding(review_id: str, finding_id: str, body: ReviewFin
     f = await db.security_review_findings.find_one({"id": finding_id, "review_id": review_id}, {"_id": 0})
     if not f:
         raise HTTPException(404, "Finding not found")
-    changes = {k: v for k, v in body.dict().items() if v is not None}
+    changes = {k: v for k, v in body.model_dump().items() if v is not None}
     if not changes:
         return f
     if "condition_met" in changes and changes["condition_met"] not in ("met", "not_met", "pending"):
@@ -1953,7 +1953,7 @@ async def update_reviewed_entity(entity_id: str, body: EntityUpdateBody,
     e = await db.reviewed_entities.find_one({"id": entity_id}, {"_id": 0})
     if not e:
         raise HTTPException(404, "Entity not found")
-    changes = {k: v for k, v in body.dict().items() if v is not None}
+    changes = {k: v for k, v in body.model_dump().items() if v is not None}
     if changes:
         await db.reviewed_entities.update_one({"id": entity_id}, {"$set": changes})
     return await db.reviewed_entities.find_one({"id": entity_id}, {"_id": 0})

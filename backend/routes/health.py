@@ -1,5 +1,5 @@
 """System health -- background loop status + basic DB connectivity check."""
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 
 from db import db
 from rbac import require_module
@@ -26,9 +26,13 @@ async def health_summary(user: dict = Depends(get_current_user), _rbac: dict = D
 # is /api/v1/healthz) rather than a bare /healthz, since this router is mounted on
 # the same /api-prefixed parent as everything else in the app.
 @router.get("/v1/healthz")
-async def healthz():
+async def healthz(response: Response):
     try:
         await db.command("ping")
         return {"status": "ok"}
     except Exception as e:
+        # 503 so external monitors / load balancers that key on the HTTP status
+        # (not the body) also see the outage. The docker-compose healthcheck reads
+        # the body and stays correct either way.
+        response.status_code = 503
         return {"status": "error", "error": str(e)}
