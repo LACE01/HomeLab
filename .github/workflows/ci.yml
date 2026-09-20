@@ -57,6 +57,7 @@ jobs:
             tests/test_jobqueue.py tests/test_platform_health.py tests/test_no_blocking_endpoints.py tests/test_wstg.py tests/test_nikto_findings.py tests/test_recon_preflight.py tests/test_world_monitor.py tests/test_pythia_split.py tests/test_exploit_authorization.py tests/test_backup_encryption.py tests/test_cloudflare_test.py tests/test_dedupe_repair.py tests/test_ipinfo_enrichment.py \
             tests/test_cti.py tests/test_backup_async.py tests/test_backup_streaming.py tests/test_restore_async.py tests/test_backup_download_integrity.py \
             tests/test_secrets_scan.py \
+            tests/test_dashboards_datetime.py tests/test_campaign_overview.py tests/test_audit_csv.py tests/test_saved_search_alerts.py tests/test_exploitdb_offloop.py tests/test_password_hashing.py tests/test_metrics_and_driver.py \
             tests/test_domain_email_security.py \
             tests/test_entra_sso.py \
             tests/test_external_checks.py \
