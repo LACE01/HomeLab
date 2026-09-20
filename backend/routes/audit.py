@@ -9,9 +9,12 @@ finding_id/created_at/detail instead) -- normalized here rather than migrating o
 data or touching automation.py's existing per-finding query that depends on its
 current field names.
 """
+import csv
+import io
 from typing import Optional
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 
 from db import db
 from rbac import require_module
@@ -32,19 +35,7 @@ def _normalize(doc: dict) -> dict:
     }
 
 
-@router.get("/v1/admin/audit-log")
-async def audit_log(
-    actor: Optional[str] = None,
-    action: Optional[str] = None,
-    entity_type: Optional[str] = None,
-    entity_id: Optional[str] = None,
-    start: Optional[str] = None,
-    end: Optional[str] = None,
-    limit: int = 100,
-    offset: int = 0,
-    user: dict = Depends(require_role("admin", "manager")),
-    _rbac: dict = Depends(require_module("/admin/audit-log")),
-):
+def _activity_filter(actor, action, entity_type, entity_id, start, end) -> dict:
     and_clauses: list = []
     flt: dict = {}
     if actor:
@@ -58,17 +49,54 @@ async def audit_log(
             and_clauses.append({"entity_type": entity_type})
     if entity_id:
         and_clauses.append({"$or": [{"entity_id": entity_id}, {"finding_id": entity_id}]})
-
-    time_field_filter = {}
+    tf: dict = {}
     if start:
-        time_field_filter["$gte"] = start
+        tf["$gte"] = start
     if end:
-        time_field_filter["$lte"] = end
-    if time_field_filter:
-        and_clauses.append({"$or": [{"timestamp": time_field_filter}, {"created_at": time_field_filter}]})
-
+        tf["$lte"] = end
+    if tf:
+        and_clauses.append({"$or": [{"timestamp": tf}, {"created_at": tf}]})
     if and_clauses:
         flt["$and"] = and_clauses
+    return flt
+
+
+def _login_filter(email, success, ip) -> dict:
+    flt: dict = {}
+    if email:
+        flt["email"] = {"$regex": email, "$options": "i"}
+    if success is not None:
+        flt["success"] = success
+    if ip:
+        flt["ip"] = ip
+    return flt
+
+
+def _csv_response(rows: list, columns: list, filename: str) -> StreamingResponse:
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=columns, extrasaction="ignore")
+    w.writeheader()
+    for r in rows:
+        w.writerow({c: r.get(c, "") for c in columns})
+    buf.seek(0)
+    return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
+                             headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+
+@router.get("/v1/admin/audit-log")
+async def audit_log(
+    actor: Optional[str] = None,
+    action: Optional[str] = None,
+    entity_type: Optional[str] = None,
+    entity_id: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    user: dict = Depends(require_role("admin", "manager")),
+    _rbac: dict = Depends(require_module("/admin/audit-log")),
+):
+    flt = _activity_filter(actor, action, entity_type, entity_id, start, end)
 
     pipeline = [
         {"$match": flt},
@@ -104,13 +132,47 @@ async def login_audit(
     API that exposes it, so it isn't tracked (this was raised and confirmed, not
     overlooked). Admin-only, since this is effectively a security log covering every
     account, not just the viewer's own activity."""
-    flt: dict = {}
-    if email:
-        flt["email"] = {"$regex": email, "$options": "i"}
-    if success is not None:
-        flt["success"] = success
-    if ip:
-        flt["ip"] = ip
+    flt = _login_filter(email, success, ip)
     total = await db.login_audit.count_documents(flt)
     items = await db.login_audit.find(flt, {"_id": 0}).sort("timestamp", -1).skip(max(0, offset)).limit(min(max(1, limit), 500)).to_list(500)
     return {"items": items, "total": total}
+
+
+@router.get("/v1/admin/audit-log.csv")
+async def audit_log_csv(
+    actor: Optional[str] = None,
+    action: Optional[str] = None,
+    entity_type: Optional[str] = None,
+    entity_id: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    user: dict = Depends(require_role("admin", "manager")),
+    _rbac: dict = Depends(require_module("/admin/audit-log")),
+):
+    """Export the activity audit log (respecting the current filters) as CSV for
+    compliance/records. Capped at 50k rows so an unbounded export can't OOM."""
+    flt = _activity_filter(actor, action, entity_type, entity_id, start, end)
+    pipeline = [
+        {"$match": flt},
+        {"$addFields": {"_when": {"$ifNull": ["$timestamp", "$created_at"]}}},
+        {"$sort": {"_when": -1}},
+        {"$limit": 50000},
+    ]
+    rows = [_normalize(d) async for d in db.activity_log.aggregate(pipeline)]
+    return _csv_response(rows, ["timestamp", "actor", "action", "entity_type", "entity_id", "details"],
+                         "audit-log.csv")
+
+
+@router.get("/v1/admin/login-audit.csv")
+async def login_audit_csv(
+    email: Optional[str] = None,
+    success: Optional[bool] = None,
+    ip: Optional[str] = None,
+    user: dict = Depends(require_role("admin")),
+    _rbac: dict = Depends(require_module("/admin/audit-log")),
+):
+    """Export login attempts (respecting the current filters) as CSV. Capped at 50k."""
+    flt = _login_filter(email, success, ip)
+    rows = await db.login_audit.find(flt, {"_id": 0}).sort("timestamp", -1).limit(50000).to_list(50000)
+    return _csv_response(rows, ["timestamp", "email", "success", "ip", "user_agent",
+                                "accept_language", "reason"], "login-audit.csv")

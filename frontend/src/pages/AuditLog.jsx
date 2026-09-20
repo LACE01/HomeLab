@@ -102,6 +102,20 @@ function LoginAuditTab() {
 
   const filterByIp = (ip) => { setSelected(null); setEmail(""); setIpFilter(ip); setPage(0); };
   const filterByEmail = (em) => { setSelected(null); setIpFilter(""); setEmail(em); setPage(0); };
+  const exportCsv = async () => {
+    try {
+      const params = {};
+      if (email) params.email = email;
+      if (outcome === "success") params.success = true;
+      if (outcome === "failed") params.success = false;
+      if (ipFilter) params.ip = ipFilter;
+      const r = await api.get("/v1/admin/login-audit.csv", { params, responseType: "blob" });
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement("a"); a.href = url;
+      a.download = `login-audit-${new Date().toISOString().slice(0,10)}.csv`; a.click();
+      URL.revokeObjectURL(url);
+    } catch { toast.error("Export failed"); }
+  };
 
   return (
     <div>
@@ -126,6 +140,7 @@ function LoginAuditTab() {
             <button onClick={() => { setIpFilter(""); setPage(0); }} className="text-blue-300 hover:text-blue-100"><X size={12}/></button>
           </div>
         )}
+        <button onClick={exportCsv} className="h-9 px-3 ml-auto border border-[#30363D] rounded text-[12.5px] text-slate-300 hover:bg-slate-500/10">Export CSV</button>
       </div>
       {loading ? (
         <div className="text-[12.5px] text-slate-500 py-8 text-center">Loading…</div>
@@ -204,6 +219,19 @@ export default function AuditLog() {
   useEffect(() => { if (tab === "activity") load(); }, [tab, page, filters.actor, filters.action, filters.entity_type]);
 
   const updateFilter = (patch) => { setFilters(f => ({ ...f, ...patch })); setPage(0); };
+  const exportCsv = async () => {
+    try {
+      const params = {};
+      if (filters.actor) params.actor = filters.actor;
+      if (filters.action) params.action = filters.action;
+      if (filters.entity_type) params.entity_type = filters.entity_type;
+      const r = await api.get("/v1/admin/audit-log.csv", { params, responseType: "blob" });
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement("a"); a.href = url;
+      a.download = `audit-log-${new Date().toISOString().slice(0,10)}.csv`; a.click();
+      URL.revokeObjectURL(url);
+    } catch { toast.error("Export failed"); }
+  };
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -238,6 +266,7 @@ export default function AuditLog() {
           <option value="albert_allowlist">Albert Allowlist</option>
           <option value="albert_alert">Albert Alert</option>
         </select>
+        <button onClick={exportCsv} className="h-9 px-3 ml-auto border border-[#30363D] rounded text-[12.5px] text-slate-300 hover:bg-slate-500/10">Export CSV</button>
       </div>
 
       {loading ? (
