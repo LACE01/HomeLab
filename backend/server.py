@@ -240,6 +240,11 @@ async def _run_startup():
     except Exception as e:
         logger.exception(f"SLA override load failed: {e}")
     try:
+        from app_settings import apply_persisted_settings
+        await apply_persisted_settings(db)
+    except Exception as e:
+        logger.warning(f"Tunable settings load failed: {e}")
+    try:
         await seed_all(db)
         logger.info("Seed completed.")
     except Exception as e:

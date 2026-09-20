@@ -14,12 +14,24 @@ from typing import Optional
 # + the caller's RBAC scope so two teams never see each other's numbers.
 _DASH_CACHE: dict = {}
 _DASH_CACHE_MAX = 500
+# Admin-tunable global override (seconds) set from Settings; None = use each
+# endpoint's own default ttl. 0 disables caching entirely.
+_DASH_TTL_OVERRIDE = {"seconds": None}
+
+
+def set_dashboard_ttl_override(seconds):
+    _DASH_TTL_OVERRIDE["seconds"] = None if seconds is None else max(0, int(seconds))
 
 
 def dashboard_cache(ttl: float = 30.0):
     def deco(fn):
         @functools.wraps(fn)
         async def wrap(*args, **kwargs):
+            eff_ttl = _DASH_TTL_OVERRIDE["seconds"]
+            if eff_ttl is None:
+                eff_ttl = ttl
+            if eff_ttl <= 0:
+                return await fn(*args, **kwargs)   # caching disabled
             u = kwargs.get("user") or {}
             keyparts = {k: v for k, v in kwargs.items()
                         if k not in ("user", "_rbac") and isinstance(v, (str, int, float, bool, type(None)))}
@@ -34,7 +46,7 @@ def dashboard_cache(ttl: float = 30.0):
             if len(_DASH_CACHE) > _DASH_CACHE_MAX:
                 for k in [k for k, v in _DASH_CACHE.items() if v[0] <= now]:
                     _DASH_CACHE.pop(k, None)
-            _DASH_CACHE[key] = (now + ttl, res)
+            _DASH_CACHE[key] = (now + eff_ttl, res)
             return res
         return wrap
     return deco

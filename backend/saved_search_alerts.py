@@ -129,4 +129,12 @@ async def saved_search_alert_loop(db, interval_minutes: int = 60):
                 logger.info("Saved-search alerts: %s", res)
         except Exception as e:
             logger.exception("saved_search_alert_loop error: %s", e)
-        await asyncio.sleep(interval_minutes * 60)
+        # Interval is admin-tunable from Settings; re-read each cycle so a change
+        # takes effect without a restart. Falls back to the passed default.
+        iv = interval_minutes
+        try:
+            from app_settings import get_setting
+            iv = int(await get_setting(db, "saved_search_alert_interval_minutes"))
+        except Exception:
+            pass
+        await asyncio.sleep(max(1, iv) * 60)
