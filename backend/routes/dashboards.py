@@ -43,6 +43,21 @@ def _lte(a, b):
     ia, ib = _iso(a), _iso(b)
     return bool(ia and ib and ia <= ib)
 
+
+async def _group_count(match: dict, field: str, unknown: str = "unknown") -> dict:
+    """Server-side {field_value: count} via a $group pipeline, so a rollup doesn't
+    stream every matching finding into Python just to tally it. Null/missing/empty
+    values fold into `unknown`. Pure counting only -- callers that also need per-doc
+    temporal math keep their Python loop (mixed string/datetime timestamps make that
+    unsafe in aggregation). Raises like any query; callers wrap with a fallback."""
+    out: dict = {}
+    pipeline = [{"$match": match},
+                {"$group": {"_id": {"$ifNull": [f"${field}", unknown]}, "n": {"$sum": 1}}}]
+    async for row in db.findings.aggregate(pipeline):
+        k = row.get("_id")
+        out[unknown if k in (None, "") else k] = out.get(k, 0) + row.get("n", 0)
+    return out
+
 router = APIRouter()
 
 
@@ -141,10 +156,14 @@ async def dashboard_executive(
             "status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]},
         })
 
-    by_env: dict = {}
-    async for f in db.findings.find({"severity": {"$in": ["Critical", "High"]}, "status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]}}, {"_id": 0, "asset_environment": 1}):
-        env = f.get("asset_environment", "unknown")
-        by_env[env] = by_env.get(env, 0) + 1
+    _env_match = {"severity": {"$in": ["Critical", "High"]}, "status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]}}
+    try:
+        by_env = await _group_count(_env_match, "asset_environment")
+    except Exception:  # safeguard: fall back to the streaming tally on any aggregation issue
+        by_env = {}
+        async for f in db.findings.find(_env_match, {"_id": 0, "asset_environment": 1}):
+            env = f.get("asset_environment", "unknown")
+            by_env[env] = by_env.get(env, 0) + 1
 
     score = current.get("org_score")
     no_data = bool(current.get("no_data")) or score is None
@@ -203,10 +222,13 @@ async def dashboard_exposure(user: dict = Depends(get_current_user), _rbac: dict
     exposed_kev = await db.findings.count_documents({**exposed_open_flt, "kev_flag": True})
     exposed_unassigned = await db.findings.count_documents({**exposed_open_flt, "owner_team": None})
 
-    by_env: dict = {}
-    async for f in db.findings.find(exposed_open_flt, {"_id": 0, "asset_environment": 1}):
-        env = f.get("asset_environment") or "unknown"
-        by_env[env] = by_env.get(env, 0) + 1
+    try:
+        by_env = await _group_count(exposed_open_flt, "asset_environment")
+    except Exception:  # safeguard: fall back to the streaming tally
+        by_env = {}
+        async for f in db.findings.find(exposed_open_flt, {"_id": 0, "asset_environment": 1}):
+            env = f.get("asset_environment") or "unknown"
+            by_env[env] = by_env.get(env, 0) + 1
 
     # Top exposed assets by open risk -- the "fix these first" list for attack surface.
     pipeline = [
