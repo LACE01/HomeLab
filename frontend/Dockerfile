@@ -31,7 +31,12 @@ ARG REACT_APP_BACKEND_URL=""
 ENV REACT_APP_BACKEND_URL=$REACT_APP_BACKEND_URL
 ENV ENABLE_HEALTH_CHECK=false
 
-RUN npm run build
+# Build toolchain: defaults to CRA (react-scripts) for zero-change deploys. To try
+# the opt-in Vite build once validated, build with:
+#   docker compose build --build-arg FRONTEND_BUILD_CMD=build:vite frontend
+# Both toolchains emit to /app/build, so the serve stage below is unchanged.
+ARG FRONTEND_BUILD_CMD=build
+RUN npm run "$FRONTEND_BUILD_CMD"
 
 # ---- serve stage ----
 FROM nginx:1.27-alpine
