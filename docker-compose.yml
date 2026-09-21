@@ -139,6 +139,9 @@ services:
       context: ./frontend
       args:
         REACT_APP_BACKEND_URL: ""
+        # Vite is now the validated build toolchain. Override to "build" to fall
+        # back to the legacy CRA/react-scripts build if ever needed.
+        FRONTEND_BUILD_CMD: ${FRONTEND_BUILD_CMD:-build:vite}
     restart: unless-stopped
     depends_on:
       - backend

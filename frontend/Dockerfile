@@ -35,7 +35,7 @@ ENV ENABLE_HEALTH_CHECK=false
 # the opt-in Vite build once validated, build with:
 #   docker compose build --build-arg FRONTEND_BUILD_CMD=build:vite frontend
 # Both toolchains emit to /app/build, so the serve stage below is unchanged.
-ARG FRONTEND_BUILD_CMD=build
+ARG FRONTEND_BUILD_CMD=build:vite
 RUN npm run "$FRONTEND_BUILD_CMD"
 
 # ---- serve stage ----
