@@ -52,6 +52,9 @@ services:
       BACKUP_SCHEDULE_ENABLED: ${BACKUP_SCHEDULE_ENABLED:-false}
       # Where the periodic scheduler loops run: worker (default), api, or both.
       RUN_SCHEDULERS: ${RUN_SCHEDULERS:-worker}
+      WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-}
+      WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:-}
+      WEBAUTHN_RP_NAME: ${WEBAUTHN_RP_NAME:-VulnOps}
     # Two deliberate details here:
     #   * 127.0.0.1, not "localhost". Uvicorn binds 0.0.0.0 (IPv4). When the
     #     container has IPv6 enabled, "localhost" can resolve to ::1 first and the

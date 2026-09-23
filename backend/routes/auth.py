@@ -92,12 +92,23 @@ async def _gate_flags(user: dict) -> dict:
     usable. must_change_password (temp password) and must_enroll_mfa (the user's
     role requires MFA and they have not enrolled)."""
     try:
+        import webauthn_mfa
         policy = await get_password_policy(db)
-        need_mfa = mfa_required_for(user.get("role"), policy) and not user.get("mfa_enabled")
+        role = user.get("role")
+        has_wa = webauthn_mfa.is_configured() and await webauthn_mfa.has_webauthn(db, user["id"])
+        has_any = bool(user.get("mfa_enabled")) or has_wa
+        need_mfa = mfa_required_for(role, policy) and not has_any
+        # Phishing-resistant enforcement (#67): roles in phishing_resistant_roles must
+        # have a WebAuthn credential specifically -- TOTP alone won't clear the gate.
+        # Only enforceable once WebAuthn is configured (RP ID set).
+        need_pr = (webauthn_mfa.is_configured()
+                   and role in (policy.get("phishing_resistant_roles") or [])
+                   and not has_wa)
+        need = need_mfa or need_pr
     except Exception:
-        need_mfa = False
+        need = False
     return {"must_change_password": bool(user.get("must_change_password")),
-            "must_enroll_mfa": bool(need_mfa)}
+            "must_enroll_mfa": bool(need)}
 
 
 async def _complete_login(request: Request, response: Response, user: dict, ip: str) -> dict:
@@ -163,14 +174,20 @@ async def login(body: LoginBody, request: Request, response: Response):
         await _log_login_attempt(request, email, False, reason="account disabled", user_id=user["id"])
         raise HTTPException(status_code=401, detail="Account disabled")
 
-    if user.get("mfa_enabled"):
+    import webauthn_mfa
+    has_wa = webauthn_mfa.is_configured() and await webauthn_mfa.has_webauthn(db, user["id"])
+    if user.get("mfa_enabled") or has_wa:
         # Password is correct, but that alone doesn't finish a login on an MFA
-        # account -- no session/cookie/login_audit entry yet. This intentionally
-        # isn't logged as a login_audit "success": it's only a completed login once
-        # /auth/mfa/verify also succeeds, so login_audit's success/failure column
-        # keeps meaning "was this account actually accessed", not "was one factor
-        # of it correct."
-        return {"mfa_required": True, "mfa_token": create_mfa_pending_token(user["id"])}
+        # account -- no session/cookie/login_audit entry yet. Not logged as a
+        # login_audit "success": it's only a completed login once the second factor
+        # (/auth/mfa/verify for TOTP, or /auth/webauthn/login/complete for a security
+        # key) also succeeds. `methods` tells the UI which factors this account has.
+        methods = []
+        if user.get("mfa_enabled"):
+            methods.append("totp")
+        if has_wa:
+            methods.append("webauthn")
+        return {"mfa_required": True, "mfa_token": create_mfa_pending_token(user["id"]), "methods": methods}
 
     await _log_login_attempt(request, email, True, user_id=user["id"])
     return await _complete_login(request, response, user, ip)
@@ -326,6 +343,93 @@ def _jti_from_request(request: Request) -> Optional[str]:
         return decode_token(token).get("jti")
     except Exception:
         return None
+
+
+# --------------------------- WebAuthn / FIDO2 (#67) ---------------------------
+# Phishing-resistant MFA for hardware keys (YubiKey) AND platform passkeys in one
+# ceremony. Lazily imports webauthn_mfa so the app still boots if the image predates
+# the dependency; endpoints return 501 until WEBAUTHN_RP_ID is set + image rebuilt.
+
+def _require_webauthn():
+    import webauthn_mfa
+    if not webauthn_mfa.is_configured():
+        raise HTTPException(501, "WebAuthn is not configured — set WEBAUTHN_RP_ID to your user-facing domain and rebuild.")
+    return webauthn_mfa
+
+
+@router.post("/auth/webauthn/register/begin")
+async def webauthn_register_begin(user: dict = Depends(get_current_user)):
+    wm = _require_webauthn()
+    import json
+    return json.loads(await wm.begin_registration(db, user))
+
+
+class WebAuthnRegisterBody(BaseModel):
+    credential: dict
+    name: Optional[str] = None
+
+
+@router.post("/auth/webauthn/register/complete")
+async def webauthn_register_complete(body: WebAuthnRegisterBody, user: dict = Depends(get_current_user)):
+    wm = _require_webauthn()
+    try:
+        return await wm.complete_registration(db, user, body.credential, body.name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/auth/webauthn/credentials")
+async def webauthn_list(user: dict = Depends(get_current_user)):
+    import webauthn_mfa
+    return {"items": await webauthn_mfa.list_credentials(db, user["id"]),
+            "configured": webauthn_mfa.is_configured()}
+
+
+@router.delete("/auth/webauthn/credentials/{cred_id}")
+async def webauthn_delete(cred_id: str, user: dict = Depends(get_current_user)):
+    import webauthn_mfa
+    await webauthn_mfa.delete_credential(db, user["id"], cred_id)
+    return {"ok": True}
+
+
+class WebAuthnLoginBeginBody(BaseModel):
+    mfa_token: str
+
+
+@router.post("/auth/webauthn/login/begin")
+async def webauthn_login_begin(body: WebAuthnLoginBeginBody):
+    wm = _require_webauthn()
+    uid = decode_mfa_pending_token(body.mfa_token)
+    if not uid:
+        raise HTTPException(401, "MFA session expired — start login again")
+    try:
+        import json
+        return json.loads(await wm.begin_authentication(db, uid))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+class WebAuthnLoginCompleteBody(BaseModel):
+    mfa_token: str
+    credential: dict
+
+
+@router.post("/auth/webauthn/login/complete")
+async def webauthn_login_complete(body: WebAuthnLoginCompleteBody, request: Request, response: Response):
+    wm = _require_webauthn()
+    uid = decode_mfa_pending_token(body.mfa_token)
+    if not uid:
+        raise HTTPException(401, "MFA session expired — start login again")
+    user = await db.users.find_one({"id": uid})
+    if not user:
+        raise HTTPException(401, "Invalid credentials")
+    try:
+        await wm.complete_authentication(db, uid, body.credential)
+    except ValueError as e:
+        await _log_login_attempt(request, user["email"], False, reason="bad webauthn", user_id=uid)
+        raise HTTPException(401, str(e))
+    await _log_login_attempt(request, user["email"], True, user_id=uid)
+    return await _complete_login(request, response, user, _client_ip(request))
 
 
 @router.post("/auth/logout")

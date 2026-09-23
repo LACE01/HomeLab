@@ -50,7 +50,7 @@ export const AuthProvider = ({ children }) => {
     if (r.data.mfa_required) {
       // Password was correct, but the account has MFA enabled -- no token/user yet,
       // the caller (Login.jsx) needs to collect a code and call verifyMfa() below.
-      return { mfaRequired: true, mfaToken: r.data.mfa_token };
+      return { mfaRequired: true, mfaToken: r.data.mfa_token, methods: r.data.methods || ["totp"] };
     }
     localStorage.setItem("vulnops_token", r.data.token);
     setUser(r.data.user);
@@ -60,6 +60,17 @@ export const AuthProvider = ({ children }) => {
 
   const verifyMfa = async (mfaToken, code) => {
     const r = await api.post("/auth/mfa/verify", { mfa_token: mfaToken, code });
+    localStorage.setItem("vulnops_token", r.data.token);
+    setUser(r.data.user);
+    await loadModuleAccess(r.data.user);
+    return r.data.user;
+  };
+
+  const verifyWebauthn = async (mfaToken) => {
+    const { startAuthentication } = await import("@/lib/webauthnBrowser");
+    const opts = (await api.post("/auth/webauthn/login/begin", { mfa_token: mfaToken })).data;
+    const cred = await startAuthentication(opts);
+    const r = await api.post("/auth/webauthn/login/complete", { mfa_token: mfaToken, credential: cred });
     localStorage.setItem("vulnops_token", r.data.token);
     setUser(r.data.user);
     await loadModuleAccess(r.data.user);
@@ -78,7 +89,7 @@ export const AuthProvider = ({ children }) => {
   const canEdit = (moduleKey) => !moduleKey || moduleAccess === null || moduleAccess[moduleKey] === "edit";
 
   return (
-    <AuthCtx.Provider value={{ user, setUser, loading, login, verifyMfa, logout, moduleAccess, canAccess, canEdit }}>
+    <AuthCtx.Provider value={{ user, setUser, loading, login, verifyMfa, verifyWebauthn, logout, moduleAccess, canAccess, canEdit }}>
       {children}
     </AuthCtx.Provider>
   );

@@ -6,7 +6,7 @@ import { FcGoogle } from "react-icons/fc";
 import { api, API, probeBackend, describeLoginError, BACKEND_URL_MISSING } from "@/lib/api";
 
 export default function Login() {
-  const { login, verifyMfa } = useAuth();
+  const { login, verifyMfa, verifyWebauthn } = useAuth();
   const nav = useNavigate();
   const [email, setEmail] = useState("");
   const [pwd, setPwd] = useState("");
@@ -20,6 +20,7 @@ export default function Login() {
   // /auth/mfa/verify, nothing else.
   const [mfaToken, setMfaToken] = useState(null);
   const [mfaCode, setMfaCode] = useState("");
+  const [mfaMethods, setMfaMethods] = useState([]);
 
   useEffect(() => {
     // Whether to show "Sign in with Microsoft" at all -- depends on both
@@ -46,7 +47,7 @@ export default function Login() {
     setErr(""); setBusy(true);
     try {
       const result = await login(email, pwd);
-      if (result?.mfaRequired) { setMfaToken(result.mfaToken); }
+      if (result?.mfaRequired) { setMfaToken(result.mfaToken); setMfaMethods(result.methods || ["totp"]); }
       else { nav("/"); }
     }
     catch (ex) {
@@ -65,6 +66,13 @@ export default function Login() {
     setErr(""); setBusy(true);
     try { await verifyMfa(mfaToken, mfaCode.trim()); nav("/"); }
     catch (ex) { setErr(ex.response?.data?.detail || "Invalid code"); }
+    finally { setBusy(false); }
+  };
+
+  const onWebauthn = async () => {
+    setErr(""); setBusy(true);
+    try { await verifyWebauthn(mfaToken); nav("/"); }
+    catch (ex) { setErr(ex.response?.data?.detail || ex.message || "Security key sign-in failed or was cancelled"); }
     finally { setBusy(false); }
   };
 
@@ -102,6 +110,16 @@ export default function Login() {
               <div className="text-[11.5px] text-slate-500 mb-4">
                 Open your authenticator app for the 6-digit code, or use one of your recovery codes if you've lost the device.
               </div>
+              {mfaMethods.includes("webauthn") && (
+                <button type="button" onClick={onWebauthn} disabled={busy}
+                  className="w-full h-9 mb-3 bg-blue-500/20 border border-blue-500/40 text-blue-200 hover:bg-blue-500/30 text-[13px] font-medium rounded disabled:opacity-50">
+                  {busy ? "Waiting for security key…" : "Use a security key or passkey"}
+                </button>
+              )}
+              {mfaMethods.includes("webauthn") && mfaMethods.includes("totp") && (
+                <div className="text-[10.5px] text-slate-500 text-center mb-3">or enter a code</div>
+              )}
+              {mfaMethods.includes("totp") ? (
               <form onSubmit={onSubmitMfa} className="space-y-3">
                 <div>
                   <label className="text-[11px] text-slate-500 uppercase tracking-wider font-mono">Code</label>
@@ -119,6 +137,15 @@ export default function Login() {
                   <ArrowLeft size={12}/> Back to sign in
                 </button>
               </form>
+              ) : (
+                <>
+                  {err && <div data-testid="login-error" className="text-[12px] text-red-400 mb-2">{err}</div>}
+                  <button type="button" onClick={() => { setMfaToken(null); setErr(""); }}
+                    className="w-full h-8 text-[12px] text-slate-500 hover:text-slate-300 inline-flex items-center justify-center gap-1.5">
+                    <ArrowLeft size={12}/> Back to sign in
+                  </button>
+                </>
+              )}
             </>
           ) : (
             <>
