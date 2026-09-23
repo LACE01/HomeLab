@@ -494,10 +494,6 @@ function CampaignDetail({ id, onBack }) {
     : drill.by==="device" ? (f.asset_hostname||f.asset_id||"Unknown host")===drill.key
     : drill.by==="vulnerability" ? (f.cve||f.title||"Unknown vuln")===drill.key
     : (f.owner_team||"Unassigned")===drill.key;
-  const _parsedSearch = parseSearch(fq);
-  const findings = scoped.filter(drillMatch).filter(subsetMatch)
-    .filter(f => matchFinding(f, _parsedSearch))
-    .filter(f => facetMatch(f, { severities: fSev, statuses: fStat }));
   const openGroup = (by, key) => { setDrill({by, key}); setTab("findings"); };
   // KPI / risk / SLA drill-downs -> filter the Findings tab to the findings behind
   // a tile. Scoped to the baseline (like the tiles) so the count matches.
@@ -523,6 +519,10 @@ function CampaignDetail({ id, onBack }) {
   };
   const openSubset = (key) => { setDrill(null); setSubset(key); setTab("findings"); };
   const subsetMatch = (f) => !subset ? true : (baseline.has(f.id) && (SUBSETS[subset] ? SUBSETS[subset].fn(f) : true));
+  const _parsedSearch = parseSearch(fq);
+  const findings = scoped.filter(drillMatch).filter(subsetMatch)
+    .filter(f => matchFinding(f, _parsedSearch))
+    .filter(f => facetMatch(f, { severities: fSev, statuses: fStat }));
   const toggle = (fid) => { const n = new Set(sel); n.has(fid)?n.delete(fid):n.add(fid); setSel(n); };
 
   const massNote = async () => {
