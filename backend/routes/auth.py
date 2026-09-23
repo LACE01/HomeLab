@@ -17,6 +17,7 @@ from auth_utils import (
     create_mfa_pending_token, decode_mfa_pending_token,
 )
 from routes.common import now_iso
+from password_policy import check_password, get_password_policy, mfa_required_for
 
 logger = logging.getLogger("vulnops.auth")
 
@@ -86,6 +87,19 @@ class LoginBody(BaseModel):
     password: str
 
 
+async def _gate_flags(user: dict) -> dict:
+    """First-login gate (#68): the frontend must force these before the app is
+    usable. must_change_password (temp password) and must_enroll_mfa (the user's
+    role requires MFA and they have not enrolled)."""
+    try:
+        policy = await get_password_policy(db)
+        need_mfa = mfa_required_for(user.get("role"), policy) and not user.get("mfa_enabled")
+    except Exception:
+        need_mfa = False
+    return {"must_change_password": bool(user.get("must_change_password")),
+            "must_enroll_mfa": bool(need_mfa)}
+
+
 async def _complete_login(request: Request, response: Response, user: dict, ip: str) -> dict:
     """Shared tail end of a login, whether it finished in one step (no MFA) or two
     (password then /auth/mfa/verify) -- creates the real session/cookie and returns
@@ -112,7 +126,7 @@ async def _complete_login(request: Request, response: Response, user: dict, ip: 
     return {
         "token": token,
         "user": {"id": user["id"], "email": user["email"], "name": user["name"], "role": user["role"],
-                 "must_change_password": bool(user.get("must_change_password"))},
+                 **(await _gate_flags(user))},
     }
 
 
@@ -179,10 +193,12 @@ async def change_password(body: ChangePasswordBody, user: dict = Depends(get_cur
     full_user = await db.users.find_one({"id": user["id"]}, {"_id": 0})
     if not full_user or not verify_password(body.current_password, full_user.get("password_hash") or ""):
         raise HTTPException(status_code=401, detail="Current password is incorrect")
-    if len(body.new_password) < 8:
-        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
     if body.new_password == body.current_password:
         raise HTTPException(status_code=400, detail="New password must be different from the current one")
+    try:
+        await check_password(db, body.new_password)   # policy + breached screen (#68)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     await db.users.update_one({"id": user["id"]}, {"$set": {
         "password_hash": hash_password(body.new_password), "must_change_password": False,
     }})
@@ -353,7 +369,8 @@ async def revoke_my_session(session_id: str, user: dict = Depends(get_current_us
 
 @router.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
-    return user
+    full = await db.users.find_one({"id": user["id"]}, {"_id": 0}) or user
+    return {**user, **(await _gate_flags(full))}
 
 
 class GoogleSessionBody(BaseModel):

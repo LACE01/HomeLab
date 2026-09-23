@@ -56,6 +56,7 @@ import IRWizard from "@/pages/IRWizard";
 import { IRCases, IRCaseDetail } from "@/pages/IRCases";
 import IRAdminSetup from "@/pages/IRAdminSetup";
 import ChangePassword from "@/pages/ChangePassword";
+import EnrollMfa from "@/pages/EnrollMfa";
 import Security from "@/pages/Security";
 import SecurityAlerts from "@/pages/SecurityAlerts";
 import SplunkIntegration from "@/pages/SplunkIntegration";
@@ -90,6 +91,12 @@ const Protected = ({ children, module }) => {
   // directly into the address bar, bypasses it.
   if (user.must_change_password && location.pathname !== "/change-password") {
     return <Navigate to="/change-password" replace />;
+  }
+  // Forced MFA enrollment (#67/#68): role requires MFA and it isn't enrolled yet.
+  // Runs AFTER the password change so the first-login order is temp password ->
+  // forced change -> MFA enrollment -> app. Unskippable, including typed URLs.
+  if (user.must_enroll_mfa && !user.must_change_password && location.pathname !== "/enroll-mfa") {
+    return <Navigate to="/enroll-mfa" replace />;
   }
   // Direct/typed URL to a module this role doesn't have -- the Sidebar already hides
   // the nav link, but the route itself needs its own guard too (nothing stops someone
@@ -129,6 +136,7 @@ const AppRouter = () => {
       <Route path="/shared-report/:token" element={<SharedReport/>}/>
       <Route path="/auth/callback" element={<AuthCallback/>}/>
       <Route path="/change-password" element={<Protected><ChangePassword/></Protected>}/>
+      <Route path="/enroll-mfa" element={<Protected><EnrollMfa/></Protected>}/>
       <Route path="/security" element={<Protected><Security/></Protected>}/>
       <Route path="/alerts" element={<Protected><SecurityAlerts/></Protected>}/>
       <Route path="/admin/splunk" element={<Protected><SplunkIntegration/></Protected>}/>

@@ -46,6 +46,73 @@ function TunableRow({ item, onSaved }) {
   );
 }
 
+function PasswordPolicyCard() {
+  const [pol, setPol] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const load = () => api.get("/v1/settings/password-policy").then(r => setPol(r.data)).catch(() => setPol(null));
+  useEffect(() => { load(); }, []);
+  if (!pol) return null;
+  const set = (k, v) => setPol({ ...pol, [k]: v });
+  const toggleRole = (role) => {
+    const cur = pol.mfa_required_roles || [];
+    set("mfa_required_roles", cur.includes(role) ? cur.filter(r => r !== role) : [...cur, role]);
+  };
+  const save = async () => {
+    setSaving(true);
+    try {
+      const r = await api.patch("/v1/settings/password-policy", {
+        min_length: Number(pol.min_length),
+        require_upper: !!pol.require_upper, require_lower: !!pol.require_lower,
+        require_digit: !!pol.require_digit, require_symbol: !!pol.require_symbol,
+        breached_check: !!pol.breached_check, breached_fail_closed: !!pol.breached_fail_closed,
+        mfa_required_roles: pol.mfa_required_roles || [],
+      });
+      setPol(r.data); toast.success("Password & MFA policy saved");
+    } catch (e) { toast.error(e.response?.data?.detail || "Save failed"); }
+    finally { setSaving(false); }
+  };
+  const Chk = ({ k, label }) => (
+    <label className="flex items-center gap-2 text-[12px] text-slate-300">
+      <input type="checkbox" checked={!!pol[k]} onChange={e => set(k, e.target.checked)} /> {label}
+    </label>
+  );
+  return (
+    <div className="mb-5">
+      <div className="text-[11px] uppercase tracking-wider font-mono text-slate-400 mb-2">Security policy</div>
+      <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4 space-y-3">
+        <div className="flex items-center gap-3">
+          <span className="text-[12.5px] text-slate-200 w-48">Minimum password length</span>
+          <input type="number" min="8" value={pol.min_length}
+            onChange={e => set("min_length", e.target.value === "" ? "" : Number(e.target.value))}
+            className="h-8 w-24 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12.5px] text-slate-100 text-right" />
+          <span className="text-[10.5px] text-slate-500">CJIS floor: 8 with complexity, 20 without</span>
+        </div>
+        <div className="flex flex-wrap gap-x-5 gap-y-1.5">
+          <Chk k="require_upper" label="Uppercase" /><Chk k="require_lower" label="Lowercase" />
+          <Chk k="require_digit" label="Number" /><Chk k="require_symbol" label="Symbol" />
+        </div>
+        <div className="border-t border-[#30363D] pt-2 space-y-1.5">
+          <Chk k="breached_check" label="Screen against known-breached passwords (HaveIBeenPwned k-anonymity)" />
+          {pol.breached_check && <Chk k="breached_fail_closed" label="Block if the breach service is unreachable (fail-closed)" />}
+        </div>
+        <div className="border-t border-[#30363D] pt-2">
+          <div className="text-[12px] text-slate-300 mb-1.5">Require MFA for roles</div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+            {["admin", "manager", "analyst"].map(r => (
+              <label key={r} className="flex items-center gap-2 text-[12px] text-slate-300 capitalize">
+                <input type="checkbox" checked={(pol.mfa_required_roles || []).includes(r)} onChange={() => toggleRole(r)} /> {r}
+              </label>
+            ))}
+          </div>
+          <div className="text-[10.5px] text-slate-500 mt-1">Users in these roles must enroll MFA at first login before the app is usable.</div>
+        </div>
+        <button onClick={save} disabled={saving}
+          className="h-8 px-3 text-[12px] rounded border border-blue-500/40 text-blue-300 hover:bg-blue-500/10 disabled:opacity-50">Save policy</button>
+      </div>
+    </div>
+  );
+}
+
 export default function Settings() {
   const [flags, setFlags] = useState([]);
   const [tunables, setTunables] = useState([]);
@@ -77,6 +144,7 @@ export default function Settings() {
 
   return (
     <Layout title="Settings" subtitle="Tune performance and alerting, and turn optional platform behaviors on or off">
+      <PasswordPolicyCard />
       {Object.entries(tunableGroups).map(([group, items]) => (
         <div key={group} className="mb-5">
           <div className="text-[11px] uppercase tracking-wider font-mono text-slate-400 mb-2">{group}</div>
