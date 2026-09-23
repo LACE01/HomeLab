@@ -45,6 +45,7 @@ def start_scheduler_loops(db) -> int:
     from attack_telemetry import attack_telemetry_loop
     from retention import retention_loop
     from saved_search_alerts import saved_search_alert_loop
+    from routes.integrations import integration_health_loop
 
     tasks = [
         correlation_loop(db, interval_hours=6),
@@ -74,6 +75,7 @@ def start_scheduler_loops(db) -> int:
         attack_telemetry_loop(db),
         retention_loop(db, interval_hours=24),
         saved_search_alert_loop(db, interval_minutes=60),
+        integration_health_loop(db, interval_hours=6),
     ]
     for coro in tasks:
         asyncio.create_task(coro)

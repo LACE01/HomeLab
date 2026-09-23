@@ -97,9 +97,12 @@ export function Integrations() {
 
   const Icon = ({ s }) =>
     s === "healthy" ? <CheckCircle size={16} className="text-emerald-400"/> :
-    s === "degraded" ? <WarningCircle size={16} className="text-amber-400"/> :
-    s === "not_configured" ? <GearSix size={16} className="text-slate-500"/> :
+    (s === "degraded" || s === "stale") ? <WarningCircle size={16} className="text-amber-400"/> :
+    (s === "not_configured" || s === "never_synced") ? <GearSix size={16} className="text-slate-500"/> :
     <XCircle size={16} className="text-red-400"/>;
+  // Honest, staleness-aware label + color for the derived health (#69).
+  const HEALTH_LABEL = { healthy:"healthy", stale:"stale", degraded:"degraded", failed:"failed", never_synced:"never synced", not_configured:"not configured" };
+  const HEALTH_COLOR = { healthy:"green", stale:"amber", degraded:"amber", failed:"red", never_synced:"slate", not_configured:"slate" };
 
   const sync = async (i) => {
     setTesting(i.id);
@@ -265,6 +268,7 @@ export function Integrations() {
       zone_id: i.config?.zone_id || "",
       account_id: i.config?.account_id || "",
       api_email: i.config?.api_email || "",
+      sync_interval_minutes: i.config?.sync_interval_minutes || "",
     });
   };
 
@@ -441,7 +445,7 @@ export function Integrations() {
                 <div className="text-[14px] font-medium text-slate-100">{i.name}</div>
                 <div className="text-[10px] uppercase font-mono text-slate-500 tracking-wider mt-0.5">{i.type}</div>
               </div>
-              <Icon s={i.status}/>
+              <Icon s={(i.health&&i.health.health)||i.status}/>
             </div>
 
             <div className="mt-3 space-y-1">
@@ -471,16 +475,20 @@ export function Integrations() {
             </div>
 
             <div className="mt-3 pt-3 border-t border-[#30363D] grid grid-cols-2 gap-2">
-              <div><div className="text-[10px] uppercase font-mono text-slate-500">Last Sync</div><div className="text-[11.5px]">{fmtRel(i.last_sync_at)}</div></div>
-              <div><div className="text-[10px] uppercase font-mono text-slate-500">Errors</div><div className={`text-[11.5px] font-mono ${i.sync_errors>0?"text-red-300":"text-slate-300"}`}>{i.sync_errors}</div></div>
+              <div><div className="text-[10px] uppercase font-mono text-slate-500">Last Sync</div>
+                <div className={`text-[11.5px] ${i.health&&i.health.stale?"text-amber-300":""}`}>{i.last_sync_at?fmtRel(i.last_sync_at):"never"}{i.health&&i.health.stale?" · overdue":""}</div></div>
+              <div><div className="text-[10px] uppercase font-mono text-slate-500">Errors</div><div className={`text-[11.5px] font-mono ${i.sync_errors>0?"text-red-300":"text-slate-300"}`}>{i.sync_errors||0}</div></div>
             </div>
+            {i.health && i.health.last_error && (
+              <div className="mt-2 text-[11px] text-red-300/90 bg-red-500/5 border border-red-500/25 rounded px-2 py-1 break-words">
+                <span className="font-mono text-[10px] uppercase text-red-400/80">Last error</span> · {i.health.last_error}
+              </div>
+            )}
 
             <div className="mt-3 flex items-center justify-between gap-2">
-              <Chip color={
-                i.status === "healthy" ? "green" :
-                i.status === "degraded" ? "amber" :
-                i.status === "not_configured" ? "slate" : "red"
-              }>{i.status === "not_configured" ? "not configured" : i.status}</Chip>
+              {(() => { const h=(i.health&&i.health.health)||i.status; const age=i.health&&i.health.age_minutes;
+                const extra = h==="stale"&&age?` · ${Math.floor(age/1440)||1}d`:"";
+                return <Chip color={HEALTH_COLOR[h]||"red"}>{(HEALTH_LABEL[h]||h)+extra}</Chip>; })()}
               <div className="flex gap-1.5">
                 {i.name === "Qualys VMDR" && i.status !== "not_configured" && (
                   <button data-testid={`sync-${i.id}`} disabled={testing===i.id} onClick={()=>sync(i)}
@@ -718,6 +726,14 @@ export function Integrations() {
                   <HeaderPreview form={form}/>
                 </div>
               )}
+              <div>
+                <label className="text-[10px] uppercase font-mono text-slate-500 tracking-wider">Auto-sync every (minutes)</label>
+                <input type="number" min="1" data-testid="cfg-interval" value={form.sync_interval_minutes}
+                  onChange={(e)=>setForm({...form, sync_interval_minutes: e.target.value===""?"":Number(e.target.value)})}
+                  placeholder="default cadence for this connector"
+                  className="w-full h-8 bg-[#161B22] border border-[#30363D] rounded px-2 text-[12px] text-slate-100 mt-1"/>
+                <div className="text-[10px] text-slate-500 mt-1">Sets the expected freshness — the connector is flagged <span className="text-amber-300">stale</span> at ~3× this without a successful sync.</div>
+              </div>
               <label className="flex items-center gap-2 text-[12px] text-slate-300">
                 <input type="checkbox" checked={form.enabled} onChange={(e)=>setForm({...form, enabled:e.target.checked})}/>
                 Enabled (sync will run)

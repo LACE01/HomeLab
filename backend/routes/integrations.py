@@ -17,6 +17,100 @@ from routes.common import now_iso, _clean, finding_ctx
 router = APIRouter()
 logger = logging.getLogger("vulnops.integrations")
 
+# Expected freshness per connector (minutes) -- used to judge staleness honestly.
+# A connector's stored "status" is written at sync time and never re-evaluated, so a
+# feed that last synced months ago still said HEALTHY. Health is now DERIVED at read
+# time from last_sync_at age vs. this expectation (overridable per integration via
+# config.sync_interval_minutes).
+DEFAULT_SYNC_MINUTES = {
+    "Qualys": 60, "Tenable": 60, "Splunk": 5, "Wazuh": 5, "Cloudflare": 60,
+    "OpenCTI": 720, "AWS CSPM": 1440, "IPinfo": 1440,
+    "Microsoft Entra ID": 1440, "Microsoft Defender for Endpoint": 1440,
+    "Microsoft Intune": 1440, "HaveIBeenPwned": 1440,
+}
+
+
+def _parse_dt(v):
+    if v is None:
+        return None
+    if hasattr(v, "isoformat"):
+        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+    try:
+        d = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _derive_health(i: dict, now_dt: datetime) -> dict:
+    """Honest, staleness-aware health computed at read time (not the stale stored
+    'status'). Returns health + age + expected freshness + last_error for the UI."""
+    cfg = i.get("config") or {}
+    if i.get("status") == "not_configured" or i.get("enabled") is False:
+        return {"health": "not_configured", "stale": False, "age_minutes": None,
+                "last_error": None, "expected_minutes": None}
+    expected = cfg.get("sync_interval_minutes") or DEFAULT_SYNC_MINUTES.get(i.get("name"), 1440)
+    last = _parse_dt(i.get("last_sync_at"))
+    errs = i.get("sync_errors") or 0
+    last_err = i.get("last_error")
+    if last is None:
+        return {"health": "never_synced", "stale": True, "age_minutes": None,
+                "last_error": last_err, "expected_minutes": expected}
+    age = int((now_dt - last).total_seconds() // 60)
+    stale = age > max(expected * 3, 60)   # 3x the expected cadence (min 1h grace)
+    if errs and last_err:
+        health = "failed" if (stale or errs >= 3) else "degraded"
+    elif stale:
+        health = "stale"
+    else:
+        health = "healthy"
+    return {"health": health, "stale": stale, "age_minutes": age,
+            "last_error": last_err, "expected_minutes": expected}
+
+
+async def check_integration_staleness(db) -> dict:
+    """Alert on connectors that are stale / failed / never-synced, deduped per
+    integration+health+day. This is what makes a months-stale feed actually
+    surface instead of silently sitting at 'HEALTHY'."""
+    from datetime import date
+    now = datetime.now(timezone.utc)
+    flagged = 0
+    async for i in db.integrations.find({}, {"_id": 0}):
+        h = _derive_health(i, now)
+        if h["health"] not in ("stale", "failed", "never_synced"):
+            continue
+        key = f"integration_health:{i.get('id')}:{h['health']}:{date.today().isoformat()}"
+        if await db.notifications_outbox.find_one({"dedupe_key": key}, {"_id": 0}):
+            continue
+        age_h = (h["age_minutes"] // 60) if h.get("age_minutes") else None
+        body = (f"Integration '{i.get('name')}' is {h['health'].replace('_', ' ')}"
+                + (f" — last sync {age_h}h ago" if age_h else "")
+                + (f": {h['last_error']}" if h.get("last_error") else ""))
+        await db.notifications_outbox.insert_one({
+            "id": str(uuid.uuid4()), "dedupe_key": key, "recipient": None,
+            "kind": "integration_stale", "title": f"Integration: {i.get('name')}",
+            "body": body, "link": "/admin/integrations", "created_at": now_iso(), "read": False})
+        try:
+            from notifier import dispatch
+            await dispatch("integration_stale", {"integration": i.get("name"),
+                           "health": h["health"], "body": body, "link": "/admin/integrations"}, db)
+        except Exception:
+            pass
+        flagged += 1
+    return {"flagged": flagged}
+
+
+async def integration_health_loop(db, interval_hours: int = 6):
+    import asyncio
+    while True:
+        try:
+            r = await check_integration_staleness(db)
+            if r.get("flagged"):
+                logger.info("Integration health alerts: %s", r)
+        except Exception as e:
+            logger.exception("integration_health_loop error: %s", e)
+        await asyncio.sleep(interval_hours * 3600)
+
 # Azure AD app-registration-backed connectors (client-credentials OAuth via msgraph.py)
 # and the OAuth "resource"/scope each authenticates against. Entra ID and Intune both
 # go through Microsoft Graph; Defender for Endpoint uses its own separate API surface
@@ -35,7 +129,9 @@ MSGRAPH_CONNECTOR_SCOPES = {
 @router.get("/v1/integrations")
 async def list_integrations(user: dict = Depends(get_current_user), _rbac: dict = Depends(require_module("/integrations"))):
     items = await db.integrations.find({}, {"_id": 0}).to_list(100)
+    _now = datetime.now(timezone.utc)
     for i in items:
+        i["health"] = _derive_health(i, _now)   # honest, staleness-aware
         cfg = i.get("config") or {}
         if cfg.get("api_key"):
             cfg["api_key"] = cfg["api_key"][:4] + "•••" + cfg["api_key"][-4:] if len(cfg.get("api_key", "")) > 8 else "•••"
@@ -79,6 +175,8 @@ class IntegrationConfig(BaseModel):
     zone_id: Optional[str] = None
     account_id: Optional[str] = None
     api_email: Optional[str] = None
+    # #69: per-integration expected auto-sync cadence (minutes). Drives staleness.
+    sync_interval_minutes: Optional[int] = None
 
 
 # Cloudflare's own service-token detail page (and most API docs, including OpenCTI's
@@ -164,7 +262,7 @@ async def test_integration(integration_id: str, user: dict = Depends(require_rol
         # client_id/client_secret are actually valid together, not just that some host
         # answered HTTP.
         if not (cfg.get("tenant_id") and cfg.get("client_id") and cfg.get("client_secret")):
-            await db.integrations.update_one({"id": integration_id}, {"$set": {"status": "degraded", "sync_errors": (integration.get("sync_errors") or 0) + 1}})
+            await db.integrations.update_one({"id": integration_id}, {"$set": {"status": "degraded", "sync_errors": (integration.get("sync_errors") or 0) + 1, "last_error": "Missing tenant ID, client ID, or client secret"}})
             raise HTTPException(400, "Missing tenant ID, client ID, or client secret — configure the connector first")
         from msgraph import get_client_credentials_token
         try:
@@ -179,7 +277,7 @@ async def test_integration(integration_id: str, user: dict = Depends(require_rol
         # actually valid together, same "real call, not just non-blank fields"
         # standard every other connector's Test gets.
         if not (cfg.get("api_key") and cfg.get("api_secret")):
-            await db.integrations.update_one({"id": integration_id}, {"$set": {"status": "degraded", "sync_errors": (integration.get("sync_errors") or 0) + 1}})
+            await db.integrations.update_one({"id": integration_id}, {"$set": {"status": "degraded", "sync_errors": (integration.get("sync_errors") or 0) + 1, "last_error": "Missing Access Key ID or Secret Key"}})
             raise HTTPException(400, "Missing Access Key ID or Secret Key — configure the connector first")
         try:
             from aws_cspm import _clients
@@ -190,7 +288,7 @@ async def test_integration(integration_id: str, user: dict = Depends(require_rol
             result = {"ok": False, "message": str(e)}
     else:
         if not cfg.get("endpoint") or not cfg.get("api_key"):
-            await db.integrations.update_one({"id": integration_id}, {"$set": {"status": "degraded", "sync_errors": (integration.get("sync_errors") or 0) + 1}})
+            await db.integrations.update_one({"id": integration_id}, {"$set": {"status": "degraded", "sync_errors": (integration.get("sync_errors") or 0) + 1, "last_error": "Missing endpoint or api_key"}})
             raise HTTPException(400, "Missing endpoint or api_key — configure the connector first")
 
         if name == "OpenCTI":
@@ -212,12 +310,13 @@ async def test_integration(integration_id: str, user: dict = Depends(require_rol
 
     if result["ok"]:
         await db.integrations.update_one({"id": integration_id}, {"$set": {
-            "status": "healthy", "last_sync_at": now_iso(), "sync_errors": 0,
+            "status": "healthy", "last_sync_at": now_iso(), "sync_errors": 0, "last_error": None,
         }})
         return {"ok": True, "message": result["message"]}
     else:
         await db.integrations.update_one({"id": integration_id}, {"$set": {
             "status": "degraded", "sync_errors": (integration.get("sync_errors") or 0) + 1,
+            "last_error": result["message"],
         }})
         raise HTTPException(502, result["message"])
 
@@ -301,10 +400,11 @@ async def sync_integration(integration_id: str, user: dict = Depends(require_rol
     except Exception as e:
         await db.integrations.update_one({"id": integration_id}, {"$set": {
             "status": "degraded", "sync_errors": (integration.get("sync_errors") or 0) + 1,
+            "last_error": str(e),
         }})
         raise HTTPException(502, str(e))
     await db.integrations.update_one({"id": integration_id}, {"$set": {
-        "status": "healthy", "last_sync_at": now_iso(), "sync_errors": 0,
+        "status": "healthy", "last_sync_at": now_iso(), "sync_errors": 0, "last_error": None,
     }})
     return {"ok": True, "result": result}
 
