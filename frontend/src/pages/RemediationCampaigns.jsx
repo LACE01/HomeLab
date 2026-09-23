@@ -19,27 +19,32 @@ const STATUSES = ["New","Needs triage","Valid","Fixed pending validation","Fixed
 const EXPLOIT = [["kev","KEV"],["active_attacks","Active attacks"],["public_exploit","Public exploit"],["epss_high","EPSS ≥ 0.5"]];
 const RESOLVED = ["Fixed validated","Mitigated","False positive","Duplicate","Accepted risk","Closed administratively"];
 const VERIFIED = ["Fixed validated"]; const ACCEPTED = ["Accepted risk"];
+// "Patched" = a remediation was applied, INCLUDING provisional "Fixed pending
+// validation" (mirrors backend PATCHED_STATUSES). "Verified" is the stricter gate.
+// REMAINING_OPEN = still-to-do work (does NOT count pending-validation as open).
+const PATCHED = ["Fixed pending validation","Fixed validated","Mitigated","Closed administratively"];
+const REMAINING_OPEN = ["New","Needs triage","Valid","Reopened"];
 
 // Client-side progress over a BASELINE (findings open at add-time), so the Admin
 // vs My-work toggle can rescope stats/groups without another round-trip.
 function ageDays(f) {
-  if (!f.first_seen_at || RESOLVED.includes(f.status)) return null;
+  if (!f.first_seen_at || !REMAINING_OPEN.includes(f.status)) return null;
   return Math.round((Date.now() - new Date(f.first_seen_at).getTime()) / 86400000);
 }
 function progressOf(findings, baseline) {
   const scope = baseline ? findings.filter(f => baseline.has(f.id)) : findings;
-  const patched = scope.filter(f => RESOLVED.includes(f.status)).length;
+  const patched = scope.filter(f => PATCHED.includes(f.status)).length;
   const verified = scope.filter(f => VERIFIED.includes(f.status)).length;
   const accepted = scope.filter(f => ACCEPTED.includes(f.status)).length;
-  const open = scope.filter(f => !RESOLVED.includes(f.status)).length;
+  const open = scope.filter(f => REMAINING_OPEN.includes(f.status)).length;
   const regressions = scope.filter(f => f.status === "Reopened").length;
   const total = scope.length;
   const now = Date.now();
-  const ages = scope.filter(f => !RESOLVED.includes(f.status) && f.first_seen_at)
+  const ages = scope.filter(f => REMAINING_OPEN.includes(f.status) && f.first_seen_at)
     .map(f => (now - new Date(f.first_seen_at).getTime()) / 86400000);
   return {
     total, patched, verified, accepted, open, regressions,
-    unverified_resolved: patched - verified - accepted,
+    unverified_resolved: patched - verified,
     percent_complete: total ? Math.round(100 * patched / total) : 0,
     percent_verified: total ? Math.round(100 * verified / total) : 0,
     aging_over_30d: ages.filter(a => a > 30).length,
@@ -464,6 +469,8 @@ function CampaignDetail({ id, onBack }) {
   const [mineOnly, setMineOnly] = useState(!isAdmin);
   const [sel, setSel] = useState(new Set());
   const [drill, setDrill] = useState(null);   // {by, key} group drill-in
+  const [subset, setSubset] = useState(null); // KPI / risk / SLA drill-down key
+  const [showHistory, setShowHistory] = useState(false); // timeline: pre-creation events
   const [burn, setBurn] = useState([]);
   const [report, setReport] = useState(null);
   const load = async () => { try { const r = await api.get(`/v1/remediation-campaigns/${id}`); setC(r.data); } catch { toast.error("Failed to load"); } };
@@ -483,8 +490,32 @@ function CampaignDetail({ id, onBack }) {
     : drill.by==="device" ? (f.asset_hostname||f.asset_id||"Unknown host")===drill.key
     : drill.by==="vulnerability" ? (f.cve||f.title||"Unknown vuln")===drill.key
     : (f.owner_team||"Unassigned")===drill.key;
-  const findings = scoped.filter(drillMatch);
+  const findings = scoped.filter(drillMatch).filter(subsetMatch);
   const openGroup = (by, key) => { setDrill({by, key}); setTab("findings"); };
+  // KPI / risk / SLA drill-downs -> filter the Findings tab to the findings behind
+  // a tile. Scoped to the baseline (like the tiles) so the count matches.
+  const _nowMs = Date.now();
+  const _dueWithin = (f, n) => {
+    if (!REMAINING_OPEN.includes(f.status) || !f.due_at) return false;
+    const d = (new Date(f.due_at).getTime() - _nowMs) / 86400000;
+    return d > 0 && d <= n;
+  };
+  const SUBSETS = {
+    topatch:     { label: "To patch",        fn: () => true },
+    patched:     { label: "Patched",         fn: f => PATCHED.includes(f.status) },
+    verified:    { label: "Verified",        fn: f => VERIFIED.includes(f.status) },
+    open:        { label: "Open",            fn: f => REMAINING_OPEN.includes(f.status) },
+    regressions: { label: "Regressions",     fn: f => f.status === "Reopened" },
+    aging30:     { label: "Aging >30d",      fn: f => REMAINING_OPEN.includes(f.status) && (ageDays(f) || 0) > 30 },
+    kev:         { label: "KEV (exploited)", fn: f => REMAINING_OPEN.includes(f.status) && f.kev_flag },
+    epss:        { label: "EPSS ≥ 0.5",      fn: f => REMAINING_OPEN.includes(f.status) && (f.epss_score || 0) >= 0.5 },
+    overdue:     { label: "Overdue",         fn: f => REMAINING_OPEN.includes(f.status) && f.due_at && new Date(f.due_at).getTime() < _nowMs },
+    due7:        { label: "Due ≤ 7d",        fn: f => _dueWithin(f, 7) },
+    due14:       { label: "Due ≤ 14d",       fn: f => _dueWithin(f, 14) },
+    due30:       { label: "Due ≤ 30d",       fn: f => _dueWithin(f, 30) },
+  };
+  const openSubset = (key) => { setDrill(null); setSubset(key); setTab("findings"); };
+  const subsetMatch = (f) => !subset ? true : (baseline.has(f.id) && (SUBSETS[subset] ? SUBSETS[subset].fn(f) : true));
   const toggle = (fid) => { const n = new Set(sel); n.has(fid)?n.delete(fid):n.add(fid); setSel(n); };
 
   const massNote = async () => {
@@ -561,9 +592,10 @@ function CampaignDetail({ id, onBack }) {
   const SEV = [["Critical","#ef4444"],["High","#f97316"],["Medium","#eab308"],["Low","#3b82f6"],["Info","#475569"]];
   const sevTotal = SEV.reduce((a,[k])=>a+(risk.severity?.[k]||0),0) || 1;
   const fmtDate = (d)=> d ? new Date(d).toLocaleDateString(undefined,{month:"short",day:"numeric",year:"numeric"}) : "—";
+  const _capNote = vel.eta_note ? vel.eta_note.charAt(0).toUpperCase()+vel.eta_note.slice(1) : "No deadline set";
   const trackBadge = vel.on_track===true ? ["On track","text-green-300 bg-green-500/10 border-green-500/30"]
                     : vel.on_track===false ? ["Behind schedule","text-red-300 bg-red-500/10 border-red-500/30"]
-                    : ["No deadline set","text-slate-400 bg-slate-500/10 border-slate-500/30"];
+                    : [_capNote,"text-slate-400 bg-slate-500/10 border-slate-500/30"];
 
   return (
     <Layout title={c.name} subtitle={`${p.patched}/${p.total} patched · ${p.percent_complete}% · ${c.status==="closed"?"closed":c.owner_team||"no team"}`}
@@ -586,10 +618,12 @@ function CampaignDetail({ id, onBack }) {
         <Bar2 pct={p.percent_complete}/><span className="text-[12px] text-slate-300 w-10 text-right">{p.percent_complete}%</span>
       </div>
       <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-4 max-w-7xl">
-        <Stat label="To patch" value={p.total}/><Stat label="Patched" value={p.patched} tone="green"/>
-        <Stat label="Verified" value={p.verified} tone="green"/>
-        <Stat label="Open" value={p.open}/><Stat label="Regressions" value={p.regressions} tone="orange"/>
-        <Stat label="Aging >30d" value={p.aging_over_30d} tone="amber"/>
+        <Stat label="To patch" value={p.total} onClick={()=>openSubset("topatch")}/>
+        <Stat label="Patched" value={p.patched} tone="green" onClick={()=>openSubset("patched")}/>
+        <Stat label="Verified" value={p.verified} tone="green" onClick={()=>openSubset("verified")}/>
+        <Stat label="Open" value={p.open} onClick={()=>openSubset("open")}/>
+        <Stat label="Regressions" value={p.regressions} tone="orange" onClick={()=>openSubset("regressions")}/>
+        <Stat label="Aging >30d" value={p.aging_over_30d} tone="amber" onClick={()=>openSubset("aging30")}/>
       </div>
       {(c.maintenance_window?.start || c.change_ticket) && (
         <div className="flex items-center gap-3 mb-4 text-[11.5px] text-slate-400 max-w-7xl">
@@ -616,7 +650,7 @@ function CampaignDetail({ id, onBack }) {
                 </div>
                 <div className="grid grid-cols-3 gap-3">
                   <div><div className="text-[18px] font-semibold text-slate-100">{vel.patched_per_week ?? "—"}</div><div className="text-[10.5px] text-slate-500 uppercase tracking-wide">Patched / wk</div></div>
-                  <div><div className="text-[18px] font-semibold text-slate-100">{fmtDate(vel.eta)}</div><div className="text-[10.5px] text-slate-500 uppercase tracking-wide">Projected close</div></div>
+                  <div><div className="text-[18px] font-semibold text-slate-100">{vel.eta?fmtDate(vel.eta):"—"}</div><div className="text-[10.5px] text-slate-500 uppercase tracking-wide">Projected close</div></div>
                   <div><div className={`text-[18px] font-semibold ${vel.days_to_due!=null&&vel.days_to_due<0?"text-red-300":"text-slate-100"}`}>{vel.days_to_due!=null?`${vel.days_to_due}d`:"—"}</div><div className="text-[10.5px] text-slate-500 uppercase tracking-wide">To deadline</div></div>
                 </div>
                 {vel.target && <div className="text-[10.5px] text-slate-500 mt-3">Deadline: {fmtDate(vel.target)} · {vel.patched_total||0} patched so far</div>}
@@ -631,10 +665,10 @@ function CampaignDetail({ id, onBack }) {
                   {SEV.map(([k,col])=><span key={k} className="inline-flex items-center gap-1 text-slate-400"><span className="w-2 h-2 rounded-full" style={{background:col}}/>{k} {risk.severity?.[k]||0}</span>)}
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-[11px]">
-                  <div className="flex justify-between border border-[#30363D] rounded px-2 py-1"><span className="text-slate-400">KEV (exploited)</span><span className="text-red-300 font-semibold">{risk.kev_open||0}</span></div>
-                  <div className="flex justify-between border border-[#30363D] rounded px-2 py-1"><span className="text-slate-400">EPSS ≥ 0.5</span><span className="text-orange-300 font-semibold">{risk.high_epss_open||0}</span></div>
-                  <div className="flex justify-between border border-[#30363D] rounded px-2 py-1"><span className="text-slate-400">Overdue</span><span className="text-red-300 font-semibold">{risk.overdue_open||0}</span></div>
-                  <div className="flex justify-between border border-[#30363D] rounded px-2 py-1"><span className="text-slate-400">Due ≤ 7d</span><span className="text-amber-300 font-semibold">{risk.due_7d_open||0}</span></div>
+                  <button onClick={()=>openSubset("kev")} className="flex justify-between border border-[#30363D] rounded px-2 py-1 hover:border-blue-500/40 text-left"><span className="text-slate-400">KEV (exploited)</span><span className="text-red-300 font-semibold">{risk.kev_open||0}</span></button>
+                  <button onClick={()=>openSubset("epss")} className="flex justify-between border border-[#30363D] rounded px-2 py-1 hover:border-blue-500/40 text-left"><span className="text-slate-400">EPSS ≥ 0.5</span><span className="text-orange-300 font-semibold">{risk.high_epss_open||0}</span></button>
+                  <button onClick={()=>openSubset("overdue")} className="flex justify-between border border-[#30363D] rounded px-2 py-1 hover:border-blue-500/40 text-left"><span className="text-slate-400">Overdue</span><span className="text-red-300 font-semibold">{risk.overdue_open||0}</span></button>
+                  <button onClick={()=>openSubset("due7")} className="flex justify-between border border-[#30363D] rounded px-2 py-1 hover:border-blue-500/40 text-left"><span className="text-slate-400">Due ≤ 7d</span><span className="text-amber-300 font-semibold">{risk.due_7d_open||0}</span></button>
                 </div>
               </div>
             </div>
@@ -676,7 +710,8 @@ function CampaignDetail({ id, onBack }) {
                 {[["7","Next 7 days"],["14","Next 14 days"],["30","Next 30 days"]].map(([n,lbl])=>{
                   const w = fc[n]||{};
                   return (
-                    <div key={n} className="border border-[#30363D] rounded p-3">
+                    <div key={n} onClick={()=>openSubset("due"+n)} title="Click to view these findings"
+                         className="border border-[#30363D] rounded p-3 cursor-pointer hover:border-blue-500/40">
                       <div className="text-[10.5px] text-slate-500 uppercase tracking-wide mb-1">{lbl}</div>
                       <div className="text-[20px] font-semibold text-slate-100">{w.due ?? 0} <span className="text-[11px] text-slate-500">due</span></div>
                       {w.at_risk!=null && <div className={`text-[11px] mt-1 ${w.at_risk>0?"text-red-300":"text-green-300"}`}>{w.at_risk>0?`~${w.at_risk} at risk at current pace`:"on pace to clear"}</div>}
@@ -799,6 +834,7 @@ function CampaignDetail({ id, onBack }) {
             <span className="text-[11px] text-slate-500">· sorted by priority (SLA × severity × KEV × EPSS × age)</span>
             {c.findings_total > (c.findings||[]).length && <span className="text-[11px] text-amber-300">· showing top {(c.findings||[]).length} of {c.findings_total} — narrow with a group or export CSV for all</span>}
             {drill && <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-200">{drill.by}: {drill.key}<button onClick={()=>setDrill(null)} className="text-blue-300/70 hover:text-red-300"><X size={10}/></button></span>}
+            {subset && <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-200">{(SUBSETS[subset]&&SUBSETS[subset].label)||subset}<button onClick={()=>setSubset(null)} className="text-blue-300/70 hover:text-red-300"><X size={10}/></button></span>}
             {sel.size>0 && <>
               <span className="text-[12px] text-slate-300">{sel.size} selected</span>
               <button onClick={massNote} className="h-7 px-2.5 text-[11.5px] rounded border border-[#30363D] text-blue-300 inline-flex items-center gap-1"><NotePencil size={12}/> Mass note</button>
@@ -837,29 +873,46 @@ function CampaignDetail({ id, onBack }) {
         </div>
       )}
 
-      {tab==="timeline" && (
-        <div className="max-w-3xl border border-[#30363D] bg-[#0D1117] rounded-md p-4">
-          <ol className="relative border-l border-[#30363D] ml-2">
-            {(c.timeline||[]).slice().reverse().map((e,i)=>(
-              <li key={i} className="ml-4 mb-3">
-                <div className="absolute -left-1.5 w-3 h-3 rounded-full" style={{background:e.type==="patch"?"#22c55e":e.type==="exception_filed"?"#f59e0b":e.type==="closed"?"#3b82f6":"#64748b"}}/>
-                <div className="text-[12px] text-slate-200">{e.type==="patch"?"✅ Patch applied":e.type==="note"?"📝 Note":e.type==="status_change"?"🔁 Status change":e.type==="exception_filed"?"⚠️ Exception filed":e.type} — {e.detail}</div>
-                <div className="text-[10.5px] text-slate-500">{e.at?new Date(e.at).toLocaleString():""}{e.actor?` · ${e.actor}`:""}</div>
-              </li>
-            ))}
-            {(c.timeline||[]).length===0 && <li className="ml-4 text-[12px] text-slate-500">No events yet.</li>}
-          </ol>
-        </div>
-      )}
+      {tab==="timeline" && (() => {
+        const evs = c.timeline || [];
+        const preCount = evs.filter(e => e.pre_creation).length;
+        const shown = showHistory ? evs : evs.filter(e => !e.pre_creation);
+        return (
+          <div className="max-w-3xl">
+            {preCount > 0 && (
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-[11px] text-slate-500">Showing events since this campaign was created{showHistory ? " + earlier history" : ""}.</span>
+                <button onClick={()=>setShowHistory(h=>!h)} className="text-[11.5px] px-2 py-1 rounded border border-[#30363D] text-slate-300 hover:bg-slate-500/10">
+                  {showHistory ? `Hide ${preCount} pre-campaign event(s)` : `Show ${preCount} earlier event(s)`}
+                </button>
+              </div>
+            )}
+            <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-4">
+              <ol className="relative border-l border-[#30363D] ml-2">
+                {shown.slice().reverse().map((e,i)=>(
+                  <li key={i} className={`ml-4 mb-3 ${e.pre_creation?"opacity-60":""}`}>
+                    <div className="absolute -left-1.5 w-3 h-3 rounded-full" style={{background:e.type==="patch"?"#22c55e":e.type==="exception_filed"?"#f59e0b":e.type==="closed"?"#3b82f6":"#64748b"}}/>
+                    <div className="text-[12px] text-slate-200">{e.type==="patch"?"✅ Patch applied":e.type==="note"?"📝 Note":e.type==="status_change"?"🔁 Status change":e.type==="exception_filed"?"⚠️ Exception filed":e.type} — {e.detail}{e.pre_creation?<span className="ml-1 text-[9px] px-1 rounded bg-slate-500/20 text-slate-400 align-middle">pre-campaign</span>:null}</div>
+                    <div className="text-[10.5px] text-slate-500">{e.at?new Date(e.at).toLocaleString():""}{e.actor?` · ${e.actor}`:""}</div>
+                  </li>
+                ))}
+                {shown.length===0 && <li className="ml-4 text-[12px] text-slate-500">No events in the campaign window{preCount>0?" — toggle above to see earlier history.":"."}</li>}
+              </ol>
+            </div>
+          </div>
+        );
+      })()}
 
       {tab==="notes" && <NotesTab id={id} activity={c.activity||[]} onChange={load} canWrite/>}
     </Layout>
   );
 }
 
-function Stat({ label, value, tone }) {
+function Stat({ label, value, tone, onClick }) {
   const t = tone==="green"?"text-emerald-300":tone==="orange"?"text-orange-300":tone==="amber"?"text-amber-300":"text-slate-100";
-  return <div className="border border-[#30363D] bg-[#0D1117] rounded-md px-3 py-2">
+  const clickable = typeof onClick === "function";
+  return <div onClick={onClick} title={clickable?"Click to view these findings":undefined}
+    className={`border border-[#30363D] bg-[#0D1117] rounded-md px-3 py-2 ${clickable?"cursor-pointer hover:border-blue-500/40":""}`}>
     <div className="text-[10px] uppercase tracking-wider font-mono text-slate-500">{label}</div>
     <div className={`text-[18px] font-semibold mt-0.5 ${t}`}>{value}</div></div>;
 }

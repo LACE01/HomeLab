@@ -26,6 +26,18 @@ from routes.common import OPEN_STATUSES, RESOLVED_STATUSES
 VERIFIED_STATUSES = ["Fixed validated"]
 ACCEPTED_STATUSES = ["Accepted risk"]
 
+# The campaign "patched" signal: a remediation was APPLIED. Includes the provisional
+# "Fixed pending validation" -- the tech has patched it; scanner re-validation is the
+# separate "verified" gate (VERIFIED_STATUSES). This is deliberately NARROWER than
+# RESOLVED_STATUSES (which also counts dispositions like False positive / Duplicate /
+# Accepted risk that are not remediation work) AND WIDER than it re: pending-validation.
+# Using RESOLVED_STATUSES for "patched" was the root cause of the tile saying 2 while
+# the tech had fixed 15 -- their fixes sat in "Fixed pending validation" (an OPEN
+# status) and never counted.
+PATCHED_STATUSES = ["Fixed pending validation", "Fixed validated", "Mitigated", "Closed administratively"]
+# Remaining work = open findings NOT yet patched (excludes "Fixed pending validation").
+REMAINING_OPEN_STATUSES = ["New", "Needs triage", "Valid", "Reopened"]
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -57,11 +69,11 @@ def compute_progress(findings: list, due_date: str | None = None, baseline_ids=N
         already_done = 0
     findings = scope   # progress is computed over the baseline scope only
     total = len(findings)
-    resolved = [f for f in findings if f.get("status") in RESOLVED_STATUSES]
+    resolved = [f for f in findings if f.get("status") in PATCHED_STATUSES]  # "patched" signal
     reopened = [f for f in findings if f.get("status") == "Reopened"]   # regressions
-    still_open = [f for f in findings if f.get("status") in OPEN_STATUSES]
+    still_open = [f for f in findings if f.get("status") in REMAINING_OPEN_STATUSES]
     pct = round(100 * len(resolved) / total) if total else 0
-    complete = total > 0 and len(resolved) == total
+    complete = total > 0 and len(still_open) == 0
     overdue = bool(due_date) and not complete and due_date < _now_iso()
     # aging: how long the still-open findings have been open (days since first seen)
     now = datetime.now(timezone.utc)
@@ -91,7 +103,7 @@ def compute_progress(findings: list, due_date: str | None = None, baseline_ids=N
         "patched": len(resolved),
         "verified": len(verified),
         "accepted": len(accepted),
-        "unverified_resolved": len(resolved) - len(verified) - len(accepted),
+        "unverified_resolved": len(resolved) - len(verified),
         "open": len(still_open),
         "regressions": len(reopened),
         "percent_complete": pct,
@@ -339,15 +351,25 @@ async def campaign_overview(db, camp: dict, findings: list, baseline_ids, progre
     per_day = (patched / elapsed_days) if elapsed_days else None
     per_week = round(per_day * 7, 1) if per_day is not None else None
     eta = None
+    eta_note = None
     if open_ct == 0:
         eta = now_i
-    elif per_day and per_day > 0:
-        eta = (now + timedelta(days=math.ceil(open_ct / per_day))).isoformat()
+        eta_note = "complete"
+    elif per_day and per_day > 0 and elapsed_days and elapsed_days >= 1:
+        days_left = math.ceil(open_ct / per_day)
+        # A velocity so low it projects >3 years out is not a date worth showing --
+        # a bogus "Jan 2028" reads as a real deadline. Say "insufficient velocity".
+        if days_left <= 365 * 3:
+            eta = (now + timedelta(days=days_left)).isoformat()
+        else:
+            eta_note = "insufficient velocity to project"
+    else:
+        eta_note = "no patches yet" if not patched else "not enough history yet"
     target = _as_iso((camp.get("maintenance_window") or {}).get("end")) or _as_iso(camp.get("due_date"))
     tdt = _to_dt(target)
     days_to_due = (tdt - now).days if tdt else None
     on_track = None
-    if eta and tdt:
+    if eta and eta_note != "complete" and tdt:
         on_track = _to_dt(eta) <= tdt
 
     regressions = [
@@ -401,6 +423,7 @@ async def campaign_overview(db, camp: dict, findings: list, baseline_ids, progre
             "days_to_due": days_to_due,
             "on_track": on_track,
             "target": target,
+            "eta_note": eta_note,
         },
         "regressions": regressions,
         "sla_forecast": forecast,
@@ -470,7 +493,7 @@ async def campaign_detail(db, campaign_id: str, *, for_user: dict = None) -> dic
     except Exception as e:
         log.warning("campaign activity failed: %s", e); camp["activity"] = []
     try:
-        camp["timeline"] = await timeline(db, camp)
+        camp["timeline"] = await timeline(db, camp, findings)
     except Exception as e:
         log.warning("campaign timeline failed: %s", e); camp["timeline"] = []
     if for_user:
@@ -568,22 +591,33 @@ def group_breakdown(findings: list, by: str, baseline_ids=None) -> list:
 
 
 # -------------------------------------------------------------------- timeline
-async def timeline(db, campaign: dict) -> list:
-    """Merged timeline: patches applied (from db.patches_applied, scoped to the
-    campaign's findings) + campaign activity events, oldest first."""
-    ids = set(campaign.get("finding_ids") or [])
+async def timeline(db, campaign: dict, findings: list = None) -> list:
+    """Campaign timeline built from the SAME signal as the Patched tile: each member
+    finding now in a patched state, dated by last_changed_at, plus the campaign
+    activity log. Events dated before the campaign's created_at are flagged
+    pre_creation so the UI can hide the pre-existing backlog by default -- a campaign
+    created with findings already resolved otherwise pads its own timeline with
+    events that predate it (the Jul / Sep-17 padding we saw)."""
+    if findings is None:
+        findings = await _campaign_findings(db, campaign)
+    created = _as_iso(campaign.get("created_at"))
     events = []
-    if ids:
-        async for pa in db.patches_applied.find(
-                {"finding_ids": {"$in": list(ids)}}, {"_id": 0}):
-            hits = [fid for fid in (pa.get("finding_ids") or []) if fid in ids]
-            if hits:
-                events.append({"at": pa.get("resolved_at"), "type": "patch",
-                               "detail": f"{pa.get('asset_hostname') or 'host'}: {pa.get('title') or 'patched'}",
-                               "count": len(hits)})
+    for f in findings:
+        if f.get("status") in PATCHED_STATUSES:
+            at = _as_iso(f.get("last_changed_at")) or _as_iso(f.get("first_seen_at"))
+            if not at:
+                continue
+            events.append({
+                "at": at, "type": "patch", "finding_id": f.get("id"),
+                "detail": f"{f.get('asset_hostname') or 'host'}: {f.get('cve') or f.get('title') or 'patched'}",
+                "verified": f.get("status") in VERIFIED_STATUSES,
+                "pre_creation": bool(created and at < created),
+            })
     for a in await activity(db, campaign["id"]):
-        events.append({"at": a["at"], "type": a["action"], "detail": a.get("detail", ""),
-                       "actor": a.get("actor")})
+        at = _as_iso(a.get("at"))
+        events.append({"at": at, "type": a.get("action"), "detail": a.get("detail", ""),
+                       "actor": a.get("actor"),
+                       "pre_creation": bool(created and at and at < created)})
     events.sort(key=lambda e: e.get("at") or "")
     return events
 
@@ -720,8 +754,32 @@ async def snapshot_progress(db, *, day: str = None) -> dict:
 
 
 async def burndown(db, campaign_id: str) -> list:
-    return await db.remediation_campaign_snapshots.find(
+    """Snapshot history, but bookended so the curve spans the WHOLE campaign window
+    even before nightly snapshots have accumulated: a synthetic day-0 point at
+    created_at (nothing patched yet) and a live 'today' point from current progress.
+    Without this the chart was a flat 1-2 points and looked broken on new campaigns."""
+    from datetime import date
+    snaps = await db.remediation_campaign_snapshots.find(
         {"campaign_id": campaign_id}, {"_id": 0}).sort("day", 1).to_list(400)
+    camp = await db.remediation_campaigns.find_one({"id": campaign_id}, {"_id": 0})
+    if not camp:
+        return snaps
+    findings = await _campaign_findings(db, camp)
+    p = compute_progress(findings, camp.get("due_date"), _baseline(camp),
+                         camp.get("require_verification", True))
+    series = list(snaps)
+    created_day = (_as_iso(camp.get("created_at")) or "")[:10]
+    today = date.today().isoformat()
+    if created_day and (not series or series[0]["day"] > created_day):
+        series.insert(0, {"day": created_day, "total": p["total"], "patched": 0,
+                          "verified": 0, "open": p["total"], "regressions": 0, "synthetic": True})
+    live = {"day": today, "total": p["total"], "patched": p["patched"],
+            "verified": p["verified"], "open": p["open"], "regressions": p["regressions"], "live": True}
+    if series and series[-1]["day"] == today:
+        series[-1] = live
+    else:
+        series.append(live)
+    return series
 
 
 def in_maintenance_window(campaign: dict) -> bool:

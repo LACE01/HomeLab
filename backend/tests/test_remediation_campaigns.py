@@ -121,7 +121,7 @@ vid=vc["id"]
 c.post(f"/api/v1/remediation-campaigns/{vid}/bulk-status", json={"finding_ids":["v1"],"status":"Fixed pending validation"})
 c.post(f"/api/v1/remediation-campaigns/{vid}/bulk-status", json={"finding_ids":["v2"],"status":"Fixed validated"})
 d=c.get(f"/api/v1/remediation-campaigns/{vid}").json()
-a(d["progress"]["verified"]==1 and d["progress"]["unverified_resolved"]==0 and d["progress"]["closeable"] is False, d["progress"])
+a(d["progress"]["verified"]==1 and d["progress"]["unverified_resolved"]==1 and d["progress"]["closeable"] is False, d["progress"])  # v1 pending-validation = patched-but-unverified
 # close is blocked because v1 is only pending validation (still open)
 r=c.post(f"/api/v1/remediation-campaigns/{vid}/close")
 a(r.status_code==400 and "verified" in r.json()["detail"].lower(), r.text)
