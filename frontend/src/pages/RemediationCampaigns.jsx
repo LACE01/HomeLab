@@ -6,6 +6,7 @@ import Layout from "@/components/Layout";
 import { Chip, SevBadge } from "@/components/Badges";
 import TeamCombobox from "@/components/TeamCombobox";
 import { useAuth } from "@/lib/auth";
+import { parseSearch, matchFinding, facetMatch, SEARCH_OPERATOR_HINT } from "@/lib/findingSearch";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell, LineChart, Line, Legend,
 } from "recharts";
@@ -471,6 +472,9 @@ function CampaignDetail({ id, onBack }) {
   const [drill, setDrill] = useState(null);   // {by, key} group drill-in
   const [subset, setSubset] = useState(null); // KPI / risk / SLA drill-down key
   const [showHistory, setShowHistory] = useState(false); // timeline: pre-creation events
+  const [fq, setFq] = useState("");        // #65 advanced search (reuses item-58 operators)
+  const [fSev, setFSev] = useState([]);    // severity facet
+  const [fStat, setFStat] = useState([]);  // status facet
   const [burn, setBurn] = useState([]);
   const [report, setReport] = useState(null);
   const load = async () => { try { const r = await api.get(`/v1/remediation-campaigns/${id}`); setC(r.data); } catch { toast.error("Failed to load"); } };
@@ -490,7 +494,10 @@ function CampaignDetail({ id, onBack }) {
     : drill.by==="device" ? (f.asset_hostname||f.asset_id||"Unknown host")===drill.key
     : drill.by==="vulnerability" ? (f.cve||f.title||"Unknown vuln")===drill.key
     : (f.owner_team||"Unassigned")===drill.key;
-  const findings = scoped.filter(drillMatch).filter(subsetMatch);
+  const _parsedSearch = parseSearch(fq);
+  const findings = scoped.filter(drillMatch).filter(subsetMatch)
+    .filter(f => matchFinding(f, _parsedSearch))
+    .filter(f => facetMatch(f, { severities: fSev, statuses: fStat }));
   const openGroup = (by, key) => { setDrill({by, key}); setTab("findings"); };
   // KPI / risk / SLA drill-downs -> filter the Findings tab to the findings behind
   // a tile. Scoped to the baseline (like the tiles) so the count matches.
@@ -829,6 +836,20 @@ function CampaignDetail({ id, onBack }) {
 
       {tab==="findings" && (
         <div className="max-w-5xl">
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
+            <input value={fq} onChange={e=>setFq(e.target.value)} placeholder={SEARCH_OPERATOR_HINT}
+              className="h-8 flex-1 min-w-[260px] bg-[#161B22] border border-[#30363D] rounded px-3 text-[12px] text-slate-100"/>
+            <MultiChips label="Severity" options={SEVS} selected={fSev} onChange={setFSev}/>
+            <MultiChips label="Status" options={STATUSES} selected={fStat} onChange={setFStat}/>
+          </div>
+          {(fq || fSev.length || fStat.length) ? (
+            <div className="flex items-center gap-1.5 mb-2 flex-wrap">
+              {fq && <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-200">Search: {fq}<button onClick={()=>setFq("")} className="text-blue-300/70 hover:text-red-300"><X size={10}/></button></span>}
+              {fSev.map(v=><span key={"s"+v} className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-200">Severity: {v}<button onClick={()=>setFSev(fSev.filter(x=>x!==v))} className="text-blue-300/70 hover:text-red-300"><X size={10}/></button></span>)}
+              {fStat.map(v=><span key={"t"+v} className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-200">Status: {v}<button onClick={()=>setFStat(fStat.filter(x=>x!==v))} className="text-blue-300/70 hover:text-red-300"><X size={10}/></button></span>)}
+              <button onClick={()=>{setFq("");setFSev([]);setFStat([]);}} className="text-[11px] text-slate-500 hover:text-slate-300 underline">Clear all</button>
+            </div>
+          ) : null}
           <div className="flex items-center gap-2 mb-2 flex-wrap">
             {mineOnly ? <span className="text-[11px] text-slate-500">Showing your team / assigned findings</span> : null}
             <span className="text-[11px] text-slate-500">· sorted by priority (SLA × severity × KEV × EPSS × age)</span>
