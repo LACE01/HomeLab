@@ -827,6 +827,32 @@ async def trigger_qualys_sync(user: dict = Depends(require_role("admin"))):
     return {"id": job_id, "status": "running", "message": "Sync started — poll /v1/admin/qualys/sync/runs"}
 
 
+class QualysCompletenessBody(BaseModel):
+    qids: Optional[List[str]] = None
+    max_pages: int = 200
+
+
+@router.post("/v1/admin/qualys/completeness")
+async def qualys_completeness(body: QualysCompletenessBody, user: dict = Depends(require_role("admin"))):
+    """#71: pull the unfiltered Qualys detection list and diff it against the DB.
+    Pass qids (e.g. ["377734","90126"]) for a fast targeted check, or omit for a full
+    diff. Every missing (host, QID) pair is labelled with WHY it's missing."""
+    from qualys_sync import qualys_completeness_check
+    try:
+        rep = await qualys_completeness_check(db, qids=body.qids, max_pages=body.max_pages)
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+    rep.pop("_id", None)
+    return rep
+
+
+@router.get("/v1/admin/qualys/completeness")
+async def qualys_completeness_reports(user: dict = Depends(require_role("admin"))):
+    items = await db.qualys_completeness_reports.find({}, {"_id": 0, "missing_sample": 0}) \
+        .sort("created_at", -1).limit(20).to_list(20)
+    return {"items": items}
+
+
 @router.get("/v1/admin/qualys/sync/runs")
 async def list_qualys_runs(user: dict = Depends(require_role("admin"))):
     items = await db.qualys_sync_runs.find({}, {"_id": 0}).sort("ran_at", -1).limit(50).to_list(50)

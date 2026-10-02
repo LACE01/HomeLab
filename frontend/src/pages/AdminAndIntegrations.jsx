@@ -56,6 +56,21 @@ export function Integrations() {
   const [items, setItems] = useState([]);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({});
+  const [completeness, setCompleteness] = useState(null);   // #71 report
+  const [checking, setChecking] = useState(false);
+  const runCompleteness = async () => {
+    const raw = window.prompt("QIDs to check (comma-separated, e.g. 377734,90126) — leave blank for a FULL diff of every host/QID:", "");
+    if (raw === null) return;
+    const qids = raw.split(/[\s,]+/).map(x => x.trim()).filter(Boolean);
+    setChecking(true);
+    try {
+      const r = await api.post("/v1/admin/qualys/completeness", qids.length ? { qids } : {});
+      setCompleteness(r.data);
+      toast[r.data.real_gaps ? "warning" : "success"](
+        r.data.real_gaps ? `${r.data.real_gaps} in-scope detection(s) missing from the app` : "No real ingestion gaps found");
+    } catch (e) { toast.error(e.response?.data?.detail || "Completeness check failed"); }
+    finally { setChecking(false); }
+  };
   const [testing, setTesting] = useState(null);
   const [diagnostic, setDiagnostic] = useState(null);
   const [qualysScope, setQualysScope] = useState(null);
@@ -479,6 +494,20 @@ export function Integrations() {
                 <div className={`text-[11.5px] ${i.health&&i.health.stale?"text-amber-300":""}`}>{i.last_sync_at?fmtRel(i.last_sync_at):"never"}{i.health&&i.health.stale?" · overdue":""}</div></div>
               <div><div className="text-[10px] uppercase font-mono text-slate-500">Errors</div><div className={`text-[11.5px] font-mono ${i.sync_errors>0?"text-red-300":"text-slate-300"}`}>{i.sync_errors||0}</div></div>
             </div>
+            {i.name === "Qualys VMDR" && completeness && (
+              <div className="mt-2 text-[11px] border border-[#30363D] rounded p-2 bg-[#0B0F14]">
+                <div className="flex justify-between mb-1">
+                  <span className="text-slate-300 font-medium">Completeness ({completeness.mode}) · {completeness.qualys_detections} in Qualys vs {completeness.db_qualys_findings} in app</span>
+                  <button onClick={()=>setCompleteness(null)} className="text-slate-500 hover:text-slate-300">×</button>
+                </div>
+                <div className={completeness.real_gaps ? "text-red-300" : "text-emerald-300"}>Real gaps (in scope, not ingested): {completeness.real_gaps}</div>
+                {Object.entries(completeness.missing_by_reason||{}).map(([k,v])=>(
+                  <div key={k} className="text-slate-400 font-mono">{k}: {v}</div>))}
+                {completeness.per_qid && Object.entries(completeness.per_qid).map(([q,v])=>(
+                  <div key={q} className="text-slate-400">QID {q}: {v.qualys_hosts} host(s) in Qualys [{(v.types||[]).join("/")||"—"} · {(v.statuses||[]).join("/")||"—"}] → {v.db_findings} in app{v.note?` — ${v.note}`:""}</div>))}
+                {completeness.truncated && <div className="text-amber-300">Truncated — raise max_pages for a complete diff.</div>}
+              </div>
+            )}
             {i.health && i.health.last_error && (
               <div className="mt-2 text-[11px] text-red-300/90 bg-red-500/5 border border-red-500/25 rounded px-2 py-1 break-words">
                 <span className="font-mono text-[10px] uppercase text-red-400/80">Last error</span> · {i.health.last_error}
@@ -490,6 +519,12 @@ export function Integrations() {
                 const extra = h==="stale"&&age?` · ${Math.floor(age/1440)||1}d`:"";
                 return <Chip color={HEALTH_COLOR[h]||"red"}>{(HEALTH_LABEL[h]||h)+extra}</Chip>; })()}
               <div className="flex gap-1.5">
+                {i.name === "Qualys VMDR" && i.status !== "not_configured" && (
+                  <button disabled={checking} onClick={runCompleteness} title="Diff Qualys' unfiltered detection list against the app"
+                    className="h-7 px-2.5 text-[11px] border border-amber-500/40 text-amber-200 hover:bg-amber-500/10 rounded disabled:opacity-50">
+                    {checking ? "Checking…" : "Completeness"}
+                  </button>
+                )}
                 {i.name === "Qualys VMDR" && i.status !== "not_configured" && (
                   <button data-testid={`sync-${i.id}`} disabled={testing===i.id} onClick={()=>sync(i)}
                     className="h-7 px-2.5 text-[11px] bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25 rounded inline-flex items-center gap-1 disabled:opacity-50">

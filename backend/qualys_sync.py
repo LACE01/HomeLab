@@ -3,7 +3,9 @@
 Pulls real vulnerability detections from the Qualys VMDR API using HTTP Basic auth
 and feeds them through the same canonical ingestion pipeline used by /v1/ingest/universal.
 
-Default scope: severity 4–5, status Active/Re-Opened (Confirmed only).
+Default scope (#71): ALL severities, status New/Active/Re-Opened, detection types
+Confirmed + Potential (Information-Gathered opt-in). Anything filtered out is COUNTED
+in the run summary -- nothing is dropped silently.
 Override via the integration config["sync_scope"] field if needed.
 
 Background loop is started from server.on_startup at a configurable interval (default 60 min).
@@ -93,13 +95,15 @@ async def _fetch_qualys_detections(endpoint: str, username: str, password: str,
                                    severities: str | None = None,
                                    statuses: str = "Active,Re-Opened",
                                    id_min: int | None = None,
-                                   truncation_limit: int = 1000) -> bytes:
+                                   truncation_limit: int = 1000,
+                                   show_igs: bool = False,
+                                   qids: str | None = None) -> bytes:
     """Call Qualys VMDR /api/2.0/fo/asset/host/vm/detection/?action=list and return XML body."""
     url = endpoint.rstrip("/") + "/api/2.0/fo/asset/host/vm/detection/"
     params: dict = {
         "action": "list",
         "show_results": 1,
-        "show_igs": 0,
+        "show_igs": 1 if show_igs else 0,
         "status": statuses,
         "truncation_limit": truncation_limit,
     }
@@ -107,6 +111,8 @@ async def _fetch_qualys_detections(endpoint: str, username: str, password: str,
         params["severities"] = severities
     if id_min is not None:
         params["id_min"] = id_min
+    if qids:
+        params["qids"] = qids
     headers = {"X-Requested-With": "VulnOps"}
     async with httpx.AsyncClient(timeout=180, auth=(username, password)) as c:
         r = await c.post(url, params=params, headers=headers)
@@ -114,8 +120,16 @@ async def _fetch_qualys_detections(endpoint: str, username: str, password: str,
         return r.content
 
 
-def _parse_detections(xml_body: bytes) -> tuple[list[dict], int | None]:
-    """Parse the Qualys XML into a flat list of detection dicts + next id_min for pagination."""
+DEFAULT_INCLUDE_TYPES = ("Confirmed", "Potential")
+
+
+def _parse_detections(xml_body: bytes, include_types=DEFAULT_INCLUDE_TYPES,
+                      stats: dict | None = None) -> tuple[list[dict], int | None]:
+    """Parse the Qualys XML into a flat list of detection dicts + next id_min for pagination.
+
+    include_types: detection TYPEs to keep (Confirmed / Potential / Info). Anything else
+    is counted into stats["dropped_by_type"] so the run summary shows exactly what was
+    filtered -- previously Potential/Info were discarded with no trace (#71)."""
     out: list[dict] = []
     next_id_min: int | None = None
     try:
@@ -142,8 +156,11 @@ def _parse_detections(xml_body: bytes) -> tuple[list[dict], int | None]:
             continue
         for det in det_list.findall("DETECTION"):
             d = {child.tag: (child.text or "").strip() for child in det}
-            # Confirmed only — drop Potential and Info per user policy
-            if d.get("TYPE") and d["TYPE"] != "Confirmed":
+            dtype = d.get("TYPE") or "Confirmed"
+            if include_types is not None and dtype not in include_types:
+                if stats is not None:
+                    dbt = stats.setdefault("dropped_by_type", {})
+                    dbt[dtype] = dbt.get(dtype, 0) + 1
                 continue
             out.append({
                 "qid": d.get("QID"),
@@ -390,6 +407,7 @@ async def _upsert_finding(db, det: dict, kb: dict, nvd_cache: dict | None = None
         "last_changed_at": _now_iso(),
         "imported_at": _now_iso(), "detection_channel": "qualys_api",
         "qualys_status": det.get("status"),
+        "qualys_type": det.get("type"),
         "qualys_results": (det.get("results") or "")[:5000],
     }
 
@@ -558,9 +576,18 @@ async def run_qualys_sync(db) -> dict:
     sync_scope = cfg.get("sync_scope") or {}
     # Defaults: pull ALL active vulns (no severity filter), with pagination
     severities = sync_scope.get("severities")  # None → all severities
-    statuses = sync_scope.get("statuses", "Active,Re-Opened")
+    # #71: "New" MUST be included -- Qualys marks a freshly-found detection New until
+    # it's re-confirmed on a later scan, so the old "Active,Re-Opened" default silently
+    # skipped every newly detected vulnerability.
+    statuses = sync_scope.get("statuses", "New,Active,Re-Opened")
+    include_igs = bool(sync_scope.get("include_igs", False))
+    include_types = list(sync_scope.get("include_types") or DEFAULT_INCLUDE_TYPES)
+    if include_igs and "Info" not in include_types:
+        include_types.append("Info")
     page_size = int(sync_scope.get("page_size", 1000))
-    max_pages = int(sync_scope.get("max_pages", 50))  # 50 * 1000 = 50k detections max per run
+    max_pages = int(sync_scope.get("max_pages", 200))  # 200k detections/run before truncation
+    parse_stats: dict = {}
+    truncated = False
 
     # Read NVD API key from a separate "NVD" integration row (if user added it) or env
     nvd_key = await _get_nvd_key(db)
@@ -577,14 +604,22 @@ async def run_qualys_sync(db) -> dict:
             xml_body = await _fetch_qualys_detections(
                 endpoint, username, password,
                 severities=severities, statuses=statuses,
-                id_min=next_id_min, truncation_limit=page_size,
+                id_min=next_id_min, truncation_limit=page_size, show_igs=include_igs,
             )
             from blocking_io import run_blocking
-            page_dets, next_id_min = await run_blocking(_parse_detections, xml_body, timeout=90, label="qualys detections parse")
+            page_dets, next_id_min = await run_blocking(
+                _parse_detections, xml_body, tuple(include_types), parse_stats,
+                timeout=90, label="qualys detections parse")
             detections.extend(page_dets)
             pages_fetched += 1
             if not next_id_min:
                 break
+        if next_id_min:
+            # Loop exited on the page cap with more data waiting -- previously this was
+            # silent and the run still said success. Flag it loudly.
+            truncated = True
+            errors.append({"stage": "fetch", "error": f"TRUNCATED: stopped at max_pages={max_pages} "
+                           f"with more detections pending (id_min={next_id_min}); raise sync_scope.max_pages"})
     except httpx.HTTPStatusError as e:
         errors.append({"stage": "fetch", "page": pages_fetched, "error": f"HTTP {e.response.status_code}: {e.response.text[:200]}"})
         if not detections:
@@ -656,6 +691,11 @@ async def run_qualys_sync(db) -> dict:
 
     summary = {
         "started_at": started_at,
+        "scope": {"statuses": statuses, "include_types": include_types, "include_igs": include_igs,
+                  "severities": severities or "all"},
+        "pages_fetched": pages_fetched,
+        "truncated": truncated,
+        "dropped_by_type": parse_stats.get("dropped_by_type", {}),
         "detections": len(detections),
         "unique_qids": len(qids),
         "kb_entries": len(kb),
@@ -701,10 +741,14 @@ async def run_qualys_sync(db) -> dict:
         summary["asset_inventory_error"] = str(e)
 
     status = "success" if created or updated else ("failed" if errors else "success")
+    if truncated and status == "success":
+        status = "partial"   # data was left behind -- never report a truncated pull as clean
     await db.integrations.update_one(
         {"id": integration["id"]},
         {"$set": {"status": "healthy" if status == "success" else "degraded",
                   "last_sync_at": _now_iso(),
+                  "last_error": None if status == "success" else "; ".join(
+                      str(e.get("error", e)) for e in errors[:2])[:500],
                   "sync_errors": 0 if status == "success" else (integration.get("sync_errors", 0) + 1)}},
     )
     from routes.common import record_engagement
@@ -742,3 +786,98 @@ async def qualys_poll_loop(db, interval_minutes: int = 60):
             ok, detail["error"] = False, str(e)
         await record_heartbeat(db, "qualys_poll_loop", "ok" if ok else "error", detail)
         await asyncio.sleep(interval_minutes * 60)
+
+
+# ------------------------------------------------------------------ #71 completeness
+_ALL_TYPES = ("Confirmed", "Potential", "Info")
+_ALL_STATUSES = "New,Active,Re-Opened,Fixed"
+
+
+async def qualys_completeness_check(db, qids: list | None = None, max_pages: int = 200) -> dict:
+    """Pull the Qualys host-detection list WITHOUT the sync's filters (all types incl.
+    Information-Gathered, all statuses) and diff it against what's in the DB.
+
+    qids given  -> targeted: per-QID verdict (e.g. ["377734","90126"]).
+    qids omitted-> full diff of every (host, QID) pair, grouped by the reason it's missing.
+
+    Each missing pair gets a reason that maps to a concrete fix: filtered by detection
+    type, status Fixed (correctly not open), or 'not ingested' (a real gap)."""
+    integration = await _get_integration(db)
+    if not integration:
+        raise RuntimeError("Qualys VMDR integration not found")
+    cfg = integration.get("config") or {}
+    endpoint, username, password = cfg.get("endpoint"), cfg.get("username"), cfg.get("api_key")
+    if not endpoint or not username or not password:
+        raise RuntimeError("Qualys integration missing endpoint/username/api_key")
+    sync_scope = cfg.get("sync_scope") or {}
+    sync_types = set(sync_scope.get("include_types") or DEFAULT_INCLUDE_TYPES)
+    if sync_scope.get("include_igs"):
+        sync_types.add("Info")
+    sync_statuses = set((sync_scope.get("statuses") or "New,Active,Re-Opened").split(","))
+
+    from blocking_io import run_blocking
+    dets, next_id, pages = [], None, 0
+    qid_param = ",".join(str(q) for q in qids) if qids else None
+    while pages < max_pages:
+        body = await _fetch_qualys_detections(endpoint, username, password, statuses=_ALL_STATUSES,
+                                              id_min=next_id, truncation_limit=1000,
+                                              show_igs=True, qids=qid_param)
+        page, next_id = await run_blocking(_parse_detections, body, _ALL_TYPES, None,
+                                           timeout=90, label="qualys completeness parse")
+        dets.extend(page)
+        pages += 1
+        if not next_id:
+            break
+
+    # What the DB has from Qualys, keyed (hostname, qid) + qid -> count
+    have_pairs, have_qid = set(), {}
+    q = {"source_tool": "Qualys VMDR"}
+    if qids:
+        q["qid"] = {"$in": [str(x) for x in qids]}
+    async for f in db.findings.find(q, {"_id": 0, "qid": 1, "asset_hostname": 1}):
+        qd = str(f.get("qid"))
+        have_pairs.add(((f.get("asset_hostname") or "").lower(), qd))
+        have_qid[qd] = have_qid.get(qd, 0) + 1
+
+    def reason(d):
+        if (d.get("status") or "") == "Fixed":
+            return "status_fixed"           # correctly not an open finding
+        if (d.get("type") or "Confirmed") not in sync_types:
+            return f"filtered_type_{d.get('type')}"
+        if (d.get("status") or "") not in sync_statuses:
+            return f"filtered_status_{d.get('status')}"
+        return "not_ingested"                # in scope but absent -> real gap
+
+    missing, by_reason = [], {}
+    per_qid: dict = {}
+    for d in dets:
+        key = ((d.get("hostname") or "").lower(), str(d.get("qid")))
+        pq = per_qid.setdefault(str(d.get("qid")), {"qualys_hosts": 0, "types": set(), "statuses": set()})
+        pq["qualys_hosts"] += 1
+        pq["types"].add(d.get("type")); pq["statuses"].add(d.get("status"))
+        if key in have_pairs:
+            continue
+        r = reason(d)
+        by_reason[r] = by_reason.get(r, 0) + 1
+        if len(missing) < 300:
+            missing.append({"hostname": d.get("hostname"), "qid": d.get("qid"), "type": d.get("type"),
+                            "status": d.get("status"), "severity": d.get("severity"), "reason": r})
+
+    report = {
+        "id": str(uuid.uuid4()), "created_at": _now_iso(), "mode": "qids" if qids else "full",
+        "qids": qids or None, "pages_fetched": pages, "truncated": bool(next_id),
+        "qualys_detections": len(dets), "db_qualys_findings": sum(have_qid.values()),
+        "missing_total": sum(by_reason.values()), "missing_by_reason": by_reason,
+        "real_gaps": by_reason.get("not_ingested", 0), "missing_sample": missing,
+        "per_qid": ({k: {"qualys_hosts": v["qualys_hosts"], "db_findings": have_qid.get(k, 0),
+                         "types": sorted(t for t in v["types"] if t), "statuses": sorted(s for s in v["statuses"] if s)}
+                     for k, v in per_qid.items()} if qids else None),
+    }
+    if qids:
+        for qq in [str(x) for x in qids]:
+            if qq not in (report["per_qid"] or {}):
+                report["per_qid"][qq] = {"qualys_hosts": 0, "db_findings": have_qid.get(qq, 0),
+                                         "types": [], "statuses": [],
+                                         "note": "Qualys returned no detections for this QID with these credentials/scope"}
+    await db.qualys_completeness_reports.insert_one(dict(report))
+    return report
