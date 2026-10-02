@@ -33,8 +33,8 @@ actually ask.
 """
 import uuid
 from datetime import datetime, timezone, timedelta
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
-OPEN_STATUSES = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
 SEVERITIES = ["Critical", "High", "Medium", "Low", "Info"]
 
 

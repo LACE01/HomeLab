@@ -20,8 +20,9 @@ from typing import Optional
 from security_reviews import (
     SAAS_PLAYBOOK_V1, SAAS_QUESTIONNAIRE_V1, risk_band, _now_iso,
 )
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
-OPEN_STATES = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+OPEN_STATES = list(OPEN_STATUSES)
 
 # Residual-band -> months until re-review (Phase 3 lifecycle). Critical residual
 # shouldn't normally be approved at all, but if it is, it gets the shortest leash.

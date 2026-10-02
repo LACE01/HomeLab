@@ -31,9 +31,9 @@ DESIGN RULES
 import asyncio
 import uuid
 from datetime import datetime, timezone, timedelta
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 WINDOW_DAYS = 7
-OPEN_STATUSES = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
 
 SEVERITY = ["Info", "Low", "Medium", "High", "Critical"]
 SEV_RANK = {s: i for i, s in enumerate(SEVERITY)}

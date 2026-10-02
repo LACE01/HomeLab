@@ -41,6 +41,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 STRIDE = ["Spoofing", "Tampering", "Repudiation", "Information Disclosure",
           "Denial of Service", "Elevation of Privilege"]
@@ -95,7 +96,7 @@ CWE_TO_STRIDE = {
 
 SEVERITY_TO_IMPACT = {"Critical": 5, "High": 4, "Medium": 3, "Low": 2, "Info": 1}
 
-OPEN_STATES = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+OPEN_STATES = list(OPEN_STATUSES)
 
 
 def _now_iso() -> str:

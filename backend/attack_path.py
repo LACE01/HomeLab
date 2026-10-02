@@ -27,6 +27,7 @@ This version:
 """
 import ipaddress
 from typing import Optional
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 # MITRE ATT&CK technique pools, keyed by target platform. Rotated by hop index within a
 # path so consecutive hops don't repeat the same technique even on long chains.
@@ -190,7 +191,7 @@ async def build_attack_path(db, cve: Optional[str] = None, finding_id: Optional[
         return {"nodes": [], "edges": [], "summary": "Provide a CVE or finding_id", "remediation_options": []}
 
     # Find every finding for that CVE (each represents a vulnerable host)
-    findings = await db.findings.find({"cve": cve, "status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]}}, {"_id": 0}).to_list(500)
+    findings = await db.findings.find({"cve": cve, "status": {"$in": OPEN_STATUSES}}, {"_id": 0}).to_list(500)
     if not findings:
         return {"nodes": [], "edges": [], "summary": f"No open findings for {cve}", "remediation_options": []}
 
@@ -221,7 +222,7 @@ async def build_attack_path(db, cve: Optional[str] = None, finding_id: Optional[
     if all_node_asset_ids:
         async for row in db.findings.aggregate([
             {"$match": {"asset_id": {"$in": all_node_asset_ids},
-                        "status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]}}},
+                        "status": {"$in": OPEN_STATUSES}}},
             {"$group": {"_id": "$asset_id", "n": {"$sum": 1}}},
         ]):
             findings_count_by_asset[row["_id"]] = row["n"]

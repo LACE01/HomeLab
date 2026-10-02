@@ -10,6 +10,7 @@ from db import db
 from rbac import require_module
 from auth_utils import get_current_user, require_role
 from routes.common import user_teams
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 router = APIRouter()
 
@@ -66,11 +67,11 @@ async def list_assets(user: dict = Depends(get_current_user),
     for a in items:
         a["open_findings"] = await db.findings.count_documents({
             "asset_id": a["id"],
-            "status": {"$in": ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]},
+            "status": {"$in": OPEN_STATUSES},
         })
         a["critical_findings"] = await db.findings.count_documents({
             "asset_id": a["id"], "severity": "Critical",
-            "status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]},
+            "status": {"$in": OPEN_STATUSES},
         })
     return {"items": items, "total": total}
 
@@ -85,8 +86,17 @@ async def get_asset(asset_id: str, user: dict = Depends(get_current_user)):
 
 @router.get("/v1/assets/{asset_id}/findings")
 async def asset_findings(asset_id: str, user: dict = Depends(get_current_user)):
-    items = await db.findings.find({"asset_id": asset_id}, {"_id": 0}).sort("risk_score", -1).to_list(500)
-    return {"items": items}
+    """#72: returns the host's full finding history (so the history toggle works) but
+    ALSO the canonical current-open count, which is what the host header must show.
+    The header used to be items.length -- lifetime-cumulative (e.g. "41") when only
+    ~14 were actually open. Open items sort first."""
+    items = await db.findings.find({"asset_id": asset_id}, {"_id": 0}).sort("risk_score", -1).to_list(2000)
+    for f in items:
+        f["is_open"] = f.get("status") in OPEN_STATUSES
+    items.sort(key=lambda f: (not f["is_open"], -(f.get("risk_score") or 0)))
+    open_count = sum(1 for f in items if f["is_open"])
+    return {"items": items, "open_count": open_count, "resolved_count": len(items) - open_count,
+            "total_count": len(items)}
 
 
 @router.get("/v1/assets/{asset_id}/software")
@@ -342,11 +352,11 @@ async def list_products(user: dict = Depends(get_current_user), _rbac: dict = De
         p["asset_count"] = await db.assets.count_documents({"product_id": p["id"]})
         p["open_findings"] = await db.findings.count_documents({
             "product_id": p["id"],
-            "status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]},
+            "status": {"$in": OPEN_STATUSES},
         })
         p["critical_findings"] = await db.findings.count_documents({
             "product_id": p["id"], "severity": "Critical",
-            "status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]},
+            "status": {"$in": OPEN_STATUSES},
         })
     return {"items": items}
 

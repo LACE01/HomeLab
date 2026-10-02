@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Response, Request, HTTPException
 from db import db
 from rbac import require_module
 from auth_utils import get_current_user
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 router = APIRouter()
 
@@ -62,7 +63,7 @@ async def metrics(request: Request):
     except Exception:
         mongo_up = 0
     if mongo_up:
-        open_states = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+        open_states = list(OPEN_STATUSES)
         try:
             open_findings = await db.findings.count_documents({"status": {"$in": open_states}})
         except Exception:

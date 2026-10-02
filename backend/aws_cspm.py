@@ -48,10 +48,11 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone, timedelta
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 logger = logging.getLogger("vulnops.aws_cspm")
 
-OPEN_STATES = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+OPEN_STATES = list(OPEN_STATUSES)
 
 SENSITIVE_PORTS = {22: "SSH", 3389: "RDP", 3306: "MySQL", 5432: "PostgreSQL",
                     1433: "MSSQL", 6379: "Redis", 27017: "MongoDB", 9200: "Elasticsearch"}

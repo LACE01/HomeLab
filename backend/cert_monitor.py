@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime, timezone
 
 from cryptography import x509
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 WARN_DAYS = 30
 CRITICAL_DAYS = 7
@@ -153,7 +154,7 @@ async def run_cert_check(db, hostname: str, port: int = 443, asset_id: str | Non
 
     canonical_key = f"tls-cert:{key}"
     existing = await db.findings.find_one({"canonical_key": canonical_key}, {"_id": 0})
-    open_states = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+    open_states = list(OPEN_STATUSES)
 
     if severity:
         days_left = info.get("days_until_expiry")

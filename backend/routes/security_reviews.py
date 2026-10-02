@@ -35,6 +35,7 @@ from questionnaire_v3 import (
     applicable_questions, score_questionnaire, confidence_note, ensure_v3_seeded,
     custom_questions_for,
 )
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 router = APIRouter()
 
@@ -883,7 +884,7 @@ async def list_review_assets(review_id: str, user: dict = Depends(require_module
     if not ids:
         return {"items": [], "total": 0}
     assets = await db.assets.find({"id": {"$in": ids}}, {"_id": 0}).to_list(2000)
-    OPEN = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+    OPEN = list(OPEN_STATUSES)
     for a in assets:
         a["open_findings"] = await db.findings.count_documents(
             {"asset_id": a["id"], "status": {"$in": OPEN}})
@@ -1574,7 +1575,7 @@ async def _linked_asset_summary(db, r: dict) -> list:
     ids = r.get("linked_asset_ids") or []
     if not ids:
         return []
-    OPEN = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+    OPEN = list(OPEN_STATUSES)
     assets = await db.assets.find(
         {"id": {"$in": ids}},
         {"_id": 0, "id": 1, "hostname": 1, "ip": 1, "owner_team": 1, "criticality": 1,

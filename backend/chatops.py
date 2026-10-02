@@ -17,6 +17,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 VERIFICATION_WINDOW_DAYS = 3
 MAX_TIMESTAMP_SKEW_SECONDS = 60 * 5
@@ -73,7 +74,7 @@ def _short(finding_id: str) -> str:
 
 
 async def cmd_status(db) -> dict:
-    open_states = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+    open_states = list(OPEN_STATUSES)
     counts = {}
     for sev in ["Critical", "High", "Medium", "Low"]:
         counts[sev] = await db.findings.count_documents({"status": {"$in": open_states}, "severity": sev})
@@ -91,7 +92,7 @@ async def cmd_status(db) -> dict:
 
 async def cmd_top(db, n: int = 5) -> dict:
     n = max(1, min(n, 20))
-    open_states = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+    open_states = list(OPEN_STATUSES)
     items = await db.findings.find(
         {"status": {"$in": open_states}},
         {"_id": 0, "id": 1, "title": 1, "severity": 1, "risk_score": 1, "asset_hostname": 1, "cve": 1},

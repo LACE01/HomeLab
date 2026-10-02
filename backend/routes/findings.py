@@ -187,25 +187,28 @@ async def _build_findings_filter(
         flt["severity"] = {"$in": ["Critical", "High"]}
     elif view == "overdue":
         flt["due_at"] = {"$lt": now.isoformat()}
-        flt["status"] = {"$in": ["New", "Needs triage", "Valid", "Reopened"]}
+        flt["status"] = {"$in": OPEN_STATUSES}
     elif view == "reopened":
         flt["status"] = "Reopened"
     elif view == "patch_unavailable":
         flt["patch_available"] = False
     elif view == "highest_risk":
-        flt["status"] = {"$in": ["New", "Needs triage", "Valid", "Reopened"]}
+        flt["status"] = {"$in": OPEN_STATUSES}
     elif view == "active_attacks":
         flt["rti"] = "active_attacks"
-        flt["status"] = {"$in": ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]}
+        flt["status"] = {"$in": OPEN_STATUSES}
     elif view == "unassigned":
         flt["assigned_to"] = None
-        flt["status"] = {"$in": ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]}
+        flt["status"] = {"$in": OPEN_STATUSES}
 
     # #60: by default the list shows only OPEN findings. Resolved/fixed items were
     # appearing in the default (unfiltered) list and being counted as active, which
     # inflated the numbers. If the user explicitly picks statuses, or a view sets
     # one, or asks to include resolved, we respect that.
-    if not include_resolved and not status and not view and "status" not in flt:
+    # The old condition also skipped this whenever ANY view was set -- and the KEV,
+    # Internet-Facing-Critical and Patch-Unavailable views set no status of their
+    # own, so they listed Fixed-validated findings as if they were open.
+    if not include_resolved and not status and "status" not in flt:
         flt["status"] = {"$in": OPEN_STATUSES}
 
     if and_clauses:
@@ -299,7 +302,7 @@ async def findings_stats(user: dict = Depends(get_current_user)):
     kev_count = await db.findings.count_documents({"kev_flag": True, "status": {"$in": OPEN_STATUSES}})
     overdue = await db.findings.count_documents({
         "due_at": {"$lt": now_iso()},
-        "status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]},
+        "status": {"$in": OPEN_STATUSES},
     })
     # Facet option lists for the Findings filter UI. Tags and device type live on
     # the asset, so pull the distinct values from there.
@@ -500,7 +503,7 @@ async def findings_group(
     q: Optional[str] = None,
     limit: int = 100,
 ):
-    flt: dict = {"status": {"$in": ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]}}
+    flt: dict = {"status": {"$in": OPEN_STATUSES}}
     flt.update(team_scope_filter(user))
     if severity:
         flt["severity"] = severity
@@ -834,7 +837,7 @@ async def mitre_coverage(refresh: bool = False, user: dict = Depends(get_current
     # See aggregate_cache.py.
     from mitre_mapping import coverage_from_findings
     from aggregate_cache import get_or_compute
-    OPEN = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+    OPEN = list(OPEN_STATUSES)
 
     async def _compute():
         rows = await db.findings.find(
@@ -881,7 +884,7 @@ async def mitre_backfill_cwe(user: dict = Depends(require_role("admin"))):
 async def attack_path_cves(user: dict = Depends(get_current_user)):
     pipeline = [
         {"$match": {"cve": {"$ne": None, "$exists": True},
-                    "status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]}}},
+                    "status": {"$in": OPEN_STATUSES}}},
         {"$group": {"_id": "$cve",
                     "asset_count": {"$addToSet": "$asset_id"},
                     "title": {"$first": "$title"},
@@ -946,7 +949,7 @@ async def finding_kri(finding_id: str, user: dict = Depends(get_current_user)):
     tier = urgency_tier(kri["kri_score"], bool(f.get("kev_flag")), f.get("risk_score") or 0)
 
     cohort_cursor = db.findings.find(
-        {"severity": f.get("severity"), "status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]}},
+        {"severity": f.get("severity"), "status": {"$in": OPEN_STATUSES}},
         {"_id": 0, "epss_score": 1, "cvss_score": 1, "cwe": 1}
     )
     cohort_scores = []
@@ -1075,7 +1078,7 @@ async def patch_group(finding_id: str, user: dict = Depends(get_current_user)):
     if f.get("asset_id") and f.get("title"):
         siblings = await db.findings.find({
             "asset_id": f["asset_id"], "title": f["title"], "id": {"$ne": finding_id},
-            "status": {"$in": ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]},
+            "status": {"$in": OPEN_STATUSES},
         }, {"_id": 0, "id": 1, "cve": 1, "severity": 1, "title": 1}).to_list(100)
     return {"siblings": siblings, "patch_available": f.get("patch_available"), "shared_title": f.get("title")}
 
@@ -1086,7 +1089,7 @@ async def asset_patch_groups(asset_id: str, user: dict = Depends(get_current_use
     update, clear N findings' view for a single host."""
     pipeline = [
         {"$match": {"asset_id": asset_id,
-                    "status": {"$in": ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]}}},
+                    "status": {"$in": OPEN_STATUSES}}},
         {"$group": {"_id": "$title", "count": {"$sum": 1},
                     "cves": {"$addToSet": "$cve"}, "max_severity_rank": {"$max": {
                         "$switch": {"branches": [

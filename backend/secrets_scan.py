@@ -33,10 +33,11 @@ import shutil
 import tempfile
 import uuid
 from datetime import datetime, timezone
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 logger = logging.getLogger("vulnops")
 
-OPEN_STATES = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+OPEN_STATES = list(OPEN_STATUSES)
 
 # Finding-types detect-secrets can return, bucketed by how likely a match is to
 # be a genuine, live credential rather than a heuristic false positive. A

@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 from db import db
 from rbac import require_module
 from auth_utils import get_current_user
-from routes.common import now_iso, parse_time_range, dashboard_cache
+from routes.common import now_iso, parse_time_range, dashboard_cache, OPEN_STATUSES
 
 
 def _iso(v):
@@ -69,12 +69,15 @@ async def dashboard_analyst(
     start: Optional[str] = None,
     end: Optional[str] = None,
 ):
-    open_states = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+    open_states = list(OPEN_STATUSES)
     open_findings = await db.findings.count_documents({"status": {"$in": open_states}})
     start_iso, end_iso, days = parse_time_range(range, start, end)
-    new_q: dict = {"status": "New"}
+    # "New in range" = first detected in the window and still open. It used to count
+    # status=="New" by created_at -- but scanner-ingested findings carry first_seen_at,
+    # not created_at, so the KPI read 0 while thousands were open (#60).
+    new_q: dict = {"status": {"$in": OPEN_STATUSES}}
     if start_iso:
-        new_q["created_at"] = {"$gte": start_iso, "$lte": end_iso}
+        new_q["first_seen_at"] = {"$gte": start_iso, "$lte": end_iso}
     new_findings = await db.findings.count_documents(new_q)
     triage = await db.findings.count_documents({"status": "Needs triage"})
     kev = await db.findings.count_documents({"kev_flag": True, "status": {"$in": open_states}})
@@ -110,7 +113,7 @@ async def dashboard_manager(
     end: Optional[str] = None,
 ):
     teams: dict = {}
-    async for f in db.findings.find({"status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]}}, {"_id": 0, "owner_team": 1, "due_at": 1, "severity": 1}):
+    async for f in db.findings.find({"status": {"$in": OPEN_STATUSES}}, {"_id": 0, "owner_team": 1, "due_at": 1, "severity": 1}):
         t = f.get("owner_team", "Unassigned")
         teams.setdefault(t, {"open": 0, "overdue": 0, "critical": 0})
         teams[t]["open"] += 1
@@ -153,10 +156,10 @@ async def dashboard_executive(
     for p in products:
         p["critical_open"] = await db.findings.count_documents({
             "product_id": p["id"], "severity": {"$in": ["Critical", "High"]},
-            "status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]},
+            "status": {"$in": OPEN_STATUSES},
         })
 
-    _env_match = {"severity": {"$in": ["Critical", "High"]}, "status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]}}
+    _env_match = {"severity": {"$in": ["Critical", "High"]}, "status": {"$in": OPEN_STATUSES}}
     try:
         by_env = await _group_count(_env_match, "asset_environment")
     except Exception:  # safeguard: fall back to the streaming tally on any aggregation issue
@@ -178,7 +181,7 @@ async def dashboard_executive(
 
     score_factors = []
     if not no_data:
-        open_q = {"status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]}}
+        open_q = {"status": {"$in": OPEN_STATUSES}}
         kev_open = await db.findings.count_documents({**open_q, "kev_flag": True})
         internet_crit = await db.findings.count_documents({**open_q, "internet_facing": True, "severity": "Critical"})
         total_assets = await db.assets.count_documents({})
@@ -210,7 +213,7 @@ async def dashboard_exposure(user: dict = Depends(get_current_user), _rbac: dict
     """Attack-surface-centric view: what's actually reachable from the internet, and how
     exposed is it -- rather than severity counts across the whole portfolio regardless of
     reachability."""
-    open_states = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+    open_states = list(OPEN_STATUSES)
 
     total_assets = await db.assets.count_documents({})
     exposed_assets = await db.assets.count_documents({"exposure": {"$in": ["internet", "external"]}})
@@ -270,7 +273,7 @@ async def dashboard_operational(user: dict = Depends(get_current_user), team: Op
     base_flt: dict = {}
     if team:
         base_flt["owner_team"] = team
-    open_states = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+    open_states = list(OPEN_STATUSES)
 
     now_dt = datetime.now(timezone.utc)
     # "Unknown" exists so a finding with a missing/unparseable first_seen_at still

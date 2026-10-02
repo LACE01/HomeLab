@@ -298,6 +298,7 @@ export function AssetDetail() {
   const [claimTeamChoice, setClaimTeamChoice] = useState("");
   const [claiming, setClaiming] = useState(false);
   const [findings, setFindings] = useState([]);
+  const [showHostHistory, setShowHostHistory] = useState(false);  // #72
   const [albertAlerts, setAlbertAlerts] = useState({ items: [], total: 0, severity_counts: {}, daily_trend: [] });
   const [software, setSoftware] = useState({ items: [], total: 0 });
   const [history, setHistory] = useState({activity: [], observations: []});
@@ -606,12 +607,21 @@ export function AssetDetail() {
       </div>
 
       <div className="border border-[#30363D] bg-[#0D1117] rounded-md overflow-hidden mb-4">
-        <div className="px-4 py-2 border-b border-[#30363D]"><h3 className="text-[11px] uppercase tracking-wider font-mono text-slate-400">Vulnerabilities on this Host ({findings.length})</h3></div>
+        <div className="px-4 py-2 border-b border-[#30363D] flex items-center justify-between">
+          <h3 className="text-[11px] uppercase tracking-wider font-mono text-slate-400">
+            Open Vulnerabilities on this Host ({findings.filter(f => f.is_open !== false).length})
+          </h3>
+          {findings.some(f => f.is_open === false) && (
+            <button onClick={() => setShowHostHistory(h => !h)} className="text-[11px] text-slate-400 hover:text-slate-200 border border-[#30363D] rounded px-2 py-0.5">
+              {showHostHistory ? "Hide resolved history" : `Show resolved history (${findings.filter(f => f.is_open === false).length})`}
+            </button>
+          )}
+        </div>
         <table className="dense w-full">
           <thead><tr><th className="text-left">Risk</th><th>Severity</th><th className="text-left">Title</th><th>CVE</th><th>Status</th><th>First Seen</th><th>Last Seen</th><th>Due</th></tr></thead>
           <tbody>
-            {findings.map(f => (
-              <tr key={f.id} className="border-t border-[#30363D] hover:bg-slate-800/30">
+            {findings.filter(f => showHostHistory || f.is_open !== false).map(f => (
+              <tr key={f.id} className={`border-t border-[#30363D] hover:bg-slate-800/30 ${f.is_open === false ? "opacity-55" : ""}`}>
                 <td><RiskBar score={f.risk_score} /></td>
                 <td><SevBadge severity={f.severity} /></td>
                 <td><Link to={`/findings/${f.id}`} className="text-blue-300 hover:underline">{f.title?.slice(0,70)}</Link></td>

@@ -53,13 +53,14 @@ import httpx
 
 from scoring import compute_risk, compute_sla_days
 from asset_classify import classify_asset_type
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 logger = logging.getLogger("vulnops.tenable")
 
 # Nessus plugin severity ints (0-4) -> our normalized severity strings.
 _NESSUS_SEV = {4: "Critical", 3: "High", 2: "Medium", 1: "Low", 0: "Info"}
 
-OPEN_STATES = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+OPEN_STATES = list(OPEN_STATUSES)
 
 
 def _now_iso() -> str:

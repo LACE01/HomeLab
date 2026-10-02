@@ -28,6 +28,7 @@ import uuid
 from datetime import datetime, timezone
 
 import dns.resolver
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 
 def _now():
@@ -207,7 +208,7 @@ async def _notify_domain_issue(db, domain, check_type, severity, reason, finding
         pass
 
 
-OPEN_STATES = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+OPEN_STATES = list(OPEN_STATUSES)
 
 
 async def run_domain_check(db, domain: str, asset_id: str = None, label: str = None) -> dict:

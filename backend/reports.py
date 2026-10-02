@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from pdf_charts import severity_pie_chart, trend_line_chart, bar_chart, multi_series_bar_chart
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 
 REPORT_CATALOG = [
@@ -50,7 +51,7 @@ def _now():
 
 
 async def _open_findings_filter():
-    return {"status": {"$in": ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]}}
+    return {"status": {"$in": OPEN_STATUSES}}
 
 
 def _csv_response(rows: list, headers: list, filename: str):

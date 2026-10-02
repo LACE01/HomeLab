@@ -51,6 +51,7 @@ import urllib.parse
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 logger = logging.getLogger("vulnops.attack_telemetry")
 
@@ -59,7 +60,7 @@ CF_GRAPHQL_URL = "https://api.cloudflare.com/client/v4/graphql"
 # Deliberate retention window for request telemetry (IPs + URLs = personal data).
 DEFAULT_RETENTION_DAYS = 90
 
-OPEN_STATES = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+OPEN_STATES = list(OPEN_STATUSES)
 
 
 def _now() -> datetime:

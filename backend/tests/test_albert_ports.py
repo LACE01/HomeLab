@@ -1,3 +1,5 @@
+from datetime import datetime as _dtm, timezone as _tz, timedelta as _td
+_REL_NOW=_dtm.now(_tz.utc)-_td(days=2)
 import os, sys, asyncio
 os.environ["MONGO_URL"] = "mongodb://localhost:27017"
 os.environ["DB_NAME"] = "test_albert_ports"
@@ -33,16 +35,16 @@ import albert_ingest
 # Real-world-shaped rows: mixed int/float/str port representations, the way
 # different Excel cell formats and openpyxl can hand them back.
 run(db.albert_alerts.insert_many([
-    {"id": "a1", "time_gmt": "2026-07-20T00:00:00+00:00", "device": "s1", "severity": "High",
+    {"id": "a1", "time_gmt": (_REL_NOW+_td(minutes=0)).isoformat(), "device": "s1", "severity": "High",
      "category": "Lateral Movement", "source_ip": "10.0.0.5", "destination_ip": "10.0.0.9",
      "source_port": 58357, "destination_port": 445, "suppressed": False},
-    {"id": "a2", "time_gmt": "2026-07-20T00:01:00+00:00", "device": "s1", "severity": "High",
+    {"id": "a2", "time_gmt": (_REL_NOW+_td(minutes=1)).isoformat(), "device": "s1", "severity": "High",
      "category": "Lateral Movement", "source_ip": "10.0.0.6", "destination_ip": "10.0.0.9",
      "source_port": 57968, "destination_port": 445, "suppressed": False},
-    {"id": "a3", "time_gmt": "2026-07-20T00:02:00+00:00", "device": "s1", "severity": "Low",
+    {"id": "a3", "time_gmt": (_REL_NOW+_td(minutes=2)).isoformat(), "device": "s1", "severity": "Low",
      "category": "External IP Lookup", "source_ip": "10.0.0.6", "destination_ip": "8.8.8.8",
      "source_port": 51000.0, "destination_port": "443", "suppressed": False},
-    {"id": "a4", "time_gmt": "2026-07-20T00:03:00+00:00", "device": "s2", "severity": "Low",
+    {"id": "a4", "time_gmt": (_REL_NOW+_td(minutes=3)).isoformat(), "device": "s2", "severity": "Low",
      "category": "External IP Lookup", "source_ip": "10.0.0.7", "destination_ip": "8.8.4.4",
      "source_port": None, "destination_port": 443, "suppressed": False},
 ]))

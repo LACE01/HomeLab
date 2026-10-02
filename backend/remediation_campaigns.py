@@ -163,7 +163,16 @@ async def _open_subset(db, ids: list) -> list:
 async def create_campaign(db, *, name, description="", owner_team=None, due_date=None,
                           finding_ids=None, filt=None, assignees=None, created_by="system",
                           require_verification=True, maintenance_window=None, change_ticket=None) -> dict:
-    ids = await _resolve_finding_ids(db, finding_ids=finding_ids, filt=filt)
+    # #74: callers resolve the scope through the full Findings filter (the SAME query
+    # the preview runs) and pass the ids. `filt` is stored as metadata only. Re-running
+    # it through _resolve_finding_ids -- a much cruder builder that ignores QID, status,
+    # tags, search text and views -- UNIONED in everything matching severity/team, so a
+    # scope previewing "8 of 8" generated hundreds. The crude path now only runs when
+    # no ids are supplied at all (legacy callers).
+    if finding_ids is not None:
+        ids = sorted(set(finding_ids))
+    else:
+        ids = await _resolve_finding_ids(db, finding_ids=None, filt=filt)
     baseline = await _open_subset(db, ids)
     doc = {
         "id": str(uuid.uuid4()), "name": name, "description": description,

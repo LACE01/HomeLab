@@ -17,6 +17,7 @@ import uuid
 from datetime import datetime, timezone
 
 import httpx
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 OSV_QUERY_URL = "https://api.osv.dev/v1/querybatch"
 OSV_VULN_URL = "https://api.osv.dev/v1/vulns/{}"
@@ -186,7 +187,7 @@ async def import_sbom(db, content: bytes, filename: str = "", label: str | None 
     now = _now_iso()
     findings_created = findings_updated = 0
     asset = await db.assets.find_one({"id": asset_id}, {"_id": 0}) if asset_id else None
-    open_states = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+    open_states = list(OPEN_STATUSES)
     source_label = (asset or {}).get("hostname") or label or filename or "SBOM upload"
 
     for idx, vuln_ids in vuln_map.items():

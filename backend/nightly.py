@@ -9,10 +9,11 @@ import uuid
 from datetime import datetime, timezone, timedelta
 
 import httpx
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 logger = logging.getLogger("vulnops.nightly")
 
-OPEN_STATES = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+OPEN_STATES = list(OPEN_STATUSES)
 RESOLVED_STATES = ["Fixed validated", "Closed administratively"]
 
 
@@ -43,7 +44,7 @@ async def run_nightly_rescore(db) -> dict:
     from scoring import compute_risk
     from notifier import dispatch
 
-    open_states = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+    open_states = list(OPEN_STATUSES)
 
     # 1) Collect all unique CVEs with open findings
     cves = await db.findings.distinct("cve", {"cve": {"$ne": None, "$exists": True}, "status": {"$in": open_states}})

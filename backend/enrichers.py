@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import httpx
 
 from blocking_io import run_blocking
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 logger = logging.getLogger("vulnops.enrichers")
 
@@ -21,7 +22,7 @@ EPSS_URL = "https://api.first.org/data/v1/epss"
 # exploit-db.com / searchsploit -- "codes" column carries CVE/OSVDB/etc references.
 EXPLOITDB_CSV_URL = "https://gitlab.com/exploit-database/exploitdb/-/raw/main/files_exploits.csv"
 CVE_IN_CODES_RE = re.compile(r"CVE-\d{4}-\d{4,7}", re.IGNORECASE)
-OPEN_STATES = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+OPEN_STATES = list(OPEN_STATUSES)
 
 
 def _now_iso() -> str:
@@ -133,7 +134,7 @@ async def flag_active_attacks(db, recency_days: int = 45) -> dict:
     independent trigger, since sync_epss already computes that signal."""
     from datetime import timedelta
     cutoff = (datetime.now(timezone.utc) - timedelta(days=recency_days)).isoformat()
-    open_states = ['New', 'Needs triage', 'Valid', 'Reopened', 'Fixed pending validation']
+    open_states = list(OPEN_STATUSES)
 
     # rti is a multi-membership flag array (scoring.py checks several flags independently --
     # active_attacks, public_exploit, zero_day, etc.) so these use $addToSet/$pull on the

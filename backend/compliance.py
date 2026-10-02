@@ -11,6 +11,7 @@ recognizable control language. That caveat is included directly in the summary o
 so it's never presented as more authoritative than it is.
 """
 from datetime import datetime, timezone
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 CIS_CONTROLS = {
     "CIS-1": "Inventory and Control of Enterprise Assets",
@@ -98,7 +99,7 @@ def classify_finding(f: dict) -> str:
 
 
 async def compute_compliance_summary(db) -> dict:
-    open_states = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+    open_states = list(OPEN_STATUSES)
     findings = await db.findings.find(
         {"status": {"$in": open_states}},
         {"_id": 0, "cwe": 1, "source_tool_type": 1, "source_tool": 1, "title": 1, "severity": 1, "port": 1, "cve": 1},
@@ -196,7 +197,7 @@ async def get_control_findings(db, control_id: str, limit: int = 300) -> dict:
     if not categories:
         return {"control_id": control_id, "name": catalog.get(control_id, control_id), "items": [], "total": 0}
 
-    open_states = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+    open_states = list(OPEN_STATUSES)
     findings = await db.findings.find(
         {"status": {"$in": open_states}},
         {"_id": 0, "id": 1, "title": 1, "severity": 1, "cve": 1, "cwe": 1, "source_tool_type": 1,
@@ -300,7 +301,7 @@ async def compute_operational_controls(db) -> list:
         status, evidence = "partial", "YARA scanning is available but hasn't been run yet."
     results.append({"id": "malware_protection", "status": status, "evidence": evidence})
 
-    open_states = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+    open_states = list(OPEN_STATUSES)
     open_critical = await db.findings.count_documents({"status": {"$in": open_states}, "severity": "Critical"})
     total_findings = await db.findings.count_documents({})
     if total_findings == 0:

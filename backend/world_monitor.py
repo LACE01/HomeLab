@@ -27,6 +27,7 @@ them together, and each carries a `relevance` -- 'affects_us' / 'watched' /
 'global' -- which is the only field that makes this worth looking at.
 """
 from datetime import datetime, timezone, timedelta
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 CATEGORIES = {
     "kev": "Known-Exploited Vulnerability",
@@ -163,7 +164,7 @@ def _event(*, id, when, category, severity, title, summary="", source="",
 async def _our_context(db):
     open_cves = set()
     async for f in db.findings.find(
-            {"status": {"$in": ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]},
+            {"status": {"$in": OPEN_STATUSES},
              "cve": {"$ne": None}},
             {"_id": 0, "cve": 1, "internet_facing": 1}):
         if f.get("cve"):

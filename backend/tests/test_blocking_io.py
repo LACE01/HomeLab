@@ -191,6 +191,13 @@ print("PASS: the OAuth relay call uses async httpx, so one person signing in can
 
 srv = open("server.py").read()
 assert "loop_lag_monitor" in srv
-assert srv.index("loop_lag_monitor()") < srv.index("nightly_loop(db"), \
+# Periodic loops now live in scheduler_loops.py (run in the worker by default via
+# RUN_SCHEDULERS). The API must still start its watchdog BEFORE it would launch them,
+# and the worker must start its own watchdog before start_scheduler_loops.
+assert srv.index("loop_lag_monitor()") < srv.index("start_scheduler_loops"), \
     "the watchdog must start before the background loops it is meant to catch"
+wrk = open("worker.py").read()
+assert wrk.index("loop_lag_monitor") < wrk.index("start_scheduler_loops(db)"), \
+    "the worker must start its watchdog before its scheduler loops"
+assert "nightly_loop(db" in open("scheduler_loops.py").read()
 print("PASS: the watchdog is started at boot, ahead of the background loops")

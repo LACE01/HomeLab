@@ -39,8 +39,9 @@ import ipaddress
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
-OPEN_STATES = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+OPEN_STATES = list(OPEN_STATUSES)
 
 # Services that genuinely let an attacker pivot INTO a host once they have a
 # foothold elsewhere. Presence of one of these (from a scan) is what upgrades an

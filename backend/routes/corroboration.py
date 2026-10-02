@@ -15,10 +15,11 @@ from pydantic import BaseModel
 from db import db
 from auth_utils import get_current_user, require_role
 import corroboration as corr
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 router = APIRouter()
 
-OPEN = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+OPEN = list(OPEN_STATUSES)
 
 
 @router.get("/v1/findings/corroboration/summary")

@@ -34,12 +34,13 @@ import uuid
 from datetime import date, datetime, timezone
 
 import httpx
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 logger = logging.getLogger("vulnops")
 
 EOL_API_BASE = "https://endoflife.date/api"
 WARN_DAYS = 90  # flag an upcoming EOL this far in advance
-OPEN_STATES = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+OPEN_STATES = list(OPEN_STATUSES)
 
 
 def _now_iso() -> str:

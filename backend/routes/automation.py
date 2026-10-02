@@ -20,10 +20,11 @@ from db import db
 from rbac import require_module
 from auth_utils import get_current_user, require_role
 from routes.common import now_iso, _clean, finding_ctx
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 router = APIRouter()
 
-OPEN_STATES = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+OPEN_STATES = list(OPEN_STATUSES)
 
 # "nightly" keeps the original behavior -- part of the one big nightly sweep alongside
 # rescoring/KEV sync/exception-expiry, no separate schedule of its own. The others get

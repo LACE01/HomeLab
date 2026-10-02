@@ -11,10 +11,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from db import db
 from auth_utils import get_current_user
 import wstg
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 router = APIRouter()
 
-OPEN = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+OPEN = list(OPEN_STATUSES)
 
 
 @router.get("/v1/wstg/catalogue")

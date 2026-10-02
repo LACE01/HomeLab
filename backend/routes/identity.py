@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from db import db
 from auth_utils import get_current_user, require_role
 import entity_resolution as er
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 router = APIRouter()
 
@@ -71,7 +72,7 @@ async def duplicate_candidates(limit: int = 100, user: dict = Depends(get_curren
         for a in assets:
             a["open_findings"] = await db.findings.count_documents({
                 "asset_id": a["id"],
-                "status": {"$in": ["New", "Needs triage", "Valid", "Reopened"]}})
+                "status": {"$in": OPEN_STATUSES}})
         out.append({**c, "assets": assets,
                      "safe_to_automerge": c["strength"] == er.STRONG})
     return {"items": out, "count": len(out),

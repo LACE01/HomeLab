@@ -20,6 +20,7 @@ import xml.etree.ElementTree as ET
 
 from scoring import compute_risk, compute_sla_days
 from asset_classify import classify_asset_type
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 logger = logging.getLogger("vulnops.qualys")
 
@@ -33,7 +34,7 @@ def _norm_cwe(raw):
 # Findings in any of these states are still "open" from Qualys's perspective -- a
 # Fixed-status detection is only meaningful to act on if it's closing something that
 # was actually still tracked as unresolved. Mirrors automation.py's OPEN_STATES.
-OPEN_LIKE_STATUSES = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+OPEN_LIKE_STATUSES = list(OPEN_STATUSES)
 
 
 # Qualys severity (1–5) → our normalized severity

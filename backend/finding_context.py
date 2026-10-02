@@ -36,9 +36,9 @@ would not have supplied it.
 """
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 ACTIVE_WINDOW_DAYS = 7
-OPEN_STATUSES = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
 
 
 def _now():

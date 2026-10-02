@@ -1,3 +1,5 @@
+from datetime import datetime as _dtm, timezone as _tz, timedelta as _td
+_RECENT_SIGNIN=(_dtm.now(_tz.utc)-_td(days=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
 import os, sys, asyncio
 os.environ["MONGO_URL"] = "mongodb://localhost:27017"
 os.environ["DB_NAME"] = "test_new_connectors"
@@ -256,7 +258,7 @@ seed_queue(
     FakeResponse(200, {"value": [
         {"id": "u-active", "displayName": "Active User", "userPrincipalName": "active@example.com",
          "accountEnabled": True, "createdDateTime": "2020-01-01T00:00:00Z",
-         "signInActivity": {"lastSignInDateTime": "2026-07-10T00:00:00Z"}},
+         "signInActivity": {"lastSignInDateTime": _RECENT_SIGNIN}},
         {"id": "u-stale", "displayName": "Stale User", "userPrincipalName": "stale@example.com",
          "accountEnabled": True, "createdDateTime": "2020-01-01T00:00:00Z",
          "signInActivity": {"lastSignInDateTime": "2020-02-01T00:00:00Z"}},

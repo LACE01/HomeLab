@@ -52,6 +52,7 @@ import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
 
 RANSOMWARE_LIVE_BASE = "https://api.ransomware.live"
 CRTSH_URL = "https://crt.sh/"
@@ -324,7 +325,7 @@ async def kev_report(db) -> dict:
     layer over the kev_catalog + findings that enrichers.sync_kev already
     maintains. Sorted by KEV due date (CISA's remediation deadline) because
     that's the thing with an actual clock on it."""
-    OPEN = ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]
+    OPEN = list(OPEN_STATUSES)
     catalog = await db.kev_catalog.find({}, {"_id": 0}).to_list(5000)
     by_cve = {c.get("cveID"): c for c in catalog if c.get("cveID")}
     findings = await db.findings.find(
@@ -618,7 +619,7 @@ async def investigate(db, value: str) -> dict:
             {"_id": 0, "id": 1, "hostname": 1, "ip": 1, "owner_team": 1, "criticality": 1}).to_list(20)
         for a in assets:
             open_findings = await db.findings.count_documents(
-                {"asset_id": a["id"], "status": {"$in": ["New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"]}})
+                {"asset_id": a["id"], "status": {"$in": OPEN_STATUSES}})
             inv_rows.append({"name": f"Asset {a['hostname']}", "resource": a.get("ip"),
                              "detail": f"team {a.get('owner_team') or '—'}, criticality {a.get('criticality') or '—'}, "
                                        f"{open_findings} open finding(s)", "asset_id": a["id"]})
