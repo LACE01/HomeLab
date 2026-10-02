@@ -155,14 +155,27 @@ function renderBlock(block, data) {
         </div>
       );
 
-    case "compensating_controls":
-      if (!compensating_controls) return null;
+    case "compensating_controls": {
+      const inh = review.inherent_risk?.score, res = review.residual_risk?.score;
+      if (!compensating_controls) {
+        if (typeof inh === "number" && typeof res === "number" && res < inh) {
+          return (
+            <div className="border border-amber-400 rounded p-3 mb-4 bg-amber-50">
+              {H(3, title)}
+              <div className="text-[12px] text-amber-800">Residual risk is rated lower than inherent risk,
+                but no compensating controls were documented to justify the reduction.</div>
+            </div>
+          );
+        }
+        return null;
+      }
       return (
         <div className="border border-slate-300 rounded p-3 mb-4 bg-slate-50">
           {H(3, title)}
           <div className="text-[12px] text-slate-700 whitespace-pre-wrap">{compensating_controls}</div>
         </div>
       );
+    }
 
     case "risk_matrix":
       if (!matrix_points?.length) return null;

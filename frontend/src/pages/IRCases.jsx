@@ -13,6 +13,7 @@ import {
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
+import { useSubmitOnce } from "@/lib/useSubmitOnce";
 const CLASSIFICATION_COLOR = {
   Critical: "red", Significant: "orange", Moderate: "amber", Minor: "blue", Negligible: "slate",
 };
@@ -722,6 +723,7 @@ export function IRCaseDetail() {
   const [report, setReport] = useState(null);
   const [users, setUsers] = useState([]);
   const [noteText, setNoteText] = useState("");
+  const [submitOnce] = useSubmitOnce();  // #21 double-submit guard
   const [noteAttachments, setNoteAttachments] = useState([]);
   const [dragOver, setDragOver] = useState(false);
   const [evidenceForm, setEvidenceForm] = useState({ description: "", location: "" });
@@ -758,14 +760,14 @@ export function IRCaseDetail() {
     handleFiles(e.dataTransfer.files);
   };
 
-  const addNote = async () => {
+  const addNote = () => submitOnce(async () => {
     if (!noteText.trim() && noteAttachments.length === 0) return;
     try {
       await api.post(`/v1/ir/cases/${id}/events`, { type: noteAttachments.length ? "screenshot" : "note", text: noteText, attachments: noteAttachments });
       setNoteText(""); setNoteAttachments([]);
       load();
     } catch (e) { toast.error(e.response?.data?.detail || "Failed to add note"); }
-  };
+  });
 
   const setClassification = async (classification) => {
     try { await api.patch(`/v1/ir/cases/${id}`, { classification }); load(); }

@@ -1011,8 +1011,11 @@ async def add_comment(finding_id: str, body: CommentBody, user: dict = Depends(g
             raise HTTPException(400, f"Only image and PDF attachments allowed (got {a['mime']})")
     c = {"id": str(uuid.uuid4()), "finding_id": finding_id, "author": user["email"],
          "text": body.text, "attachments": atts, "created_at": now_iso()}
-    await db.comments.insert_one(c)
-    return _clean(c)
+    from routes.common import dedupe_post
+    async def _ins():
+        await db.comments.insert_one(dict(c)); return c
+    doc, _dup = await dedupe_post(db.comments, {"finding_id": finding_id}, user["email"], body.text, _ins)
+    return _clean(dict(doc))
 
 
 class StatusUpdate(BaseModel):

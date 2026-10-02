@@ -13,6 +13,7 @@ import {
 } from "@phosphor-icons/react";
 import NewRiskModal from "@/components/NewRiskModal";
 
+import { useSubmitOnce } from "@/lib/useSubmitOnce";
 const STATUS_COLOR = { pending_approval: "amber", active: "green", expired: "slate", rejected: "red", revoked: "red" };
 
 const ACTION_META = {
@@ -197,6 +198,7 @@ export default function ExceptionDetail() {
   const canApprove = !!exc?.can_current_user_approve;
   const canRevoke = user?.role === "admin" || user?.role === "manager";
   const [newNote, setNewNote] = useState("");
+  const [submitOnce] = useSubmitOnce();  // #21 double-submit guard
   const [noteAttachments, setNoteAttachments] = useState([]);
   const [signals, setSignals] = useState(null);
   const [linkedRisks, setLinkedRisks] = useState([]);
@@ -228,7 +230,7 @@ export default function ExceptionDetail() {
     }
     setNoteAttachments(out);
   };
-  const addNote = async () => {
+  const addNote = () => submitOnce(async () => {
     if (!newNote.trim() && noteAttachments.length === 0) return;
     try {
       await api.post(`/v1/exceptions/${id}/comments`, { text: newNote, attachments: noteAttachments });
@@ -237,7 +239,7 @@ export default function ExceptionDetail() {
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed to add note");
     }
-  };
+  });
 
   if (exc === false) return <Layout title="Risk Acceptance"><div className="text-slate-500 text-center py-10">Not found.</div></Layout>;
   if (!exc) return <Layout title="Risk Acceptance"><div className="text-slate-500 text-center py-10">Loading…</div></Layout>;

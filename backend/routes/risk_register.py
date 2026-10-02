@@ -324,9 +324,13 @@ async def add_risk_comment(risk_id: str, body: CommentBody, user: dict = Depends
         raise HTTPException(404, "Risk not found")
     c = {"id": str(uuid.uuid4()), "risk_id": risk_id, "author": user["email"],
          "text": body.text, "attachments": body.attachments or [], "created_at": now_iso()}
-    await db.comments.insert_one(c)
-    await _log_risk_event(risk_id, "note_added", user["email"], f"Note added: {body.text[:140]}")
-    return _clean(c)
+    from routes.common import dedupe_post
+    async def _ins():
+        await db.comments.insert_one(dict(c))
+        await _log_risk_event(risk_id, "note_added", user["email"], f"Note added: {body.text[:140]}")
+        return c
+    doc, _dup = await dedupe_post(db.comments, {"risk_id": risk_id}, user["email"], body.text, _ins)
+    return _clean(dict(doc))
 
 
 @router.get("/v1/risk-register/{risk_id}/timeline")

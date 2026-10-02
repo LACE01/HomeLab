@@ -213,11 +213,22 @@ def _blk_confidence(doc, data, block):
              size=10, italic=True, color="B45309")
 
 
+def _residual_below_inherent(review: dict) -> bool:
+    inh = ((review or {}).get("inherent_risk") or {}).get("score")
+    res = ((review or {}).get("residual_risk") or {}).get("score")
+    return isinstance(inh, (int, float)) and isinstance(res, (int, float)) and res < inh
+
+
 def _blk_controls(doc, data, block):
-    if not data.get("compensating_controls"):
+    controls = data.get("compensating_controls")
+    if not controls:
+        if _residual_below_inherent(data.get("review")):
+            doc.add_heading(_title(block, "Compensating controls"), level=2)
+            doc.add_paragraph("Residual risk is rated lower than inherent risk, but no compensating "
+                              "controls were documented to justify the reduction.")
         return
     doc.add_heading(_title(block, "Compensating controls"), level=2)
-    doc.add_paragraph(data["compensating_controls"])
+    doc.add_paragraph(controls)
 
 
 def _blk_matrix(doc, data, block):

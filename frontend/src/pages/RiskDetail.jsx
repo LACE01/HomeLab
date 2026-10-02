@@ -5,6 +5,7 @@ import { api, API } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import { fmtDate } from "@/lib/utils-fmt";
+import { useSubmitOnce } from "@/lib/useSubmitOnce";
 import {
   ArrowLeft, ChatCircle, ClockCounterClockwise, CheckCircle, PencilSimple,
   Trash, FloppyDisk, X, Warning, LinkSimple, ShieldCheck, Plus, FileArrowDown, FirstAidKit,
@@ -27,6 +28,7 @@ export default function RiskDetail() {
   const [comments, setComments] = useState([]);
   const [timeline, setTimeline] = useState([]);
   const [newNote, setNewNote] = useState("");
+  const [submitOnce] = useSubmitOnce();  // #21 double-submit guard
   const [editing, setEditing] = useState(false);
   const [linkedExceptions, setLinkedExceptions] = useState([]);
   const [showLinkException, setShowLinkException] = useState(false);
@@ -207,7 +209,7 @@ export default function RiskDetail() {
 
   useEffect(() => { load(); }, [load]);
 
-  const addNote = async () => {
+  const addNote = () => submitOnce(async () => {
     if (!newNote.trim()) return;
     try {
       await api.post(`/v1/risk-register/${id}/comments`, { text: newNote });
@@ -216,7 +218,7 @@ export default function RiskDetail() {
     } catch (e) {
       toast.error("Failed to add note");
     }
-  };
+  });
 
   const markReviewed = async () => {
     try {

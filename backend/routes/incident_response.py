@@ -507,10 +507,15 @@ async def add_case_event(case_id: str, body: EventBody, user: dict = Depends(get
             raise HTTPException(400, f"Only image and PDF attachments allowed (got {a['mime']})")
     event = {"id": str(uuid.uuid4()), "case_id": case_id, "type": body.type, "text": body.text,
               "author": user["email"], "attachments": atts, "created_at": now_iso()}
-    await db.ir_case_events.insert_one(dict(event))
-    await db.ir_cases.update_one({"id": case_id}, {"$set": {"updated_at": now_iso()}})
-    await ir.push_case_event_to_sheet(db, case, event)
-    return _clean(event)
+    from routes.common import dedupe_post
+    async def _ins():
+        await db.ir_case_events.insert_one(dict(event))
+        await db.ir_cases.update_one({"id": case_id}, {"$set": {"updated_at": now_iso()}})
+        await ir.push_case_event_to_sheet(db, case, event)
+        return event
+    doc, _dup = await dedupe_post(db.ir_case_events, {"case_id": case_id, "type": body.type},
+                                  user["email"], body.text or "", _ins)
+    return _clean(dict(doc))
 
 
 class TaskToggleBody(BaseModel):

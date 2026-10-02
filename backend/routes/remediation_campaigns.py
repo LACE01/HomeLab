@@ -353,8 +353,15 @@ async def add_campaign_note(campaign_id: str, body: NoteBody,
             raise HTTPException(413, f"Attachment '{a.get('name','?')}' exceeds 1 MB")
         if a.get("mime") and not a["mime"].startswith(("image/", "application/pdf")):
             raise HTTPException(400, "Only image and PDF attachments allowed")
-    return await rc.add_note(db, campaign_id, actor=user.get("email") or user.get("id"),
-                             text=body.text, attachments=body.attachments, links=body.links)
+    actor = user.get("email") or user.get("id")
+    from routes.common import dedupe_post
+    async def _ins():
+        return await rc.add_note(db, campaign_id, actor=actor, text=body.text,
+                                 attachments=body.attachments, links=body.links)
+    doc, _dup = await dedupe_post(db.remediation_campaign_activity,
+                                  {"campaign_id": campaign_id, "action": "note"}, actor, body.text or "", _ins,
+                                  time_field="at", author_field="actor", text_field="detail")
+    return doc
 
 
 class MassNoteBody(BaseModel):

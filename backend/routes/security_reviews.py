@@ -1189,17 +1189,14 @@ async def add_note(review_id: str, body: NoteBody,
     # in-flight ref, and this is the server-side backstop: an identical note from
     # the same author within 5 seconds is treated as the same submission and
     # returns the existing row instead of inserting a duplicate.
-    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
-    cutoff = (_dt.now(_tz.utc) - _td(seconds=5)).isoformat()
-    dup = await db.security_review_notes.find_one(
-        {"review_id": review_id, "author": user.get("email"), "text": body.text,
-         "at": {"$gte": cutoff}}, {"_id": 0})
-    if dup:
-        return dup
     doc = {"id": str(uuid.uuid4()), "review_id": review_id, "text": body.text,
            "html": body.html, "author": user.get("email"), "at": now_iso()}
-    await db.security_review_notes.insert_one(dict(doc))
-    return doc
+    from routes.common import dedupe_post
+    async def _ins():
+        await db.security_review_notes.insert_one(dict(doc)); return doc
+    out, _dup = await dedupe_post(db.security_review_notes, {"review_id": review_id},
+                                  user.get("email"), body.text, _ins, time_field="at")
+    return out
 
 
 @router.get("/v1/security-reviews/{review_id}/audit")

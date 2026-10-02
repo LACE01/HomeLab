@@ -216,6 +216,15 @@ def resolve_layout(template: dict, *, shared: bool) -> list:
     dropped here, centrally, so no template edit and no renderer bug can leak
     working notes or the audit trail outside the organization."""
     blocks = [b for b in (template.get("blocks") or []) if b.get("visible", True)]
+    # #27: the compensating controls are the ENTIRE justification for residual being
+    # lower than inherent -- a verdict without them is misleading. Templates seeded or
+    # edited before this block existed (and any edit that hid/removed it) silently
+    # dropped them, because reports render from the stored template, not the default.
+    # So it's enforced at render time as a required companion of the risk verdict.
+    if any(b["type"] == "risk_verdict" for b in blocks) and \
+            not any(b["type"] == "compensating_controls" for b in blocks):
+        at = next(i for i, b in enumerate(blocks) if b["type"] == "risk_verdict") + 1
+        blocks.insert(at, _block("compensating_controls"))
     if shared:
         blocks = [b for b in blocks if not BLOCK_BY_TYPE.get(b["type"], {}).get("internal_only")]
     # collapse consecutive/leading/trailing page breaks so an edited layout can't

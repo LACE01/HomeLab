@@ -1,4 +1,5 @@
 """Shared helpers used by multiple route modules."""
+import asyncio
 import functools
 import hashlib
 import json
@@ -148,3 +149,37 @@ def deep_merge(base: dict, override: dict) -> dict:
         else:
             out[k] = v
     return out
+
+
+# --------------------------------------------------------------------------- #21
+# Race-safe duplicate-submit guard, shared by every notes/comments endpoint.
+# A plain "find a recent identical row, else insert" check has a race: two requests
+# arriving together (Enter + click, a double-click) can both see "nothing yet" and
+# both insert. A per-submission asyncio lock serializes identical submissions, so the
+# second one waits for the first insert and then finds it. (The API runs one event
+# loop, so an in-process lock is sufficient; the window catches slower retries.)
+_POST_LOCKS: dict = {}
+
+
+async def dedupe_post(coll, scope: dict, author: str, text: str, insert_fn, *,
+                      window_seconds: int = 5, time_field: str = "created_at",
+                      author_field: str = "author", text_field: str = "text"):
+    """Run insert_fn() unless an identical post (same scope/author/text) landed in the
+    last `window_seconds`; returns (doc, was_duplicate). Empty-text posts (e.g. an
+    attachment-only note) are never deduped -- two different uploads look alike."""
+    if not (text or "").strip():
+        return await insert_fn(), False
+    key = (getattr(coll, "name", str(coll)), json.dumps(scope, sort_keys=True, default=str),
+           author, hashlib.sha256(text.encode("utf-8")).hexdigest())
+    lock = _POST_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=window_seconds)).isoformat()
+        dup = await coll.find_one({**scope, author_field: author, text_field: text,
+                                   time_field: {"$gte": cutoff}}, {"_id": 0})
+        if dup:
+            return dup, True
+        doc = await insert_fn()
+    if len(_POST_LOCKS) > 2000:   # bound memory: drop idle locks
+        for k in [k for k, l in _POST_LOCKS.items() if not l.locked()][:1000]:
+            _POST_LOCKS.pop(k, None)
+    return doc, False

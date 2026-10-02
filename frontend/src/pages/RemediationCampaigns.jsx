@@ -7,6 +7,7 @@ import { Chip, SevBadge } from "@/components/Badges";
 import TeamCombobox from "@/components/TeamCombobox";
 import { useAuth } from "@/lib/auth";
 import { parseSearch, matchFinding, facetMatch, SEARCH_OPERATOR_HINT } from "@/lib/findingSearch";
+import { useSubmitOnce } from "@/lib/useSubmitOnce";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell, LineChart, Line, Legend,
 } from "recharts";
@@ -955,19 +956,20 @@ function GroupCard({ title, rows, onPick }) {
 
 function NotesTab({ id, activity, onChange, canWrite }) {
   const [text,setText]=useState(""); const [links,setLinks]=useState(""); const [files,setFiles]=useState([]); const [busy,setBusy]=useState(false);
+  const [submitOnce]=useSubmitOnce();  // #21 double-submit guard
   const notes = activity.filter(a=>a.action==="note");
   const onFile = (e) => {
     const fs=[...e.target.files].slice(0,3);
     Promise.all(fs.map(f=>new Promise(res=>{const r=new FileReader();r.onload=()=>res({name:f.name,mime:f.type,data_url:r.result});r.readAsDataURL(f);}))).then(setFiles);
   };
-  const post=async()=>{
+  const post=()=>submitOnce(async()=>{
     if(!text.trim()&&!links.trim()&&files.length===0){toast.error("Add a note, link, or screenshot");return;}
     setBusy(true);
     try{
       await api.post(`/v1/remediation-campaigns/${id}/notes`,{text,links:links.split(",").map(x=>x.trim()).filter(Boolean),attachments:files});
       setText("");setLinks("");setFiles([]);toast.success("Note added");onChange();
     }catch(e){toast.error(e.response?.data?.detail||"Failed");}finally{setBusy(false);}
-  };
+  });
   return <div className="max-w-3xl space-y-3">
     {canWrite && <div className="border border-[#30363D] bg-[#0D1117] rounded-md p-3">
       <textarea value={text} onChange={e=>setText(e.target.value)} rows={2} placeholder="Add a note for this campaign…" className="w-full px-2 py-1.5 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-100 mb-2"/>

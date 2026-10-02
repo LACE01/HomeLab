@@ -9,6 +9,7 @@ import { ArrowLeft, ChatCircle, ClockCounterClockwise, Ticket, Shield, BookOpen,
 import InfoTip from "@/components/InfoTip";
 import { toast } from "sonner";
 
+import { useSubmitOnce } from "@/lib/useSubmitOnce";
 const DEFAULT_SIDEBAR_ORDER = ["status", "exception", "comments", "playbook", "mitigations",
   "risk_score", "identifiers", "scoring", "exploits", "asset", "sla", "source", "tickets", "references"];
 
@@ -135,6 +136,7 @@ export default function FindingDetail() {
   const [activity, setActivity] = useState([]);
   const [comments, setComments] = useState([]);
   const [newComment, setNewComment] = useState("");
+  const [submitOnce] = useSubmitOnce();  // #21 double-submit guard
   const [attachments, setAttachments] = useState([]);
   const [statusVal, setStatusVal] = useState("");
   const [kri, setKri] = useState(null);
@@ -287,12 +289,12 @@ export default function FindingDetail() {
     }
   };
 
-  const addComment = async () => {
+  const addComment = () => submitOnce(async () => {
     if (!newComment.trim() && attachments.length === 0) return;
     await api.post(`/v1/findings/${id}/comments`, { text: newComment, attachments });
     setNewComment(""); setAttachments([]);
     const r = await api.get(`/v1/findings/${id}/comments`); setComments(r.data.items);
-  };
+  });
 
   const handleFiles = async (files) => {
     const arr = Array.from(files || []);

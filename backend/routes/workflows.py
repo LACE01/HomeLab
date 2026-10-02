@@ -668,9 +668,13 @@ async def add_exception_comment(exception_id: str, body: ExceptionCommentBody, u
     _validate_evidence_files(body.attachments or [])
     c = {"id": str(uuid.uuid4()), "exception_id": exception_id, "author": user["email"],
          "text": body.text, "attachments": body.attachments or [], "created_at": now_iso()}
-    await db.comments.insert_one(c)
-    await _log_exception_event(db, exc, "note_added", user["email"], f"Note added: {body.text[:140]}")
-    return _clean(c)
+    from routes.common import dedupe_post
+    async def _ins():
+        await db.comments.insert_one(dict(c))
+        await _log_exception_event(db, exc, "note_added", user["email"], f"Note added: {body.text[:140]}")
+        return c
+    doc, _dup = await dedupe_post(db.comments, {"exception_id": exception_id}, user["email"], body.text, _ins)
+    return _clean(dict(doc))
 
 
 @router.get("/v1/exceptions/{exception_id}")
