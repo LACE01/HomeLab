@@ -141,6 +141,19 @@ export default function FindingDetail() {
   const [statusVal, setStatusVal] = useState("");
   const [kri, setKri] = useState(null);
   const [mitreCoverage, setMitreCoverage] = useState(null);
+  const [cweRepairBusy, setCweRepairBusy] = useState(false);
+  const [cweRepairMsg, setCweRepairMsg] = useState("");
+  const repairCwes = async () => {
+    setCweRepairBusy(true); setCweRepairMsg("");
+    try {
+      const r = await api.post("/v1/mitre/backfill-cwe");
+      setCweRepairMsg(`${r.data.updated} normalized, ${r.data.propagated_by_cve} filled from same-CVE findings.`);
+      const c = await api.get("/v1/mitre/coverage", { params: { refresh: true } });
+      setMitreCoverage(c.data);
+    } catch (e) {
+      setCweRepairMsg("Repair failed.");
+    } finally { setCweRepairBusy(false); }
+  };
   const [context, setContext] = useState(null);
   const [intel, setIntel] = useState(null);
   const [playbook, setPlaybook] = useState(undefined); // undefined = loading, null = none found
@@ -411,6 +424,24 @@ export default function FindingDetail() {
                     <> By basis: {mitreCoverage.by_basis.map(b => `${b.count.toLocaleString()} ${b.basis}`).join(", ")}.</>
                   )}
                 </div>
+                {mitreCoverage.cwe_chain && (
+                  <div className="text-[10.5px] text-slate-500 mt-1" data-testid="mitre-cwe-chain">
+                    CWE chain: {mitreCoverage.cwe_chain.with_cwe.toLocaleString()} ({mitreCoverage.cwe_chain.with_cwe_pct}%) carry a CWE
+                    {mitreCoverage.cwe_chain.with_cwe > 0 && (
+                      <>; {mitreCoverage.cwe_chain.cwe_mapped_pct}% of those hit the CWE table</>
+                    )}.
+                    {mitreCoverage.cwe_chain.top_unmapped_cwes?.length > 0 && (
+                      <> Unmapped CWEs: {mitreCoverage.cwe_chain.top_unmapped_cwes.slice(0, 4).map(c => `${c.cwe} (${c.count})`).join(", ")}.</>
+                    )}
+                    {isAdmin && (
+                      <button type="button" disabled={cweRepairBusy} onClick={repairCwes}
+                        className="ml-1.5 text-blue-400 hover:text-blue-300 disabled:opacity-50">
+                        {cweRepairBusy ? "Repairing…" : "Repair CWEs"}
+                      </button>
+                    )}
+                    {cweRepairMsg && <span className="ml-1.5 text-slate-400">{cweRepairMsg}</span>}
+                  </div>
+                )}
                 {mitreCoverage.top_techniques?.length > 0 && (
                   <div className="mt-1.5">
                     <div className="text-[10px] uppercase font-mono text-slate-600 tracking-wider mb-0.5">Most common techniques in your backlog</div>

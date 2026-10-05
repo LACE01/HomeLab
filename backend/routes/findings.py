@@ -877,7 +877,28 @@ async def mitre_backfill_cwe(user: dict = Depends(require_role("admin"))):
             # placeholder values like NVD-CWE-noinfo aren't real CWEs
             await db.findings.update_one({"id": f["id"]}, {"$set": {"cwe": None}})
             updated += 1
-    return {"ok": True, "updated": updated}
+    # #33 -- propagate a known CWE to CWE-less findings sharing the same CVE.
+    # Until 5424e73 every scanner rescan nulled the NVD-sourced CWE on the rows
+    # it touched, while rows not rescanned kept theirs; this repairs that split
+    # without waiting for (or needing) an NVD key.
+    propagated = 0
+    by_cve = {}
+    async for r in db.findings.aggregate([
+        {"$match": {"cve": {"$nin": [None, ""]}, "cwe": {"$nin": [None, ""]}}},
+        {"$group": {"_id": "$cve", "cwe": {"$first": "$cwe"}}},
+    ]):
+        canonical = normalize_cwe(r.get("cwe"))
+        if canonical:
+            by_cve[r["_id"]] = canonical
+    for cve, cwe in by_cve.items():
+        res = await db.findings.update_many(
+            {"cve": cve, "$or": [{"cwe": None}, {"cwe": ""}, {"cwe": {"$exists": False}}]},
+            {"$set": {"cwe": cwe}})
+        propagated += res.modified_count
+    if updated or propagated:
+        from aggregate_cache import invalidate
+        await invalidate(db, "mitre_coverage")
+    return {"ok": True, "updated": updated, "propagated_by_cve": propagated}
 
 
 @router.get("/v1/attack-paths/cves")

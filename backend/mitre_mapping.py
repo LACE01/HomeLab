@@ -144,7 +144,19 @@ def coverage_from_findings(findings: list) -> dict:
     unmapped_categories: dict = {}
     techniques: dict = {}
     tactics: dict = {}
+    # #33 -- the CWE leg of the chain, measured on its own, so the indicator
+    # can say WHERE the chain breaks: no CWE at ingest vs CWE not in the table.
+    with_cwe = 0
+    cwe_mapped = 0
+    unmapped_cwes: dict = {}
     for f in findings:
+        cwe = normalize_cwe(f.get("cwe")) or normalize_cwe(f.get("cwes"))
+        if cwe:
+            with_cwe += 1
+            if cwe in CWE_MITRE_MAP:
+                cwe_mapped += 1
+            else:
+                unmapped_cwes[cwe] = unmapped_cwes.get(cwe, 0) + 1
         r = resolve_mitre(f)
         by_basis[r["basis"]] = by_basis.get(r["basis"], 0) + 1
         if r["technique_id"]:
@@ -181,6 +193,16 @@ def coverage_from_findings(findings: list) -> dict:
         ],
         "unmapped_examples": unmapped_examples,
         "table_size": len(CWE_MITRE_MAP),
+        "cwe_chain": {
+            "with_cwe": with_cwe,
+            "with_cwe_pct": round(100 * with_cwe / total, 1) if total else 0.0,
+            "cwe_mapped": cwe_mapped,
+            "cwe_mapped_pct": round(100 * cwe_mapped / with_cwe, 1) if with_cwe else 0.0,
+            "top_unmapped_cwes": [
+                {"cwe": k, "count": v}
+                for k, v in sorted(unmapped_cwes.items(), key=lambda x: -x[1])[:8]
+            ],
+        },
     }
 
 

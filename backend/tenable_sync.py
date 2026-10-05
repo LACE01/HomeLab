@@ -180,6 +180,24 @@ def _parse_plugin_attributes(data: dict) -> dict:
     return out
 
 
+def _plugin_cwe(attrs: dict):
+    """#33 -- Nessus carries the CWE as an attribute ("cwe": "89") and/or as an
+    xref ("CWE:89"). This connector never read either, so every Tenable finding
+    arrived CWE-less and the ATT&CK CWE layer could not fire for it."""
+    from mitre_mapping import normalize_cwe
+    direct = normalize_cwe(attrs.get("cwe"))
+    if direct:
+        return direct
+    for key in ("xref", "xrefs", "see_also_xref"):
+        vals = attrs.get(key)
+        for v in (vals if isinstance(vals, list) else [vals]):
+            if isinstance(v, str) and v.strip().upper().startswith("CWE"):
+                got = normalize_cwe(v)
+                if got:
+                    return got
+    return None
+
+
 async def _plugin_detail(endpoint: str, headers: dict, plugin_id, cache: dict) -> dict:
     key = str(plugin_id)
     if key in cache:
@@ -205,6 +223,7 @@ async def _plugin_detail(endpoint: str, headers: dict, plugin_id, cache: dict) -
             "cve_list": cve_list,
             "cvss_score": _first_num(attrs.get("cvss3_base_score")) or _first_num(attrs.get("cvss_base_score")),
             "cvss_vector": attrs.get("cvss3_vector") or attrs.get("cvss_vector"),
+            "cwe": _plugin_cwe(attrs),
         }
     except Exception as e:
         detail = {"error": str(e)}
@@ -269,6 +288,7 @@ async def _upsert_finding(db, asset: dict, vuln: dict, plugin: dict, scan_name: 
         "cve": primary_cve, "cve_list": cve_list,
         "cvss_score": plugin.get("cvss_score"),
         "cvss_vector": plugin.get("cvss_vector"),
+        "cwe": plugin.get("cwe"),
         "epss_score": 0,  # enriched by nightly_rescore / enrichers.sync_epss below
         "kev_flag": False,
         "rti": [],
