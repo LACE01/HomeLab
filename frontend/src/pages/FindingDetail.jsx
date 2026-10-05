@@ -529,8 +529,15 @@ export default function FindingDetail() {
                   </div>
                   <div className="text-[11px] text-slate-500 mb-1.5">
                     Where every other open <span className="text-slate-300">{f.severity}</span> finding&apos;s KRI score
-                    falls on the 0–1 scale ({kri.empirical.cohort_size} finding{kri.empirical.cohort_size === 1 ? "" : "s"}).
-                    The red bar is this one. Hover a bar for its range and count.
+                    falls ({kri.empirical.cohort_size} finding{kri.empirical.cohort_size === 1 ? "" : "s"}).
+                    {kri.empirical.scale === "log"
+                      ? " Log scale — KRI is driven by EPSS, which clusters near zero, so each tick is a ×10 step."
+                      : ""} The red bar is this one{kri.empirical.my_bucket != null && ` (top ${kri.empirical.top_pct}% of its cohort)`}.
+                    Hover a bar for its range and count.
+                    {kri.empirical.uniform && <span className="text-amber-300"> Every finding in this cohort has the same score.</span>}
+                    {kri.empirical.no_epss_count > 0 && (
+                      <span className="text-slate-400"> {kri.empirical.no_epss_count} of {kri.empirical.cohort_size} have no EPSS
+                        score yet (defaulted to 0.01), so they share one bar near the left edge.</span>)}
                   </div>
                   <div className="flex items-end gap-0.5 h-14">
                     {(() => {
@@ -556,8 +563,8 @@ export default function FindingDetail() {
                     })()}
                   </div>
                   <div className="flex justify-between text-[9.5px] text-slate-600 mt-0.5 font-mono">
-                    <span>0.0</span>
-                    <span>cohort {kri.empirical.cohort_min}–{kri.empirical.cohort_max}</span>
+                    <span>{kri.empirical.axis_min ?? "0.0"}</span>
+                    <span>cohort {kri.empirical.cohort_min}–{kri.empirical.cohort_max}{kri.empirical.scale === "log" ? " · log" : ""}</span>
                     <span>1.0</span>
                   </div>
                 </div>

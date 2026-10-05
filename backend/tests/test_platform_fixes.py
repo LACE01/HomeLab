@@ -46,16 +46,16 @@ nonzero = [b for b in r["buckets"] if b["count"] > 0]
 assert len(nonzero) >= 4, f"a clustered cohort must spread across several bars, got {len(nonzero)}"
 assert len(r["buckets"]) == 20
 assert sum(b["count"] for b in r["buckets"]) == len(cohort), "every finding must land in exactly one bucket"
-print("PASS: histogram bins over the fixed 0-1 KRI domain, so a clustered cohort renders as multiple bars (was one)")
+print("PASS: a clustered cohort renders as multiple bars (was one)")
 
-# bucket ranges are contiguous and labelled for tooltips
-assert r["buckets"][0]["from"] == 0.0 and r["buckets"][0]["to"] == 0.05
-assert r["buckets"][19]["to"] == 1.0
+# bucket ranges are contiguous and labelled for tooltips (log-spaced since #32
+# second pass: KRI is EPSS-driven and EPSS is heavily right-skewed)
+assert r["scale"] == "log"
+assert r["buckets"][0]["from"] == r["axis_min"] and r["buckets"][19]["to"] == 1.0
 assert all(r["buckets"][i]["to"] == r["buckets"][i + 1]["from"] for i in range(19))
 print("PASS: each bucket carries a contiguous from/to range and a count for per-bar tooltips")
 
 # my_bucket is computed server-side (the frontend used an unrelated formula)
-assert r["my_bucket"] == 7, r["my_bucket"]          # 0.36 * 20 = 7.2 -> bucket 7
 assert r["buckets"][r["my_bucket"]]["from"] <= 0.36 < r["buckets"][r["my_bucket"]]["to"]
 assert r["cohort_size"] == len(cohort)
 assert r["cohort_min"] == 0.3 and r["cohort_max"] == 0.61

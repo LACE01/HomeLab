@@ -953,10 +953,16 @@ async def finding_kri(finding_id: str, user: dict = Depends(get_current_user)):
         {"_id": 0, "epss_score": 1, "cvss_score": 1, "cwe": 1}
     )
     cohort_scores = []
+    no_epss = 0
     async for c in cohort_cursor:
         cw = cwe_map.get(c.get("cwe"), 1.0)
         cohort_scores.append(compute_kri(c, cw)["kri_score"])
+        if not c.get("epss_score"):
+            no_epss += 1
     pct = empirical_percentile(kri["kri_score"], cohort_scores)
+    # #32: findings with no EPSS default to 0.01 inside compute_kri, so they all share
+    # one exact score -- a genuinely tall bar. Say so instead of leaving it a mystery.
+    pct["no_epss_count"] = no_epss
     indicators = critical_indicators(f)
 
     return {

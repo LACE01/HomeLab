@@ -115,9 +115,9 @@ def empirical_percentile(kri_score: float, cohort_scores: list[float]) -> dict:
     lands within a narrow band), so dividing by the max pushed nearly every
     finding into the same high bucket and left nineteen empty ones.
 
-    Now the histogram bins over the FIXED 0..1 KRI domain, so the bars show
-    where this cohort actually sits on the scale, and each bucket carries its
-    range + count so the UI can label and tooltip it. `my_bucket` is computed
+    It then moved to a fixed linear 0..1 domain, which was honest but still
+    collapsed the cohort into one bar -- see the log-scale note below. Each bucket
+    carries its range + count so the UI can label and tooltip it. `my_bucket` is computed
     here too -- the frontend was deriving it with an unrelated formula."""
     if not cohort_scores:
         return {"pct": 0, "top_pct": 100, "distribution": [], "buckets": [],
@@ -125,26 +125,45 @@ def empirical_percentile(kri_score: float, cohort_scores: list[float]) -> dict:
     below = sum(1 for s in cohort_scores if s <= kri_score)
     pct = round((below / len(cohort_scores)) * 100, 1)
 
+    # #32 (second pass): fixed LINEAR 0..1 bins were honest but still showed one bar.
+    # KRI = EPSS x CVSS-weight x CWE-weight, and EPSS is heavily right-skewed (most
+    # CVEs < 0.05; findings with no EPSS default to 0.01), so an entire severity cohort
+    # typically lands in 0.01-0.03 -- one 0.05-wide bin. Log-spaced bins are the right
+    # scale for EPSS-driven scores: each decade gets equal width, so the cluster
+    # spreads out and the outliers (KEV / high-EPSS) stay visible at the top end.
+    import bisect
     N = 20
+    lo_raw = min(min(cohort_scores), kri_score)
+    lo = max(1e-4, lo_raw * 0.95) if lo_raw > 0 else 1e-4
+    hi = 1.0
+    if lo >= hi:
+        lo = 1e-4
+    l0, l1 = math.log10(lo), math.log10(hi)
+    edges = [10 ** (l0 + (l1 - l0) * i / N) for i in range(N + 1)]
+
+    def _bin(v):
+        v = min(max(v, lo), hi)
+        return min(N - 1, max(0, bisect.bisect_right(edges, v) - 1))
+
     counts = [0] * N
-    for s in cohort_scores:
-        idx = min(N - 1, max(0, int(s * N)))   # fixed 0..1 domain
-        counts[idx] += 1
-    buckets = [{
-        "index": i,
-        "from": round(i / N, 2),
-        "to": round((i + 1) / N, 2),
-        "count": counts[i],
-    } for i in range(N)]
-    my_bucket = min(N - 1, max(0, int(kri_score * N)))
+    for sc in cohort_scores:
+        counts[_bin(sc)] += 1
+
+    def _r(x):   # readable range labels across several decades
+        return float(f"{x:.3g}")
+    buckets = [{"index": i, "from": _r(edges[i]), "to": _r(edges[i + 1]), "count": counts[i]}
+               for i in range(N)]
     return {
         "pct": pct, "top_pct": round(100 - pct, 1),
         "distribution": counts,          # kept for any existing consumer
         "buckets": buckets,
+        "scale": "log",
+        "axis_min": _r(lo), "axis_max": 1.0,
+        "uniform": len(set(round(x, 6) for x in cohort_scores)) == 1,
         "cohort_size": len(cohort_scores),
-        "my_bucket": my_bucket,
-        "cohort_min": round(min(cohort_scores), 3),
-        "cohort_max": round(max(cohort_scores), 3),
+        "my_bucket": _bin(kri_score),
+        "cohort_min": round(min(cohort_scores), 4),
+        "cohort_max": round(max(cohort_scores), 4),
     }
 
 

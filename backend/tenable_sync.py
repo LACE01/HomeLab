@@ -288,6 +288,16 @@ async def _upsert_finding(db, asset: dict, vuln: dict, plugin: dict, scan_name: 
     }
 
     if existing:
+        # Enrichment-owned fields must survive a rescan. `base` carries NEW-finding
+        # defaults (epss 0, kev False, rti [], no exploit refs) and a KB-only CWE/CVSS;
+        # $set-ing them on an existing finding wiped KEV/EPSS/exploit flags (and dropped
+        # the risk score computed below) every sync until enrichment re-ran, and could
+        # null out an NVD-enriched CWE -- breaking the CWE->ATT&CK chain (#33).
+        for _k in ("epss_score", "kev_flag", "rti", "exploit_references"):
+            base.pop(_k, None)
+        for _k in ("cwe", "cvss_score", "cvss_vector", "description", "external_references"):
+            if not base.get(_k) and existing.get(_k):
+                base.pop(_k, None)
         new_status = existing["status"]
         reopened = existing.get("reopened_count", 0)
         if existing["status"] in ("Fixed validated", "Mitigated", "Closed administratively"):
