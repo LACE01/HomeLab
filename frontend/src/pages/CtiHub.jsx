@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -508,12 +508,17 @@ function TyposquatTab({ overview, onChange }) {
   const [scanning, setScanning] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  // #47: a slow response for the previously-selected domain must not overwrite
+  // the list for the one now selected -- only the latest request may land.
+  const reqSeq = useRef(0);
   const load = (d) => {
+    const seq = ++reqSeq.current;
     setLoading(true);
-    const params = d ? { domain: d } : {};   // no param == all domains (grouped)
+    const params = d ? { domain: d } : {};   // no param == all owned domains (grouped)
     return api.get("/v1/cti/typosquats", { params })
-      .then(r => setItems(r.data.items || []))
-      .finally(() => setLoading(false));
+      .then(r => { if (seq === reqSeq.current) setItems(r.data.items || []); })
+      .catch(() => { if (seq === reqSeq.current) setItems([]); })
+      .finally(() => { if (seq === reqSeq.current) setLoading(false); });
   };
   // Re-list whenever the selected domain changes. THIS is the wiring that was
   // missing -- load() never took the domain into account before.

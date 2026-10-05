@@ -62,8 +62,11 @@ async def cti_overview(user: dict = Depends(require_module(MODULE_KEY))):
         "kev_past_due": kev["past_kev_due_date"],
         "certificates_tracked": await db.cti_certificates.count_documents({}),
         "certificates_new": await db.cti_certificates.count_documents({"newly_issued": True}),
-        "typosquats_registered": await db.cti_typosquats.count_documents({"resolves": True}),
-        "typosquats_unreviewed": await db.cti_typosquats.count_documents({"status": "new"}),
+        # #47: counted over owned domains only, matching what the tab lists
+        "typosquats_registered": await db.cti_typosquats.count_documents(
+            {"resolves": True, "domain": {"$in": domains}}),
+        "typosquats_unreviewed": await db.cti_typosquats.count_documents(
+            {"resolves": True, "status": "new", "domain": {"$in": domains}}),
         "investigations": await db.cti_investigations.count_documents({}),
     }
 
@@ -204,6 +207,10 @@ async def scan_typosquats_route(body: TyposquatBody,
     domain = body.domain.strip().lower()
     if "." not in domain:
         raise HTTPException(400, "domain must look like example.com")
+    # #47: only scan domains we own. Ad-hoc scans of someone else's domain are
+    # what left Verizon lookalikes mixed into this tab and its counts.
+    if domain not in set(await cti.owned_domains(db)):
+        raise HTTPException(400, f"{domain} is not an owned domain -- add it under Email Authentication first")
     try:
         return await cti.scan_typosquats(db, domain)
     except Exception as e:
@@ -214,8 +221,12 @@ async def scan_typosquats_route(body: TyposquatBody,
 async def list_typosquats(domain: Optional[str] = None,
                            user: dict = Depends(require_module(MODULE_KEY))):
     flt: dict = {"resolves": True}
+    owned = await cti.owned_domains(db)
     if domain:
-        flt["domain"] = domain.lower()
+        # #47: an explicit domain still has to be one of ours
+        flt["domain"] = domain.lower() if domain.lower() in owned else {"$in": []}
+    else:
+        flt["domain"] = {"$in": owned}
     items = await db.cti_typosquats.find(flt, {"_id": 0}).sort("first_seen_at", -1).to_list(500)
     return {"items": items}
 

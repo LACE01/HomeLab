@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { toast } from "sonner";
 import { useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
@@ -213,18 +213,18 @@ export default function Findings() {
   const [severities, setSeverities] = useState(searchParams.getAll("severity"));
   const [statuses, setStatuses] = useState(searchParams.getAll("status"));
   // Item: flexible multi-select facets on the Findings tab.
-  const [exploitability, setExploitability] = useState([]);   // kev|active_attacks|public_exploit|epss_high
-  const [assetTypes, setAssetTypes] = useState([]);           // server|workstation|...
-  const [tagFilter, setTagFilter] = useState([]);            // asset tags
-  const [kevOnly, setKevOnly] = useState(false);
-  const [internetOnly, setInternetOnly] = useState(false);
-  const [showResolved, setShowResolved] = useState(false);   // #60: hide resolved by default
+  const [exploitability, setExploitability] = useState(searchParams.getAll("expl"));   // kev|active_attacks|public_exploit|epss_high
+  const [assetTypes, setAssetTypes] = useState(searchParams.getAll("atype"));           // server|workstation|...
+  const [tagFilter, setTagFilter] = useState(searchParams.getAll("tag"));            // asset tags
+  const [kevOnly, setKevOnly] = useState(searchParams.get("kev") === "1");
+  const [internetOnly, setInternetOnly] = useState(searchParams.get("internet") === "1");
+  const [showResolved, setShowResolved] = useState(searchParams.get("resolved") === "1");   // #60: hide resolved by default
   const [teamFilter, setTeamFilter] = useState(searchParams.get("owner_team") || "");   // #57
   const [exportOpen, setExportOpen] = useState(false);   // #59 export modal
-  const [sla, setSla] = useState("");            // #58 "", overdue, within
-  const [ageDays, setAgeDays] = useState("");    // #58 min age in days
-  const [confidence, setConfidence] = useState(""); // #58 "", low, high
-  const [entity, setEntity] = useState("");      // #58 entity name contains
+  const [sla, setSla] = useState(searchParams.get("sla") || "");            // #58 "", overdue, within
+  const [ageDays, setAgeDays] = useState(searchParams.get("age") || "");    // #58 min age in days
+  const [confidence, setConfidence] = useState(searchParams.get("conf") || ""); // #58 "", low, high
+  const [entity, setEntity] = useState(searchParams.get("entity") || "");      // #58 entity name contains
   const [savedViews, setSavedViews] = useState([]);
   const [facetOpts, setFacetOpts] = useState({ available_tags: [], available_asset_types: [] });
   const [selected, setSelected] = useState(new Set());
@@ -233,16 +233,19 @@ export default function Findings() {
   const [campaignPick, setCampaignPick] = useState(false);
   const [bulkOwnerTeam, setBulkOwnerTeam] = useState("");
   const [loading, setLoading] = useState(false);
-  const [myQueue, setMyQueue] = useState(!!user?.team && !ownerTeamParam);
+  // #13: "All Teams" vs "My Team" survives Back via ?queue=all|mine.
+  const queueParam = searchParams.get("queue");
+  const [myQueue, setMyQueue] = useState(
+    queueParam ? queueParam === "mine" && !!user?.team : (!!user?.team && !ownerTeamParam));
   const [groups, setGroups] = useState([]);
   const [expanded, setExpanded] = useState(new Set());
   const [groupChildren, setGroupChildren] = useState({}); // key → finding[]
   const [nlMode, setNlMode] = useState(false);
   const [nlInterpreted, setNlInterpreted] = useState(null);
   const [nlLoading, setNlLoading] = useState(false);
-  const [sort, setSort] = useState("risk_score");
-  const [order, setOrder] = useState("desc");
-  const [page, setPage] = useState(0);
+  const [sort, setSort] = useState(searchParams.get("sort") || "risk_score");
+  const [order, setOrder] = useState(searchParams.get("order") || "desc");
+  const [page, setPage] = useState(Math.max(0, parseInt(searchParams.get("page") || "0", 10) || 0));
 
   const groupBy = prefs?.findings?.group_by || "none";
   const viewMode = prefs?.findings?.view_mode || "by_asset";
@@ -301,7 +304,12 @@ export default function Findings() {
   useEffect(() => { if (prefs) load(); /* eslint-disable-next-line */ }, [prefs, view, facetKey, myQueue, groupBy, viewMode, cweParam, cveParam, sourceToolParam, sort, order, page]);
   // Any filter change (other than paging itself) should reset back to page 1 --
   // otherwise you can land on an empty page 5 after narrowing a filter down.
-  useEffect(() => { setPage(0); }, [view, facetKey, myQueue, sort, order, q]);
+  // Skip the mount run so a ?page= restored by Back isn't immediately reset (#13).
+  const pageResetArmed = useRef(false);
+  useEffect(() => {
+    if (!pageResetArmed.current) { pageResetArmed.current = true; return; }
+    setPage(0);
+  }, [view, facetKey, myQueue, sort, order, q]);
   useEffect(() => { api.get("/v1/findings/stats").then(r => setFacetOpts(r.data)).catch(() => {}); }, []);
   const loadViews = () => api.get("/v1/findings/views").then(r => setSavedViews(r.data.items || [])).catch(() => {});
   useEffect(() => { loadViews(); /* eslint-disable-next-line */ }, []);
@@ -343,13 +351,29 @@ export default function Findings() {
     severities.forEach(v => p.append("severity", v));
     statuses.forEach(v => p.append("status", v));
     if (q) p.set("q", q);
-    if (ownerTeamParam) p.set("owner_team", ownerTeamParam);
+    // #13: write the LIVE team filter (was the stale initial URL value, so a team
+    // picked in the combobox -- or "All Teams" -- was lost on Back from a finding).
+    if (teamFilter) p.set("owner_team", teamFilter);
+    if (user?.team) p.set("queue", myQueue ? "mine" : "all");
+    exploitability.forEach(v => p.append("expl", v));
+    assetTypes.forEach(v => p.append("atype", v));
+    tagFilter.forEach(v => p.append("tag", v));
+    if (kevOnly) p.set("kev", "1");
+    if (internetOnly) p.set("internet", "1");
+    if (showResolved) p.set("resolved", "1");
+    if (sla) p.set("sla", sla);
+    if (ageDays) p.set("age", ageDays);
+    if (confidence) p.set("conf", confidence);
+    if (entity) p.set("entity", entity);
+    if (sort !== "risk_score") p.set("sort", sort);
+    if (order !== "desc") p.set("order", order);
+    if (page) p.set("page", String(page));
     if (cweParam) p.set("cwe", cweParam);
     if (cveParam) p.set("cve", cveParam);
     if (sourceToolParam) p.set("source_tool", sourceToolParam);
     if (p.toString() !== searchParams.toString()) setSearchParams(p, { replace: true });
     // eslint-disable-next-line
-  }, [view, facetKey, q]);
+  }, [view, facetKey, q, myQueue, sort, order, page]);
 
   const runNlSearch = async () => {
     if (!q.trim()) return;

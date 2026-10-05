@@ -25,11 +25,11 @@ const Panel = ({ title, children }) => (
 );
 
 export default function Operational() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const initialTeam = searchParams.get("team") || "";
   const [d, setD] = useState(null);
   const [team, setTeam] = useState(initialTeam);
-  const [view, setView] = useState(initialTeam ? "team" : "leaderboard"); // "leaderboard" | "team"
+  const [view, setView] = useState(initialTeam || searchParams.get("view") === "team" ? "team" : "leaderboard"); // "leaderboard" | "team"
   const [teams, setTeams] = useState([]);
   const navigate = useNavigate();
   useEffect(() => {
@@ -44,6 +44,15 @@ export default function Operational() {
   }, [team, view]);
 
   const openTeam = (teamName) => { setTeam(teamName || ""); setView("team"); };
+
+  // #13: mirror the selected team into the URL (replace, not push) so Back from a
+  // findings drill-down returns to this team's dashboard instead of the leaderboard.
+  useEffect(() => {
+    const p = new URLSearchParams();
+    if (view === "team") { p.set("view", "team"); if (team) p.set("team", team); }
+    if (p.toString() !== searchParams.toString()) setSearchParams(p, { replace: true });
+    // eslint-disable-next-line
+  }, [team, view]);
 
   if (view === "leaderboard") {
     return <TeamsLeaderboard onOpenTeam={openTeam}/>;

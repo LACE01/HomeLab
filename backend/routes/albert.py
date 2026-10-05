@@ -154,10 +154,43 @@ async def list_albert_imports(user: dict = Depends(require_module("/admin/albert
     return docs
 
 
+def _anomaly_keys(anomalies) -> list:
+    # day:category identifies an anomaly; the count is left out so a re-upload
+    # that adds a few rows to an already-acknowledged day doesn't resurrect it.
+    return sorted({f"{a.get('day')}:{a.get('category')}" for a in (anomalies or [])})
+
+
 @router.get("/v1/admin/albert/stats")
 async def albert_stats(days: int = 30, include_suppressed: bool = False, user: dict = Depends(require_module("/admin/albert"))):
     days = max(1, min(days, 365))
-    return await compute_albert_stats(db, days=days, include_suppressed=include_suppressed)
+    out = await compute_albert_stats(db, days=days, include_suppressed=include_suppressed)
+    # #36 second pass: acknowledgement is server-side and shared, so one analyst
+    # acknowledging the banner clears it for the team (it was per-browser
+    # localStorage) and there's a record of who did it.
+    keys = _anomaly_keys(out.get("anomalies"))
+    acked = {}
+    if keys:
+        async for a in db.albert_anomaly_acks.find({"key": {"$in": keys}}, {"_id": 0}):
+            acked[a["key"]] = {"by": a.get("by"), "at": a.get("at")}
+    for a in out.get("anomalies") or []:
+        info = acked.get(f"{a.get('day')}:{a.get('category')}")
+        a["acknowledged"] = bool(info)
+        if info:
+            a["acknowledged_by"], a["acknowledged_at"] = info["by"], info["at"]
+    return out
+
+
+class AnomalyAckBody(BaseModel):
+    keys: List[str]
+
+
+@router.post("/v1/admin/albert/anomalies/acknowledge")
+async def albert_ack_anomalies(body: AnomalyAckBody, user: dict = Depends(require_module("/admin/albert"))):
+    keys = sorted({k for k in body.keys if isinstance(k, str) and ":" in k})[:500]
+    for k in keys:
+        await db.albert_anomaly_acks.update_one(
+            {"key": k}, {"$setOnInsert": {"key": k, "by": user.get("email"), "at": now_iso()}}, upsert=True)
+    return {"ok": True, "acknowledged": len(keys)}
 
 
 @router.get("/v1/admin/albert/signatures")

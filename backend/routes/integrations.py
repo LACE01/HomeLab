@@ -270,6 +270,14 @@ async def test_integration(integration_id: str, user: dict = Depends(require_rol
             result = {"ok": True, "message": f"{name}: Azure AD app registration authenticated successfully (token acquired)."}
         except Exception as e:
             result = {"ok": False, "message": str(e)}
+    elif "cloudflare" in name.lower():
+        # #48: a REAL GraphQL query, not a bare-GET reachability probe (Cloudflare
+        # answers HTTP 400 to a GET, which the generic check used to call success).
+        # Dispatched BEFORE the generic endpoint precheck: the endpoint defaults to
+        # the public GraphQL URL, so requiring one blocked valid configs, and the
+        # exact-name match missed connectors named e.g. "Cloudflare WAF".
+        from attack_telemetry import test_connection as _cf_test
+        result = await _cf_test(cfg)
     elif name == "AWS CSPM":
         # No "endpoint" concept at all for AWS -- boto3 resolves the right
         # per-service endpoint from the region. A real STS GetCallerIdentity call
@@ -294,13 +302,6 @@ async def test_integration(integration_id: str, user: dict = Depends(require_rol
         if name == "OpenCTI":
             from routes.findings import opencti_ping
             result = await opencti_ping(cfg)
-        elif name == "Cloudflare":
-            # A REAL query, not a bare-GET reachability probe. Cloudflare's GraphQL
-            # endpoint answers HTTP 400 to a GET, and the generic check reported
-            # that 400 as success -- so the test passed with no valid token. See
-            # attack_telemetry.test_connection.
-            from attack_telemetry import test_connection as _cf_test
-            result = await _cf_test(cfg)
         elif name == "IPinfo":
             # Real Lite-tier lookup of a known IP, not a reachability ping.
             from ipinfo import test_connection as _ipinfo_test
@@ -322,9 +323,8 @@ async def test_integration(integration_id: str, user: dict = Depends(require_rol
 
 
 async def _generic_reachability_check(cfg: dict) -> dict:
-    """Best-effort live reachability probe for non-OpenCTI connectors: any HTTP
-    response (even 401/403 -- some APIs reject a bare GET but that still proves the
-    host is reachable) counts as reachable; connection failures do not. Detects a
+    """Best-effort live probe for connectors without a dedicated test: 2xx/3xx
+    (or 405) pass; 4xx/5xx and connection failures fail (#48). Detects a
     Cloudflare Access login redirect the same way the OpenCTI check does, since any
     connector could sit behind CF Access."""
     import httpx
@@ -343,7 +343,23 @@ async def _generic_reachability_check(cfg: dict) -> dict:
             loc = r.headers.get("location", "")
             if "cloudflareaccess.com" in loc or "/cdn-cgi/access/login" in loc:
                 return {"ok": False, "message": "Redirecting to Cloudflare Access login — add a CF Access service token (and make sure it's attached to the Application's policy) or disable Access on this route."}
-        return {"ok": True, "message": f"Endpoint reachable (HTTP {r.status_code})."}
+        code = r.status_code
+        # #48: "any HTTP response = success" let a 400/401/403/404 pass the Test.
+        # Only a 2xx/3xx -- or a 405 (host is up, just won't take a bare GET) --
+        # counts; everything else is reported as the failure it is.
+        if code < 400:
+            return {"ok": True, "message": f"Endpoint reachable (HTTP {code})."}
+        if code == 405:
+            return {"ok": True, "message": ("Endpoint reachable (HTTP 405: it doesn't accept a bare GET), "
+                                             "but the credential could not be verified by this probe.")}
+        if code in (401, 403):
+            return {"ok": False, "message": f"Endpoint reachable but the credential was rejected (HTTP {code})."}
+        if code == 404:
+            return {"ok": False, "message": "Endpoint host answered but the path was not found (HTTP 404) -- check the URL."}
+        if code == 400:
+            return {"ok": False, "message": ("Endpoint answered HTTP 400 to the test request -- the URL may point at "
+                                              "an API that needs a specific request; this is not a successful test.")}
+        return {"ok": False, "message": f"Endpoint returned HTTP {code}: {r.text[:300]}"}
     except httpx.TimeoutException:
         return {"ok": False, "message": "Connection timed out — check the endpoint URL and that the server is reachable from this host."}
     except httpx.ConnectError as e:

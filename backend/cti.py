@@ -515,11 +515,12 @@ async def scan_typosquats(db, domain: str, max_checks: int = 300) -> dict:
             ips = await asyncio.to_thread(_resolve, name)
         if not ips:
             return
-        existing = await db.cti_typosquats.find_one({"domain_candidate": name}, {"_id": 0})
+        # keyed per owned domain (#47): one candidate can shadow two of our domains
+        existing = await db.cti_typosquats.find_one({"domain": domain, "domain_candidate": name}, {"_id": 0})
         doc = {"domain": domain, "domain_candidate": name, "ips": ips,
                "last_seen_at": _now_iso(), "resolves": True}
         if existing:
-            await db.cti_typosquats.update_one({"domain_candidate": name}, {"$set": doc})
+            await db.cti_typosquats.update_one({"domain": domain, "domain_candidate": name}, {"$set": doc})
             registered.append({**existing, **doc})
             return
         doc.update({"id": str(uuid.uuid4()), "first_seen_at": _now_iso(), "status": "new"})

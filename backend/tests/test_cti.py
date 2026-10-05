@@ -334,12 +334,18 @@ run(db.cti_typosquats.insert_one({
     "id": "sq-verizon", "domain": "verizon.com", "domain_candidate": "verlzon.com",
     "resolves": True, "ips": ["203.0.113.9"], "status": "new", "first_seen_at": "2026-01-01T00:00:00Z"}))
 
-# no domain param -> everything (the All/grouped view)
+# no domain param -> every OWNED domain (the All/grouped view). verizon.com is
+# not in the owned registry, so its stray rows must not leak in (#47 second pass).
 all_items = client.get("/api/v1/cti/typosquats").json()["items"]
 bases_all = {i["domain"] for i in all_items}
-assert "eaglecounty.com" in bases_all and "verizon.com" in bases_all
-print("PASS: GET /v1/cti/typosquats with no domain returns lookalikes of ALL owned domains (the "
-      "grouped view)")
+assert "eaglecounty.com" in bases_all and "verizon.com" not in bases_all, bases_all
+print("PASS: GET /v1/cti/typosquats with no domain returns lookalikes of owned domains only")
+assert client.get("/api/v1/cti/typosquats", params={"domain": "verizon.com"}).json()["items"] == []
+r = client.post("/api/v1/cti/typosquats/scan", json={"domain": "verizon.com"})
+assert r.status_code == 400 and "not an owned domain" in r.json()["detail"], r.text
+ov = client.get("/api/v1/cti/overview").json()
+assert ov["typosquats_registered"] == len(all_items), (ov["typosquats_registered"], len(all_items))
+print("PASS: scans and counts are restricted to owned domains")
 
 # domain param -> only that domain's lookalikes
 scoped = client.get("/api/v1/cti/typosquats", params={"domain": "eaglecounty.com"}).json()["items"]

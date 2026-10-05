@@ -138,6 +138,7 @@ export default function AlbertMonitoring() {
   const [anomalyAck, setAnomalyAck] = useState(() => {
     try { return localStorage.getItem("albert_anomaly_ack") || ""; } catch { return ""; }
   });
+  const [showAckedAnomalies, setShowAckedAnomalies] = useState(false);
   const fileRef = useRef(null);
   const alertsRef = useRef(null);
   const [uploading, setUploading] = useState(false);
@@ -503,11 +504,21 @@ export default function AlbertMonitoring() {
   const anomalyDays = new Set((stats?.anomalies || []).map(a => a.day));
   const anyFilterActive = q || severity || category || device || alertMessage || sourcePort || destPort;
 
-  const anomalyKey = (stats?.anomalies || []).map(a => `${a.day}:${a.category}:${a.count}`).join("|");
-  const anomalyDismissed = !!anomalyKey && anomalyAck === anomalyKey;
-  const dismissAnomalies = () => {
+  // #36: acknowledgement is stored server-side (shared across the team, with who/when);
+  // localStorage is only the optimistic fallback while the POST is in flight.
+  const anomalyList = stats?.anomalies || [];
+  const unackedAnomalies = anomalyList.filter(a => !a.acknowledged);
+  const anomalyKey = unackedAnomalies.map(a => `${a.day}:${a.category}`).join("|");
+  const anomalyDismissed = !showAckedAnomalies && anomalyList.length > 0
+    && (unackedAnomalies.length === 0 || anomalyAck === anomalyKey);
+  const lastAck = anomalyList.filter(a => a.acknowledged_by).sort((x, y) => String(y.acknowledged_at).localeCompare(String(x.acknowledged_at)))[0];
+  const dismissAnomalies = async () => {
+    setShowAckedAnomalies(false);
     setAnomalyAck(anomalyKey);
     try { localStorage.setItem("albert_anomaly_ack", anomalyKey); } catch { /* private mode */ }
+    try {
+      await api.post("/v1/admin/albert/anomalies/acknowledge", { keys: unackedAnomalies.map(a => `${a.day}:${a.category}`) });
+    } catch { toast.error("Acknowledged locally only -- could not save for the team"); }
   };
 
   return (
@@ -559,7 +570,14 @@ export default function AlbertMonitoring() {
             <StatCard label="Anomaly Days Flagged" value={stats?.anomalies?.length ?? 0} icon={Warning} tone={(stats?.anomalies?.length ?? 0) > 0 ? "red" : "slate"} />
           </div>
 
-          {stats?.anomalies?.length > 0 && !anomalyDismissed && (
+          {anomalyDismissed && (
+            <div className="text-[11px] text-slate-500 mb-3 flex items-center gap-1.5">
+              <Check size={12}/> {anomalyList.length} above-baseline anomal{anomalyList.length === 1 ? "y" : "ies"} acknowledged
+              {lastAck && <> by {lastAck.acknowledged_by}</>}.
+              <button onClick={() => setShowAckedAnomalies(true)} className="text-blue-400 hover:text-blue-300">Show</button>
+            </div>
+          )}
+          {anomalyList.length > 0 && !anomalyDismissed && (
             <div className="border border-red-500/30 bg-red-500/5 rounded-md p-3.5 mb-4">
               <div className="flex items-center gap-1.5 text-[11.5px] text-red-300 font-medium mb-2">
                 <Warning size={14} /> Above-baseline activity detected
