@@ -6,6 +6,7 @@ from typing import Optional
 
 from pdf_charts import severity_pie_chart, trend_line_chart, bar_chart, multi_series_bar_chart
 from routes.common import OPEN_STATUSES  # canonical open-status set (#60)
+from routes.common import parse_dt  # BSON-datetime-safe parsing
 
 
 REPORT_CATALOG = [
@@ -251,7 +252,7 @@ async def run_prebuilt(db, report_id: str, fmt: str):
                                        {"_id": 0}).sort("due_at", 1).to_list(2000)
         rows = [{"cve": f.get("cve"), "title": f.get("title"), "severity": f.get("severity"),
                  "asset": f.get("asset_hostname"), "owner": f.get("owner_team"),
-                 "due_at": f.get("due_at"), "days_overdue": (datetime.now(timezone.utc) - datetime.fromisoformat(f["due_at"].replace("Z","+00:00"))).days if f.get("due_at") else None}
+                 "due_at": f.get("due_at"), "days_overdue": (datetime.now(timezone.utc) - parse_dt(f["due_at"])).days if parse_dt(f.get("due_at")) else None}
                 for f in items]
         if fmt == "csv":
             return _csv_response(rows, ["cve", "title", "severity", "asset", "owner", "due_at", "days_overdue"], "overdue-critical-high")

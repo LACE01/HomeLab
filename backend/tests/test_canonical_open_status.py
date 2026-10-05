@@ -15,7 +15,7 @@ def a(c,m=""): assert c,m
 now=datetime.now(timezone.utc); iso=lambda d:d.isoformat()
 
 # static guard: no module may define its own literal open list again
-lit=re.compile(r'\[\s*["\']New["\'],\s*["\']Needs triage["\'],\s*["\']Valid["\'],\s*["\']Reopened["\']')
+lit=re.compile(r'[\[\(]\s*["\']New["\'],\s*["\']Needs triage["\'],\s*["\']Valid["\'],\s*["\']Reopened["\']')  # lists AND tuples
 offenders=[str(p) for p in pathlib.Path(".").rglob("*.py")
            if not str(p).startswith("tests/") and str(p)!="routes/common.py"
            and any(lit.search(l) and "REMAINING_OPEN" not in l for l in p.read_text().splitlines())]

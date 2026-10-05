@@ -8,6 +8,7 @@ Plus: Critical Indicators panel + Empirical percentile (cohort-based).
 """
 from datetime import datetime, timezone
 import math
+from routes.common import parse_dt  # BSON-datetime-safe parsing
 
 
 CRITICALITY_NUM = {"crown_jewel": 1.0, "critical": 0.85, "high": 0.65, "medium": 0.45, "low": 0.25}
@@ -24,7 +25,9 @@ def _recency_weight(first_seen_iso: str | None) -> float:
     if not first_seen_iso:
         return 0.5
     try:
-        dt = datetime.fromisoformat(first_seen_iso.replace("Z", "+00:00"))
+        dt = parse_dt(first_seen_iso)
+        if dt is None:
+            return 0.5
         days = max(0, (datetime.now(timezone.utc) - dt).days)
         # 1.0 at age 0, decays to ~0.2 over 90 days
         return max(0.2, math.exp(-days / 45))

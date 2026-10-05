@@ -42,18 +42,27 @@ export default function TrendChart({
   const [chartType, setChartType] = useState(defaultChartType);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);      // #16: an error is NOT "no findings"
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
+    // #16: ignore responses from superseded requests -- a slow earlier request (e.g.
+    // the previous host, or the previous range) used to land after the current one
+    // and overwrite it. And a failed request now shows an error + retry instead of
+    // the misleading "No findings in this range".
+    let current = true;
     setLoading(true);
+    setError(null);
     const range = RANGE_OPTIONS.find(r => r.value === days) || RANGE_OPTIONS[1];
     const params = { days, granularity: range.granularity, group_by: groupBy, ...filters };
     if (showPatches) params.include_patches = true;
     api.get("/v1/charts/findings-timeseries", { params })
-      .then(r => setData(r.data))
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
+      .then(r => { if (current) setData(r.data); })
+      .catch(e => { if (current) { setData(null); setError(e.response?.data?.detail || e.message || "Request failed"); } })
+      .finally(() => { if (current) setLoading(false); });
+    return () => { current = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupBy, days, showPatches, JSON.stringify(filters)]);
+  }, [groupBy, days, showPatches, JSON.stringify(filters), reloadKey]);
 
   const tickFmt = (s) => s ? s.slice(5) : s;
   const patchesAvailable = showPatches && data && data.patches_total != null;
@@ -82,6 +91,12 @@ export default function TrendChart({
       <div className="p-3" style={{ height }}>
         {loading ? (
           <div className="h-full flex items-center justify-center text-[12px] text-slate-500">Loading…</div>
+        ) : error ? (
+          <div className="h-full flex flex-col items-center justify-center gap-2 text-[12px] text-red-300">
+            <div>Couldn't load this chart: {String(error).slice(0, 140)}</div>
+            <button onClick={() => setReloadKey(k => k + 1)}
+              className="px-2.5 py-1 border border-[#30363D] rounded text-slate-300 hover:bg-slate-500/10">Retry</button>
+          </div>
         ) : !data || data.total === 0 ? (
           <div className="h-full flex items-center justify-center text-[12px] text-slate-500">No findings in this range.</div>
         ) : (

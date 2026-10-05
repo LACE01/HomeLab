@@ -183,3 +183,21 @@ async def dedupe_post(coll, scope: dict, author: str, text: str, insert_fn, *,
         for k in [k for k, l in _POST_LOCKS.items() if not l.locked()][:1000]:
             _POST_LOCKS.pop(k, None)
     return doc, False
+
+
+def parse_dt(value):
+    """Aware UTC datetime from an ISO string, a native BSON datetime, or a date --
+    None if empty/unparseable. Real Mongo stores timestamps as datetimes while most
+    of this app writes ISO strings, so `value.replace("Z", ...)` / `datetime < str`
+    blow up (or get swallowed and silently drop data) on mixed collections."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if hasattr(value, "year") and not isinstance(value, str):
+        return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+    try:
+        d = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None

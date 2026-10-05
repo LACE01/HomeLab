@@ -22,6 +22,7 @@ from db import db
 from rbac import require_module
 from auth_utils import get_current_user, require_role
 from routes.common import now_iso, _clean
+from routes.common import parse_dt  # BSON-datetime-safe parsing
 
 router = APIRouter()
 
@@ -239,8 +240,8 @@ async def list_exceptions(user: dict = Depends(get_current_user), status: Option
         e.setdefault("finding_count", len(e["finding_ids"]))
         e.setdefault("target_type", "finding")
         if e.get("status") == "active" and e.get("expires_at"):
-            e["days_until_expiry"] = max(0, (datetime.fromisoformat(e["expires_at"].replace("Z", "+00:00"))
-                                              - datetime.now(timezone.utc)).days)
+            _exp = parse_dt(e["expires_at"])
+            e["days_until_expiry"] = max(0, (_exp - datetime.now(timezone.utc)).days) if _exp else None
         if e.get("status") == "pending_approval":
             chain = e.get("approval_chain") or _fresh_approval_chain(DEFAULT_CHAIN)
             cur = _current_pending_step(chain)
@@ -331,7 +332,7 @@ def compute_accepted_risk_score(exc: dict, finding: Optional[dict], asset: Optio
     approved_at = exc.get("approved_at")
     if approved_at:
         try:
-            days_active = max(0, (datetime.now(timezone.utc) - datetime.fromisoformat(approved_at.replace("Z", "+00:00"))).days)
+            days_active = max(0, (datetime.now(timezone.utc) - parse_dt(approved_at)).days)
         except Exception:
             days_active = 0
     time_factor = 1 + min(days_active / 365, 1.0) * 0.35  # up to +35% after a year outstanding
@@ -688,8 +689,8 @@ async def get_exception(exception_id: str, user: dict = Depends(get_current_user
     exc.setdefault("finding_ids", fids)
     exc.setdefault("finding_count", len(fids))
     if exc.get("status") == "active" and exc.get("expires_at"):
-        exc["days_until_expiry"] = max(0, (datetime.fromisoformat(exc["expires_at"].replace("Z", "+00:00"))
-                                            - datetime.now(timezone.utc)).days)
+        _exp = parse_dt(exc["expires_at"])
+        exc["days_until_expiry"] = max(0, (_exp - datetime.now(timezone.utc)).days) if _exp else None
     ticket = await db.tickets.find_one({"id": exc.get("ticket_id")}, {"_id": 0}) if exc.get("ticket_id") else None
     timeline = await db.activity_log.find(
         {"entity_type": "exception", "entity_id": exception_id}, {"_id": 0}
@@ -822,7 +823,8 @@ async def check_exception_expirations(db) -> dict:
             continue
         f = await db.findings.find_one({"id": exc.get("finding_id")}, {"_id": 0})
         recipient = exc.get("contact_email") or exc.get("requested_by")
-        days_left = max(0, (datetime.fromisoformat(exc["expires_at"].replace("Z", "+00:00")) - datetime.now(timezone.utc)).days)
+        _exp = parse_dt(exc.get("expires_at"))
+        days_left = max(0, (_exp - datetime.now(timezone.utc)).days) if _exp else 0
         try:
             await dispatch("exception_expiring", {
                 "title": exc.get("finding_title") or (f or {}).get("title", exc.get("finding_id")),

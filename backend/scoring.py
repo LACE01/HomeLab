@@ -13,7 +13,7 @@ SEVERITY_BASELINE = {"Critical": 90, "High": 70, "Medium": 50, "Low": 30, "Info"
 
 def _parse_dt(value):
     if isinstance(value, datetime):
-        return value
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     if isinstance(value, str):
         try:
             return datetime.fromisoformat(value.replace("Z", "+00:00"))

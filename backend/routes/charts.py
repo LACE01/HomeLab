@@ -10,6 +10,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends
 
 from db import db
+from routes.common import OPEN_STATUSES
 from auth_utils import get_current_user
 
 router = APIRouter()
@@ -79,78 +80,85 @@ async def findings_timeseries(
     if status:
         flt["status"] = status
 
-    raw_counts: dict = {}       # {group_key: total_count} -- used to pick top-N for cwe/source_tool
-    bucketed: dict = {}         # {date_str: {group_key: count}}
+    def _parse(raw):
+        """Date from an ISO string OR a native BSON datetime (#16). The old version did
+        (raw or "").replace(...), which throws on a datetime; the exception was
+        swallowed, the timestamp read as missing, and the finding silently vanished
+        from the chart -- so hosts whose findings were stored as real datetimes
+        showed "No findings" while others rendered fine."""
+        if raw is None:
+            return None
+        if isinstance(raw, datetime):
+            return (raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)).astimezone(timezone.utc).date()
+        if hasattr(raw, "year") and hasattr(raw, "month") and not isinstance(raw, str):
+            return raw   # a date
+        try:
+            return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).date()
+        except Exception:
+            return None
+
+    # Axis first (gap-free; weekly buckets align to Monday) so presence windows can be
+    # mapped straight to bucket indexes.
+    if granularity == "week":
+        start_date = now_date - timedelta(days=days)
+        axis_start = start_date - timedelta(days=start_date.weekday())
+        end_monday = now_date - timedelta(days=now_date.weekday())
+        dates = []
+        d = axis_start
+        while d <= end_monday:
+            dates.append(d.isoformat())
+            d += timedelta(days=7)
+        def _idx(day):
+            return ((day - timedelta(days=day.weekday())) - axis_start).days // 7
+    else:
+        axis_start = since_date
+        dates = [(since_date + timedelta(days=i)).isoformat() for i in range(days + 1)]
+        def _idx(day):
+            return (day - axis_start).days
+    n = len(dates)
+
+    raw_counts: dict = {}   # {group_key: findings present at any point in range}
+    diffs: dict = {}        # {group_key: difference array over bucket indexes}
 
     cursor = db.findings.find(
         flt, {"_id": 0, "first_seen_at": 1, "last_seen_at": 1, "last_changed_at": 1, "imported_at": 1,
               "severity": 1, "status": 1, "cwe": 1, "source_tool": 1}
     )
-
-    def _parse(raw):
-        try:
-            return datetime.fromisoformat((raw or "").replace("Z", "+00:00")).date()
-        except Exception:
-            return None
-
     async for f in cursor:
-        first_date = _parse(f.get("first_seen_at"))
+        # Missing/malformed first_seen_at falls back to other timestamps so the finding
+        # still lands somewhere instead of vanishing (the original #9 gap).
+        first_date = (_parse(f.get("first_seen_at")) or _parse(f.get("last_changed_at"))
+                      or _parse(f.get("imported_at")))
         if first_date is None:
-            # A malformed/missing first_seen_at used to just `continue` here --
-            # silently dropping the finding from EVERY date on the chart, forever,
-            # while it still showed up completely normally on the Findings list
-            # (which never parses this field). If an importer starts writing a bad
-            # first_seen_at for a given host/severity from some point onward, this
-            # is exactly what it looks like on the chart: the series quietly drops
-            # to 0 and stays there, even though the findings are still open and
-            # visible everywhere else -- the reported "data gap" bug. Fall back to
-            # whatever other timestamp IS present so the finding still shows up
-            # somewhere reasonable instead of vanishing outright.
-            first_date = _parse(f.get("last_changed_at")) or _parse(f.get("imported_at"))
-            if first_date is None:
-                continue  # truly no usable timestamp at all -- can't place it anywhere
-        # last_seen_at is refreshed every time a rescan reconfirms a finding is still
-        # present, so it's the best available signal for "how long was this actually
-        # open" -- falls back to first_seen_date for a finding that's only ever been
-        # seen once (last_seen_at missing or equal to first_seen_at).
-        last_raw = f.get("last_seen_at") or f.get("first_seen_at")
-        try:
-            last_date = datetime.fromisoformat((last_raw or "").replace("Z", "+00:00")).date()
-        except Exception:
-            last_date = first_date
+            continue
+        last_date = _parse(f.get("last_seen_at")) or first_date
         if last_date < first_date:
-            last_date = first_date  # guard against bad/out-of-order data
-        # A finding in an open state is, by definition, still present TODAY -- its
-        # last_seen_at only reflects the last time a rescan happened to reconfirm
-        # it. One-shot import sources (Nmap/Nikto/web-scan uploads, manual imports)
-        # never refresh last_seen_at at all, and a host that dropped out of scan
-        # scope stops getting refreshes -- either way the open finding's window
-        # quietly ended in the past and it vanished from the chart while the
-        # findings table right below still showed it open (the per-host "chart says
-        # No findings but the table has rows" bug). Presence of an open finding
-        # extends to now, full stop; closed findings keep their historical window.
-        if f.get("status") in ("New", "Needs triage", "Valid", "Reopened", "Fixed pending validation"):
+            last_date = first_date
+        # An open finding is present TODAY regardless of when a rescan last refreshed
+        # last_seen_at (one-shot imports never refresh it).
+        if f.get("status") in OPEN_STATUSES:
             last_date = now_date
-        # Skip findings whose entire presence window falls outside the requested
-        # range (e.g. something closed well before `since`, or -- pathological but
-        # cheap to guard -- first seen after "now").
         if last_date < since_date or first_date > now_date:
             continue
-
         key = _group_key(f, group_by)
         raw_counts[key] = raw_counts.get(key, 0) + 1
+        a = max(0, _idx(max(first_date, since_date)))
+        b = min(n - 1, _idx(min(last_date, now_date)))
+        if a > b:
+            continue
+        arr = diffs.get(key)
+        if arr is None:
+            arr = diffs[key] = [0] * (n + 1)
+        arr[a] += 1          # a contiguous presence window covers a contiguous run of
+        arr[b + 1] -= 1      # buckets (days, or the weeks it touches) -> O(1) per finding
 
-        window_start = max(first_date, since_date)
-        window_end = min(last_date, now_date)
-        prev_bucket = None
-        d = window_start
-        while d <= window_end:
-            bucket = (d - timedelta(days=d.weekday())).isoformat() if granularity == "week" else d.isoformat()
-            if bucket != prev_bucket:
-                bucketed.setdefault(bucket, {})
-                bucketed[bucket][key] = bucketed[bucket].get(key, 0) + 1
-                prev_bucket = bucket
-            d += timedelta(days=1)
+    bucketed: dict = {}
+    for key, arr in diffs.items():
+        run = 0
+        for i in range(n):
+            run += arr[i]
+            if run:
+                bucketed.setdefault(dates[i], {})[key] = run
 
     # Keep the legend readable for high-cardinality dimensions (CWE, source tool) --
     # top 6 by volume, everything else rolled into "Other".
@@ -169,23 +177,6 @@ async def findings_timeseries(
     else:
         keys = sorted(raw_counts, key=lambda k: -raw_counts[k])
 
-    # Build a gap-free date axis -- zero-count days still show up as zero, not a
-    # missing point, so the trend line doesn't misleadingly jump. For weekly
-    # granularity this must align to the same Monday-of-week convention used above,
-    # or the axis and the data buckets never match up.
-    if granularity == "week":
-        start_date = now_date - timedelta(days=days)
-        start_monday = start_date - timedelta(days=start_date.weekday())
-        end_monday = now_date - timedelta(days=now_date.weekday())
-        dates = []
-        d = start_monday
-        while d <= end_monday:
-            dates.append(d.isoformat())
-            d += timedelta(days=7)
-    else:
-        dates = [(now_date - timedelta(days=i)).isoformat() for i in range(days + 1)]
-        dates.sort()
-
     # Optional "patches applied" overlay -- a count of patch groups (see
     # nightly.sweep_patch_completions) that finished resolving on each day/week in
     # range, so you can visually correlate patch cadence against the vuln-count
@@ -198,9 +189,8 @@ async def findings_timeseries(
         if asset_id:
             patch_flt["asset_id"] = asset_id
         async for p in db.patches_applied.find(patch_flt, {"_id": 0, "resolved_at": 1}):
-            try:
-                r_date = datetime.fromisoformat(p["resolved_at"].replace("Z", "+00:00")).date()
-            except Exception:
+            r_date = _parse(p.get("resolved_at"))
+            if r_date is None:
                 continue
             bucket = (r_date - timedelta(days=r_date.weekday())).isoformat() if granularity == "week" else r_date.isoformat()
             patches_by_date[bucket] = patches_by_date.get(bucket, 0) + 1
