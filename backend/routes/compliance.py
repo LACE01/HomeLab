@@ -66,7 +66,7 @@ async def export_compliance_pdf(user: dict = Depends(get_current_user)):
                  c["status"].replace("_", " ").title()] for c in summary["controls"]]
         elements.append(theme.styled_table(
             ["Control", "Name", "Crit", "High", "Med", "Low", "Status"], rows,
-            col_widths=[42, 168, 32, 32, 32, 32, 58], numeric_cols=(2, 3, 4, 5)))
+            col_widths=[48, 176, 34, 34, 34, 34, 60], numeric_cols=(2, 3, 4, 5)))
 
     if summary["unmapped_clean_controls"]:
         elements.append(Paragraph("Controls with no findings currently mapped", styles["h2"]))
@@ -76,7 +76,8 @@ async def export_compliance_pdf(user: dict = Depends(get_current_user)):
     if summary["nist_functions"]:
         elements.append(Paragraph("NIST CSF 2.0 Functions", styles["h2"]))
         rows2 = [[f"{n['function']} — {n['label']}", n["critical"], n["high"], n["total"]] for n in summary["nist_functions"]]
-        elements.append(theme.styled_table(["Function", "Critical", "High", "Total Open"], rows2, numeric_cols=(1, 2, 3)))
+        elements.append(theme.styled_table(["Function", "Critical", "High", "Total Open"], rows2, numeric_cols=(1, 2, 3),
+                                             col_widths=[250, 70, 70, 70]))
 
     if summary.get("pci_dss_requirements"):
         pci_coverage_str = f"{summary['pci_dss_coverage_pct']}%" if summary.get("pci_dss_coverage_pct") is not None else "—"
@@ -84,8 +85,8 @@ async def export_compliance_pdf(user: dict = Depends(get_current_user)):
         rows_pci = [[c["id"].replace("PCI-", "Req "), c["name"], c["critical"], c["high"], c["medium"], c["low"],
                      c["status"].replace("_", " ").title()] for c in summary["pci_dss_requirements"]]
         elements.append(theme.styled_table(
-            ["Requirement", "Name", "Crit", "High", "Med", "Low", "Status"], rows_pci,
-            col_widths=[48, 162, 32, 32, 32, 32, 58], numeric_cols=(2, 3, 4, 5)))
+            ["Req.", "Name", "Crit", "High", "Med", "Low", "Status"], rows_pci,
+            col_widths=[62, 154, 34, 34, 34, 34, 68], numeric_cols=(2, 3, 4, 5)))
         if summary.get("unmapped_clean_pci_dss"):
             elements.append(Spacer(1, 6))
             elements.append(Paragraph(
@@ -105,7 +106,7 @@ async def export_compliance_pdf(user: dict = Depends(get_current_user)):
                   c["status"].replace("_", " ").title()]
                  for c in operational_controls]
         elements.append(theme.styled_table(["Control", "ISO 27001", "SOC 2", "PCI-DSS", "Status"], rows3,
-                                             col_widths=[150, 62, 55, 55, 88]))
+                                             col_widths=[160, 72, 64, 64, 100]))
 
     theme.build(doc, elements)
     buffer.seek(0)

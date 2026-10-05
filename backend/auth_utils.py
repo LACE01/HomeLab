@@ -131,6 +131,20 @@ async def get_current_user(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
+def is_super_admin(user: dict) -> bool:
+    """Item 73 -- super-admin is a flag ON TOP of the admin role, for the few
+    actions that should be rarer than ordinary admin work (deleting a
+    remediation campaign). Granted per user (users.super_admin, settable only by
+    another super-admin) or bootstrapped via SUPER_ADMIN_EMAILS (comma list)."""
+    import os
+    if not user or user.get("role") != "admin":
+        return False
+    if user.get("super_admin"):
+        return True
+    env = {e.strip().lower() for e in os.environ.get("SUPER_ADMIN_EMAILS", "").split(",") if e.strip()}
+    return (user.get("email") or "").lower() in env
+
+
 def require_role(*roles: str):
     async def checker(user: dict = Depends(get_current_user)):
         if user.get("role") not in roles and user.get("role") != "admin":

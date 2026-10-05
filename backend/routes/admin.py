@@ -76,6 +76,7 @@ class UserUpdate(BaseModel):
     active: Optional[bool] = None
     password: Optional[str] = None
     must_change_password: Optional[bool] = None
+    super_admin: Optional[bool] = None   # item 73: only a super-admin may grant/revoke
 
 
 @router.patch("/v1/admin/users/{user_id}")
@@ -104,6 +105,14 @@ async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(requi
                 if dupe:
                     raise HTTPException(409, "Email already in use by another user")
                 update["email"] = new_email
+        elif k == "super_admin":
+            from auth_utils import is_super_admin
+            actor_full = await db.users.find_one({"id": user.get("id")}, {"_id": 0}) or user
+            if not is_super_admin(actor_full):
+                raise HTTPException(403, "Only a super-admin can grant or revoke super-admin")
+            if not v and existing.get("id") == user.get("id"):
+                raise HTTPException(400, "You can't revoke your own super-admin flag")
+            update["super_admin"] = bool(v)
         elif k == "teams":
             teams = list(dict.fromkeys(t for t in (v or []) if t))
             update["teams"] = teams

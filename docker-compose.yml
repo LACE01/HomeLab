@@ -38,6 +38,7 @@ services:
       MONGO_URL: mongodb://mongo:27017
       DB_NAME: ${DB_NAME:-vulnops}
       JWT_SECRET: ${JWT_SECRET}
+      SUPER_ADMIN_EMAILS: ${SUPER_ADMIN_EMAILS:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
@@ -112,6 +113,7 @@ services:
       MONGO_URL: mongodb://mongo:27017
       DB_NAME: ${DB_NAME:-vulnops}
       JWT_SECRET: ${JWT_SECRET}
+      SUPER_ADMIN_EMAILS: ${SUPER_ADMIN_EMAILS:-}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
       # Leave WORKER_KINDS unset to handle every job kind. Set it to run a
       # dedicated worker for slow scan types, e.g. WORKER_KINDS=nmap_scan,easm_scan

@@ -122,6 +122,7 @@ MODULE_REGISTRY = [
     # --- Reports & Compliance ---
     {"key": "/reports", "label": "Reports", "group": "Reports & Compliance"},
     {"key": "/compliance", "label": "Compliance", "group": "Reports & Compliance"},
+    {"key": "/wstg", "label": "OWASP WSTG Library", "group": "Reports & Compliance"},
     {"key": "/risk-register", "label": "Risk Register", "group": "Reports & Compliance"},
     {"key": "/security-reviews", "label": "Security Reviews", "group": "Reports & Compliance"},
     {"key": "/threat-modeling", "label": "Threat Modeling", "group": "Reports & Compliance"},

@@ -54,6 +54,18 @@ body {
 @layer base {
   * { @apply border-border; }
   body { @apply bg-background text-foreground; }
+  /* Item 14: browsers give checkboxes/radios an asymmetric default margin
+     (Chrome: 3px 3px 3px 4px) that knocks them off-centre in every
+     `flex items-center gap-2` label row across the app. Normalize once. */
+  input[type="checkbox"], input[type="radio"] {
+    margin: 0;
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    vertical-align: middle;
+    accent-color: #3b82f6;
+    cursor: pointer;
+  }
 }
 
 /* Table density */

@@ -1,58 +1,58 @@
-import { useState, useRef, useEffect, Children, isValidElement } from "react";
-import { NavLink, useNavigate, Link } from "react-router-dom";
+import { useState, useRef, useEffect } from "react";
+import { NavLink, useNavigate, Link, useLocation } from "react-router-dom";
 import { useAuth } from "@/lib/auth";
-import {
-  ChartLineUp, ListChecks, HardDrives, Stack, Lightning, Ticket,
-  ShieldCheck, PlugsConnected, FileArrowDown, GearSix, SignOut, Database,
-  UsersThree, Bell, ShareNetwork, BookOpen, Robot, Globe, Certificate, Package, MagnifyingGlass, ClipboardText, SlackLogo, Heartbeat, HardDrive, Notepad, Virus, FlowArrow,
-  CaretDown, LockKey, CalendarBlank, FirstAidKit, Siren, SlidersHorizontal, Devices, Binoculars, Gauge, WebhooksLogo, Archive, Broadcast, Warning,
-  Buildings, At, CalendarX, Cube, Key, Flask, Target,
-} from "@phosphor-icons/react";
+import { CaretDown, SignOut, Devices, Binoculars, MagnifyingGlass } from "@phosphor-icons/react";
+import { SECTIONS, sectionForPath } from "@/lib/navRegistry";
 
-const COLLAPSE_KEY = "vulnops.sidebar.collapsedGroups";
-const loadCollapsed = () => {
-  try { return JSON.parse(localStorage.getItem(COLLAPSE_KEY) || "{}"); } catch { return {}; }
+// Item 40: which sections the user has opened by hand. The section containing the
+// current page is always open regardless, so you never lose your place.
+const OPEN_KEY = "vulnops.sidebar.openSections";
+const loadOpen = () => {
+  try { return JSON.parse(localStorage.getItem(OPEN_KEY) || "{}"); } catch { return {}; }
 };
 
-const NavItem = ({ to, icon: Icon, label, testid }) => {
-  const { canAccess } = useAuth();
-  // Module key == route path (see backend/rbac.py) -- hide nav items a role's Role
-  // Access config doesn't grant, so the sidebar reflects what the backend will
-  // actually let this user do rather than just letting them click into a 403.
-  if (!canAccess(to)) return null;
-  return (
-    <NavLink
-      to={to}
-      end={to === "/"}
-      data-testid={testid}
-      className={({ isActive }) =>
-        `flex items-center gap-2.5 px-3 py-1.5 rounded-md text-[13px] transition-colors duration-150 ${
-          isActive
-            ? "bg-blue-500/10 text-blue-300 border-l-2 border-blue-400"
-            : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
-        }`
-      }
-    >
-      <Icon size={16} weight="duotone" />
-      {label}
-    </NavLink>
-  );
-};
+const NavItem = ({ to, icon: Icon, label, testid }) => (
+  <NavLink
+    to={to}
+    end={to === "/" || to === "/admin"}
+    data-testid={testid}
+    className={({ isActive }) =>
+      `flex items-center gap-2 pl-8 pr-3 py-1 rounded-md text-[12.5px] transition-colors duration-150 ${
+        isActive
+          ? "bg-blue-500/10 text-blue-300"
+          : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+      }`
+    }
+  >
+    <Icon size={14} weight="duotone" className="shrink-0" />
+    <span className="truncate">{label}</span>
+  </NavLink>
+);
 
-const Group = ({ title, children, collapsed, onToggle }) => {
-  // NavItem hides itself (returns null) for modules the user's role can't access --
-  // if every item in a group got hidden that way, don't show an empty collapsible
-  // section with nothing under it.
-  const visibleCount = Children.toArray(children).filter(isValidElement).length;
-  if (visibleCount === 0) return null;
+// One top-level entry. Clicking the label goes to the section's first page the
+// user can access (and opens it); the caret just opens/closes. Two levels max.
+const Section = ({ section, items, open, active, onToggle, onEnter }) => {
+  const Icon = section.icon;
   return (
-    <div className="mb-4">
-      <button onClick={onToggle}
-        className="w-full flex items-center justify-between px-3 mb-1.5 text-[10px] uppercase tracking-wider text-slate-600 hover:text-slate-400 font-mono">
-        <span>{title}</span>
-        <CaretDown size={10} className={`transition-transform ${collapsed ? "-rotate-90" : ""}`}/>
-      </button>
-      {!collapsed && <div className="flex flex-col gap-0.5">{children}</div>}
+    <div className="mb-0.5">
+      <div className={`flex items-center rounded-md ${active ? "text-slate-100" : "text-slate-400"} hover:bg-slate-800/40`}>
+        <button type="button" data-testid={`nav-section-${section.key}`} onClick={onEnter}
+          className="flex-1 min-w-0 flex items-center gap-2.5 px-3 py-1.5 text-[13px] text-left">
+          <Icon size={16} weight="duotone" className={active ? "text-blue-400" : ""} />
+          <span className="truncate">{section.label}</span>
+        </button>
+        {items.length > 1 && (
+          <button type="button" onClick={onToggle} aria-label={`${open ? "Collapse" : "Expand"} ${section.label}`}
+            className="px-2 py-1.5 text-slate-600 hover:text-slate-300">
+            <CaretDown size={10} className={`transition-transform ${open ? "" : "-rotate-90"}`} />
+          </button>
+        )}
+      </div>
+      {open && items.length > 1 && (
+        <div className="flex flex-col gap-0.5 mt-0.5 mb-1">
+          {items.map((i) => <NavItem key={i.to} {...i} />)}
+        </div>
+      )}
     </div>
   );
 };
@@ -70,13 +70,15 @@ const Group = ({ title, children, collapsed, onToggle }) => {
 const SCROLL_KEY = "vulnops_sidebar_scroll";
 
 export default function Sidebar() {
-  const { user, logout } = useAuth();
+  const { user, logout, canAccess } = useAuth();
   const nav = useNavigate();
-  const [collapsed, setCollapsed] = useState(loadCollapsed());
+  const location = useLocation();
+  const [openMap, setOpenMap] = useState(loadOpen());
   const navRef = useRef(null);
-  const toggleGroup = (key) => setCollapsed(prev => {
-    const next = { ...prev, [key]: !prev[key] };
-    localStorage.setItem(COLLAPSE_KEY, JSON.stringify(next));
+  const activeKey = sectionForPath(location.pathname);
+  const setOpen = (key, val) => setOpenMap(prev => {
+    const next = { ...prev, [key]: val };
+    try { localStorage.setItem(OPEN_KEY, JSON.stringify(next)); } catch { /* private mode */ }
     return next;
   });
 
@@ -84,6 +86,11 @@ export default function Sidebar() {
     const saved = sessionStorage.getItem(SCROLL_KEY);
     if (saved && navRef.current) navRef.current.scrollTop = parseInt(saved, 10) || 0;
   }, []);
+
+  // Role-gated: only pages this role can open; sections with none are hidden.
+  const visible = SECTIONS
+    .map((sec) => ({ sec, items: sec.items.filter((i) => canAccess(i.to)) }))
+    .filter((x) => x.items.length > 0);
 
   return (
     <aside data-testid="sidebar" className="w-60 shrink-0 bg-[#0D1117] border-r border-[#30363D] flex flex-col h-screen sticky top-0">
@@ -101,87 +108,16 @@ export default function Sidebar() {
         <span className="flex items-center gap-2 text-[12.5px]"><MagnifyingGlass size={14}/> Search…</span>
         <kbd className="text-[10px] font-mono border border-[#30363D] rounded px-1">⌘K</kbd>
       </button>
-      <nav ref={navRef} onScroll={(e) => sessionStorage.setItem(SCROLL_KEY, String(e.currentTarget.scrollTop))} className="flex-1 overflow-y-auto py-3 px-2">
-        <Group title="Overview" collapsed={!!collapsed["Overview"]} onToggle={()=>toggleGroup("Overview")}>
-          <NavItem to="/" icon={ChartLineUp} label="Dashboard" testid="nav-dashboard" />
-          <NavItem to="/soc" icon={Gauge} label="SOC Overview" testid="nav-soc" />
-          <NavItem to="/operational" icon={Lightning} label="Team Dashboards" testid="nav-operational" />
-        </Group>
-        <Group title="Vulnerability Management" collapsed={!!collapsed["Vulnerability Management"]} onToggle={()=>toggleGroup("Vulnerability Management")}>
-          <NavItem to="/findings" icon={ListChecks} label="Findings" testid="nav-findings" />
-          <NavItem to="/attack-paths" icon={ShareNetwork} label="Attack Paths" testid="nav-attack-paths" />
-          <NavItem to="/exposure" icon={Globe} label="Exposure" testid="nav-exposure" />
-          <NavItem to="/app-inventory" icon={Cube} label="Application Inventory" testid="nav-app-inventory" />
-          <NavItem to="/remediation-campaigns" icon={Target} label="Remediation Campaigns" testid="nav-remediation" />
-          <NavItem to="/admin/tls-certs" icon={Certificate} label="TLS Certificates" testid="nav-tls-certs" />
-          <NavItem to="/admin/email-auth" icon={At} label="Email Authentication" testid="nav-email-auth" />
-          <NavItem to="/admin/eol-tracking" icon={CalendarX} label="End-of-Life Software" testid="nav-eol-tracking" />
-          <NavItem to="/admin/container-scan" icon={Cube} label="Container Image Scanning" testid="nav-container-scan" />
-          <NavItem to="/admin/secrets-scan" icon={Key} label="Secrets Scanning" testid="nav-secrets-scan" />
-          <NavItem to="/easm" icon={MagnifyingGlass} label="Attack Surface" testid="nav-easm" />
-          <NavItem to="/tickets" icon={Ticket} label="Tickets" testid="nav-tickets" />
-          <NavItem to="/exceptions" icon={ShieldCheck} label="Exceptions" testid="nav-exceptions" />
-          <NavItem to="/admin/playbooks" icon={BookOpen} label="Playbooks" testid="nav-playbooks" />
-          <NavItem to="/automation" icon={Robot} label="Automation" testid="nav-automation" />
-        </Group>
-        <Group title="Detection & Response" collapsed={!!collapsed["Detection & Response"]} onToggle={()=>toggleGroup("Detection & Response")}>
-          <NavItem to="/alerts" icon={Siren} label="Security Alerts" testid="nav-alerts" />
-          <NavItem to="/admin/threat-intel" icon={Binoculars} label="Threat Intel Watchlist" testid="nav-threat-intel" />
-          <NavItem to="/admin/albert" icon={Broadcast} label="Albert Network Monitoring" testid="nav-albert" />
-          <NavItem to="/world-monitor" icon={Globe} label="World Monitor" testid="nav-world-monitor" />
-          <NavItem to="/geo-forecast" icon={Flask} label="Geo-Forecast (Experimental)" testid="nav-geo-forecast" />
-          <NavItem to="/ir/wizard" icon={FirstAidKit} label="Triage Wizard" testid="nav-ir-wizard" />
-          <NavItem to="/ir/cases" icon={Siren} label="IR Cases" testid="nav-ir-cases" />
-          <NavItem to="/admin/ir-setup" icon={SlidersHorizontal} label="IR Setup" testid="nav-ir-setup" />
-        </Group>
-        <Group title="Asset Inventory" collapsed={!!collapsed["Asset Inventory"]} onToggle={()=>toggleGroup("Asset Inventory")}>
-          <NavItem to="/assets" icon={HardDrives} label="Assets" testid="nav-assets" />
-          <NavItem to="/products" icon={Stack} label="Products" testid="nav-products" />
-          <NavItem to="/engagements" icon={Lightning} label="Engagements" testid="nav-engagements" />
-          <NavItem to="/directory" icon={UsersThree} label="Directory" testid="nav-directory" />
-        </Group>
-        <Group title="Scanning & Integrations" collapsed={!!collapsed["Scanning & Integrations"]} onToggle={()=>toggleGroup("Scanning & Integrations")}>
-          <NavItem to="/integrations" icon={PlugsConnected} label="Connectors" testid="nav-integrations" />
-          <NavItem to="/imports" icon={Database} label="Import Jobs" testid="nav-imports" />
-          <NavItem to="/admin/web-scans" icon={Database} label="Web Scan Uploads" testid="nav-web-scans" />
-          <NavItem to="/admin/nmap-scans" icon={Database} label="Nmap Scan Uploads" testid="nav-nmap-scans" />
-          <NavItem to="/admin/nikto-scans" icon={Globe} label="Web App Scans (Nikto)" testid="nav-nikto-scans" />
-          <NavItem to="/admin/recon-osint" icon={MagnifyingGlass} label="Recon & OSINT" testid="nav-recon-osint" />
-          <NavItem to="/admin/cti" icon={Virus} label="CTI &amp; OSINT Hub" testid="nav-cti-hub" />
-          <NavItem to="/attack-telemetry" icon={Lightning} label="Attack Telemetry" testid="nav-attack-telemetry" />
-          <NavItem to="/admin/criticality-scoring" icon={Stack} label="Criticality Scoring" testid="nav-criticality-scoring" />
-          <NavItem to="/admin/sbom" icon={Package} label="SBOM / Dependencies" testid="nav-sbom" />
-          <NavItem to="/admin/yara" icon={Virus} label="YARA Scanning" testid="nav-yara" />
-          <NavItem to="/admin/scan-schedule" icon={CalendarBlank} label="Scan Schedule" testid="nav-scan-schedule" />
-          <NavItem to="/admin/splunk" icon={Database} label="Splunk" testid="nav-splunk" />
-          <NavItem to="/admin/wazuh" icon={ShieldCheck} label="Wazuh" testid="nav-wazuh" />
-          <NavItem to="/admin/ticketing" icon={WebhooksLogo} label="Ticketing / SOAR" testid="nav-ticketing" />
-        </Group>
-        <Group title="Reports & Compliance" collapsed={!!collapsed["Reports & Compliance"]} onToggle={()=>toggleGroup("Reports & Compliance")}>
-          <NavItem to="/reports" icon={FileArrowDown} label="Reports" testid="nav-reports" />
-          <NavItem to="/compliance" icon={ClipboardText} label="Compliance" testid="nav-compliance" />
-          <NavItem to="/risk-register" icon={Warning} label="Risk Register" testid="nav-risk-register" />
-          <NavItem to="/security-reviews" icon={ClipboardText} label="Security Reviews" testid="nav-security-reviews" />
-          <NavItem to="/threat-modeling" icon={FlowArrow} label="Threat Modeling" testid="nav-threat-modeling" />
-          <NavItem to="/vendors" icon={Buildings} label="Vendor & Third-Party Risk" testid="nav-vendors" />
-        </Group>
-        <Group title="Administration" collapsed={!!collapsed["Administration"]} onToggle={()=>toggleGroup("Administration")}>
-          <NavItem to="/admin" icon={GearSix} label="Admin" testid="nav-admin" />
-          <NavItem to="/admin/settings" icon={GearSix} label="Settings" testid="nav-settings" />
-          <NavItem to="/admin/users" icon={UsersThree} label="Users" testid="nav-users" />
-          <NavItem to="/admin/teams" icon={UsersThree} label="Teams" testid="nav-teams" />
-          <NavItem to="/admin/notifications" icon={Bell} label="Notifications" testid="nav-notifications" />
-          <NavItem to="/admin/chatops" icon={SlackLogo} label="ChatOps" testid="nav-chatops" />
-          <NavItem to="/admin/health" icon={Heartbeat} label="System Health" testid="nav-health" />
-          <NavItem to="/admin/backups" icon={HardDrive} label="Backups" testid="nav-backups" />
-          <NavItem to="/admin/retention" icon={Archive} label="Data Retention" testid="nav-retention" />
-          <NavItem to="/admin/audit-log" icon={Notepad} label="Audit Log" testid="nav-audit-log" />
-          <NavItem to="/admin/assignment-rules" icon={GearSix} label="Assignment Rules" testid="nav-rules" />
-          <NavItem to="/admin/ownership" icon={GearSix} label="Ownership Map" testid="nav-ownership" />
-          <NavItem to="/admin/sla-policies" icon={ShieldCheck} label="SLA Policies" testid="nav-sla" />
-          <NavItem to="/admin/approval-routing" icon={FlowArrow} label="Approval Routing" testid="nav-approval-routing" />
-          <NavItem to="/admin/rbac" icon={LockKey} label="Role Access" testid="nav-rbac" />
-        </Group>
+      <nav ref={navRef} data-testid="sidebar-nav" onScroll={(e) => sessionStorage.setItem(SCROLL_KEY, String(e.currentTarget.scrollTop))} className="flex-1 overflow-y-auto py-3 px-2">
+        {visible.map(({ sec, items }) => {
+          const isActive = sec.key === activeKey;
+          const isOpen = isActive || !!openMap[sec.key];
+          return (
+            <Section key={sec.key} section={sec} items={items} active={isActive} open={isOpen}
+              onToggle={() => setOpen(sec.key, !isOpen)}
+              onEnter={() => { setOpen(sec.key, true); if (!isActive) nav(items[0].to); }} />
+          );
+        })}
       </nav>
 
       <div className="border-t border-[#30363D] p-3">

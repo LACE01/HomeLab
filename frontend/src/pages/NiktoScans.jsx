@@ -1,3 +1,4 @@
+import ToggleSwitch from "@/components/ToggleSwitch";
 import { useEffect, useState, useRef } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
@@ -202,10 +203,10 @@ function ScanConfigRow({ cfg, running, onRun, onEdit, onDelete, onToggle, onRetr
             className="h-8 px-2.5 text-[11.5px] bg-blue-500/10 hover:bg-blue-500/20 disabled:opacity-40 text-blue-300 rounded inline-flex items-center gap-1.5 border border-blue-500/30">
             <Play size={13}/> Run now
           </button>
-          <button onClick={onToggle} title={cfg.enabled ? "Disable schedule" : "Enable schedule"}
-            className="h-8 w-8 flex items-center justify-center text-slate-500 hover:text-slate-200 rounded border border-[#30363D]">
-            {cfg.enabled ? <CheckCircle size={14}/> : <XCircle size={14}/>}
-          </button>
+          <span className="h-8 px-1.5 inline-flex items-center rounded border border-[#30363D]">
+            <ToggleSwitch size="sm" checked={!!cfg.enabled} onChange={onToggle}
+              title={cfg.enabled ? "Schedule on — click to disable" : "Schedule off — click to enable"} label="Schedule enabled"/>
+          </span>
           <button onClick={onEdit} className="h-8 w-8 flex items-center justify-center text-slate-500 hover:text-slate-200 rounded border border-[#30363D]">
             <PencilSimple size={14}/>
           </button>

@@ -463,6 +463,77 @@ function CreateModal({ onClose, onCreated }) {
   );
 }
 
+// #73: edit a campaign after creation. Field edits and scope edits are logged to
+// the campaign timeline server-side (before -> after), and removing findings
+// also removes them from the baseline so "To patch" stays honest.
+function EditCampaignModal({ c, onClose, onSaved, onDeleted }) {
+  const [name, setName] = useState(c.name || "");
+  const [description, setDescription] = useState(c.description || "");
+  const [due, setDue] = useState((c.due_date || "").slice(0, 10));
+  const [assignees, setAssignees] = useState((c.assignees || []).join(", "));
+  const [ticket, setTicket] = useState(c.change_ticket || "");
+  const [verify, setVerify] = useState(!!c.require_verification);
+  const [busy, setBusy] = useState(false);
+  const [confirmText, setConfirmText] = useState("");
+  const save = async () => {
+    if (!name.trim()) { toast.error("Name can't be blank"); return; }
+    setBusy(true);
+    try {
+      await api.patch(`/v1/remediation-campaigns/${c.id}`, {
+        name: name.trim(), description, due_date: due || null,
+        assignees: assignees.split(",").map(x => x.trim()).filter(Boolean),
+        change_ticket: ticket, require_verification: verify,
+      });
+      toast.success("Campaign updated"); onSaved();
+    } catch (e) { toast.error(e.response?.data?.detail || "Update failed"); }
+    finally { setBusy(false); }
+  };
+  const del = async () => {
+    setBusy(true);
+    try {
+      const r = await api.delete(`/v1/remediation-campaigns/${c.id}`);
+      toast.success(`Campaign deleted — ${r.data.findings_untouched} findings untouched`);
+      onDeleted();
+    } catch (e) { toast.error(e.response?.data?.detail || "Delete failed"); setBusy(false); }
+  };
+  const inp = "w-full h-8 px-2 bg-[#161B22] border border-[#30363D] rounded text-[12px] text-slate-200";
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="w-full max-w-lg bg-[#0D1117] border border-[#30363D] rounded-md p-5 space-y-3" onClick={e => e.stopPropagation()}>
+        <div className="text-[14px] text-slate-100 font-medium">Edit campaign</div>
+        <label className="block text-[11px] text-slate-400">Name<input className={inp} value={name} onChange={e => setName(e.target.value)} /></label>
+        <label className="block text-[11px] text-slate-400">Description
+          <textarea className={`${inp} h-16 py-1`} value={description} onChange={e => setDescription(e.target.value)} /></label>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="block text-[11px] text-slate-400">Due date<input type="date" className={inp} value={due} onChange={e => setDue(e.target.value)} /></label>
+          <label className="block text-[11px] text-slate-400">Change ticket<input className={inp} value={ticket} onChange={e => setTicket(e.target.value)} /></label>
+        </div>
+        <label className="block text-[11px] text-slate-400">Assignees (emails, comma-separated)
+          <input className={inp} value={assignees} onChange={e => setAssignees(e.target.value)} /></label>
+        <label className="flex items-center gap-2 text-[12px] text-slate-300">
+          <input type="checkbox" checked={verify} onChange={e => setVerify(e.target.checked)} /> Require scan verification before close
+        </label>
+        <div className="text-[11px] text-slate-500">To change scope, add findings from the Findings page or remove them from the Findings tab — both recalculate the baseline and appear on the timeline.</div>
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} className="h-8 px-3 text-[12px] text-slate-400 rounded border border-[#30363D]">Cancel</button>
+          <button onClick={save} disabled={busy} className="h-8 px-4 text-[12px] bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-white rounded">{busy ? "Saving…" : "Save"}</button>
+        </div>
+        {c.viewer_can_delete && (
+          <div className="border-t border-[#30363D] pt-3 mt-2">
+            <div className="text-[12px] text-red-300 mb-1">Delete campaign (super-admin)</div>
+            <div className="text-[11px] text-slate-500 mb-2">Removes the campaign wrapper only — its {(c.finding_ids || []).length} findings are not changed. The campaign and timeline are archived and the deletion is audit-logged. Type the campaign name to confirm.</div>
+            <div className="flex gap-2">
+              <input className={inp} placeholder={c.name} value={confirmText} onChange={e => setConfirmText(e.target.value)} />
+              <button onClick={del} disabled={busy || confirmText !== c.name}
+                className="h-8 px-3 shrink-0 text-[12px] rounded border border-red-500/40 text-red-300 hover:bg-red-500/10 disabled:opacity-40">Delete</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function CampaignDetail({ id, onBack }) {
   const { user } = useAuth();
   const isAdmin = ["admin","manager"].includes(user?.role);
@@ -478,6 +549,7 @@ function CampaignDetail({ id, onBack }) {
   const [fStat, setFStat] = useState([]);  // status facet
   const [burn, setBurn] = useState([]);
   const [report, setReport] = useState(null);
+  const [editing, setEditing] = useState(false);   // #73
   const load = async () => { try { const r = await api.get(`/v1/remediation-campaigns/${id}`); setC(r.data); } catch { toast.error("Failed to load"); } };
   useEffect(() => { load(); api.get(`/v1/remediation-campaigns/${id}/burndown`).then(r=>setBurn(r.data.series||[])).catch(()=>{}); /* eslint-disable-next-line */ }, [id]);
   if (!c) return <Layout title="Campaign"><div className="text-[12px] text-slate-500">Loading…</div></Layout>;
@@ -617,11 +689,14 @@ function CampaignDetail({ id, onBack }) {
         <button onClick={exportCsv} className="h-8 px-3 text-[12px] border border-[#30363D] rounded text-slate-300">Export CSV</button>
         <button onClick={openReport} className="h-8 px-3 text-[12px] border border-[#30363D] rounded text-slate-300">Report</button>
         {isAdmin && c.status!=="closed" && <button onClick={notifyAssignees} className="h-8 px-3 text-[12px] border border-[#30363D] rounded text-slate-300">Notify assignees</button>}
+        {(c.viewer_can_edit || c.viewer_can_delete) && <button onClick={()=>setEditing(true)} className="h-8 px-3 text-[12px] border border-[#30363D] rounded text-slate-300">Edit</button>}
         {isAdmin && c.status!=="closed" && <button onClick={close} className="h-8 px-3 text-[12px] border border-[#30363D] rounded text-slate-300">Close</button>}
         <button onClick={onBack} className="h-8 px-3 text-[12px] border border-[#30363D] rounded text-slate-300 inline-flex items-center gap-1"><CaretLeft size={13}/> Back</button>
       </>}>
 
       {report && <ReportModal report={report} onClose={()=>setReport(null)}/>}
+      {editing && <EditCampaignModal c={c} onClose={()=>setEditing(false)}
+        onSaved={()=>{ setEditing(false); load(); }} onDeleted={()=>{ setEditing(false); onBack(); }}/>}
       <div className="flex items-center gap-2 mb-3 max-w-7xl">
         <Bar2 pct={p.percent_complete}/><span className="text-[12px] text-slate-300 w-10 text-right">{p.percent_complete}%</span>
       </div>
@@ -704,7 +779,7 @@ function CampaignDetail({ id, onBack }) {
                   {(c.activity||[]).slice(0,8).map((a,i)=>(
                     <div key={i} className="text-[11px] flex gap-2">
                       <span className="text-slate-500 shrink-0 w-14">{a.at?new Date(a.at).toLocaleDateString(undefined,{month:"short",day:"numeric"}):""}</span>
-                      <span className="text-slate-300"><span className="text-slate-400">{a.actor||"system"}</span> · {(a.detail||a.action||"").slice(0,80)}</span>
+                      <span className="text-slate-300"><span className="text-slate-400">{a.actor||"system"}</span> · <span title={a.detail||a.action||""}>{(a.detail||a.action||"").slice(0,80)}</span></span>
                     </div>
                   ))}
                 </div>

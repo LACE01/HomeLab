@@ -4,6 +4,7 @@ import Layout from "@/components/Layout";
 import { Chip } from "@/components/Badges";
 import { Plus, Trash, PencilSimple, X } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { useAuth } from "@/lib/auth";
 
 // Fallback only -- overwritten as soon as /v1/admin/roles responds. Kept so the
 // dropdown still shows something sane if that call is slow or fails, rather than
@@ -17,6 +18,8 @@ export default function Users() {
   const [roleOptions, setRoleOptions] = useState(DEFAULT_ROLES);
   const [editing, setEditing] = useState(null);  // user object being edited, or "new"
   const [form, setForm] = useState({});
+  const { user: me } = useAuth();
+  const iAmSuper = !!me?.super_admin;   // item 73: only super-admins see/grant the flag
   const load = () => api.get("/v1/admin/users").then(r => setItems(r.data.items));
   useEffect(() => { load(); }, []);
   useEffect(() => { api.get("/v1/admin/teams").then(r => setTeamOptions((r.data.items||[]).map(t=>t.name))).catch(()=>{}); }, []);
@@ -27,7 +30,8 @@ export default function Users() {
   // table below since a lot of other pages still read it for a quick display, but
   // it's derived server-side from teams[0] and never edited directly here anymore.
   const openNew = () => { setEditing("new"); setForm({email:"", name:"", role:"analyst", teams:[], department:"", password:"", must_change_password:true}); };
-  const openEdit = (u) => { setEditing(u); setForm({email:u.email||"", name:u.name||"", role:u.role, teams:u.teams||(u.team?[u.team]:[]), department:u.department||"", active:u.active!==false, password:""}); };
+  const openEdit = (u) => { setEditing(u); setForm({email:u.email||"", name:u.name||"", role:u.role, teams:u.teams||(u.team?[u.team]:[]), department:u.department||"", active:u.active!==false, password:"",
+    ...(iAmSuper ? { super_admin: !!u.super_admin } : {})}); };
   const close = () => setEditing(null);
   const toggleTeam = (name) => {
     const cur = form.teams || [];
@@ -138,6 +142,12 @@ export default function Users() {
               {editing !== "new" && (
                 <label className="flex items-center gap-2 text-[12px]">
                   <input type="checkbox" checked={form.active!==false} onChange={(e)=>setForm({...form, active:e.target.checked})}/> Active
+                </label>
+              )}
+              {editing !== "new" && iAmSuper && form.role === "admin" && (
+                <label className="flex items-center gap-2 text-[12px]">
+                  <input type="checkbox" checked={!!form.super_admin} onChange={(e)=>setForm({...form, super_admin:e.target.checked})}/>
+                  Super-admin <span className="text-[10.5px] text-slate-500">(can delete remediation campaigns)</span>
                 </label>
               )}
             </div>

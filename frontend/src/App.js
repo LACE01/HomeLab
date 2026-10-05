@@ -44,6 +44,7 @@ import SecretsScanning from "@/pages/SecretsScanning";
 import SbomUpload from "@/pages/SbomUpload";
 import Easm from "@/pages/Easm";
 import Compliance from "@/pages/Compliance";
+import Wstg from "@/pages/Wstg";
 import ChatOps from "@/pages/ChatOps";
 import OpsHealth from "@/pages/OpsHealth";
 import Backups from "@/pages/Backups";
@@ -173,6 +174,7 @@ const AppRouter = () => {
       <Route path="/admin/yara" element={<Protected module="/admin/yara"><Yara/></Protected>}/>
       <Route path="/easm" element={<Protected module="/easm"><Easm/></Protected>}/>
       <Route path="/compliance" element={<Protected module="/compliance"><Compliance/></Protected>}/>
+      <Route path="/wstg" element={<Protected module="/wstg"><Wstg/></Protected>}/>
       <Route path="/risk-register" element={<Protected module="/risk-register"><RiskRegister/></Protected>}/>
       <Route path="/risk-register/:id" element={<Protected module="/risk-register"><RiskDetail/></Protected>}/>
       <Route path="/security-reviews" element={<Protected module="/security-reviews"><SecurityReviews/></Protected>}/>

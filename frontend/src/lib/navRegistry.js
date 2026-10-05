@@ -1,90 +1,128 @@
-// One list of every place you can navigate to, and the single source of truth
-// for both the sidebar and the Cmd-K command palette.
+// One list of every place you can navigate to -- the single source of truth for
+// the sidebar AND the Cmd-K command palette (item 40).
 //
-// WHY A REGISTRY
-//
-// The sidebar had the full nav list hard-coded in JSX. Adding a command palette
-// meant either duplicating that list (which drifts -- a page added to one and not
-// the other) or deriving both from one place. This is that place. A test asserts
-// every route the sidebar links to appears here, so they cannot silently diverge.
-//
-// `keywords` exist so the palette finds a page by what people CALL it, not only by
-// its label: someone typing "edr" should find Directory/Defender, "dmarc" should
-// find Email Authentication, "cve" should find Findings. A jump-to that only
-// matches the visible label is barely faster than reading the sidebar.
+// ITEM 40 -- IA overhaul. The sidebar was ~66 flat links in 7 groups, hard-coded
+// in Sidebar.jsx and already drifting from this registry (Remediation Campaigns,
+// Application Inventory and Geo-Forecast were missing from the palette). Now:
+//   * 12 top-level SECTIONS, two levels max (section -> page)
+//   * the Sidebar renders FROM this file, so the two can no longer diverge
+//   * visibility is role-gated per page (canAccess); a section with no
+//     accessible pages disappears entirely
+// `keywords` let the palette find a page by what people CALL it ("dmarc" ->
+// Email Authentication, "cve" -> Findings), not only by its label.
+import {
+  Archive, At, Bell, Binoculars, BookOpen, Broadcast, Buildings, CalendarBlank, CalendarX, Certificate, ChartLineUp, ClipboardText, Cube, Database, FileArrowDown, FirstAidKit, Flask, FlowArrow, Gauge, GearSix, Globe, HardDrive, HardDrives, Heartbeat, Key, Lightning, ListChecks, LockKey, MagnifyingGlass, Notepad, Package, PlugsConnected, Robot, ShareNetwork, ShieldCheck, Siren, SlackLogo, SlidersHorizontal, Stack, Target, Ticket, UsersThree, Virus, Warning, WebhooksLogo,
+} from "@phosphor-icons/react";
 
-export const NAV = [
-  // group, label, path, keywords
-  { group: "Overview", label: "Dashboard", to: "/", keywords: "home overview kpi metrics" },
-  { group: "Overview", label: "SOC Overview", to: "/soc", keywords: "soc operations center live" },
-  { group: "Overview", label: "Team Dashboards", to: "/operational", keywords: "team operational per-team" },
-
-  { group: "Vulnerability Management", label: "Findings", to: "/findings", keywords: "vulnerabilities cve qid vulns issues" },
-  { group: "Vulnerability Management", label: "Attack Paths", to: "/attack-paths", keywords: "graph lateral movement crown jewel chokepoint" },
-  { group: "Vulnerability Management", label: "Exposure", to: "/exposure", keywords: "internet facing external exposed" },
-  { group: "Vulnerability Management", label: "TLS Certificates", to: "/admin/tls-certs", keywords: "ssl cert expiry certificate https" },
-  { group: "Vulnerability Management", label: "Email Authentication", to: "/admin/email-auth", keywords: "spf dkim dmarc email spoofing" },
-  { group: "Vulnerability Management", label: "End-of-Life Software", to: "/admin/eol-tracking", keywords: "eol eos obsolete unsupported end of life" },
-  { group: "Vulnerability Management", label: "Container Image Scanning", to: "/admin/container-scan", keywords: "docker trivy image container sbom" },
-  { group: "Vulnerability Management", label: "Secrets Scanning", to: "/admin/secrets-scan", keywords: "secrets credentials leak git repo detect-secrets" },
-  { group: "Vulnerability Management", label: "Attack Surface", to: "/easm", keywords: "easm subdomain discovery crt.sh external" },
-  { group: "Vulnerability Management", label: "Tickets", to: "/tickets", keywords: "remediation jira servicenow work" },
-  { group: "Vulnerability Management", label: "Exceptions", to: "/exceptions", keywords: "risk accepted exception waiver" },
-  { group: "Vulnerability Management", label: "Playbooks", to: "/admin/playbooks", keywords: "runbook procedure response steps" },
-  { group: "Vulnerability Management", label: "Automation", to: "/automation", keywords: "rules automation soar workflow" },
-
-  { group: "Detection & Response", label: "Security Alerts", to: "/alerts", keywords: "alerts events detections siem" },
-  { group: "Detection & Response", label: "Threat Intel Watchlist", to: "/admin/threat-intel", keywords: "ioc indicator threatfox watchlist opencti" },
-  { group: "Detection & Response", label: "Albert Network Monitoring", to: "/admin/albert", keywords: "albert ids ms-isac network sensor" },
-  { group: "Detection & Response", label: "World Monitor", to: "/world-monitor", keywords: "world monitor global events situational awareness ransomware kev news geopolitical board" },
-  { group: "Detection & Response", label: "Triage Wizard", to: "/ir/wizard", keywords: "incident triage wizard classify" },
-  { group: "Detection & Response", label: "IR Cases", to: "/ir/cases", keywords: "incident response case investigation" },
-  { group: "Detection & Response", label: "IR Setup", to: "/admin/ir-setup", keywords: "incident response configuration playbook" },
-
-  { group: "Asset Inventory", label: "Assets", to: "/assets", keywords: "hosts devices machines inventory endpoints" },
-  { group: "Asset Inventory", label: "Products", to: "/products", keywords: "software applications products services" },
-  { group: "Asset Inventory", label: "Engagements", to: "/engagements", keywords: "scans runs imports scan history" },
-  { group: "Asset Inventory", label: "Directory", to: "/directory", keywords: "users groups entra edr defender intune identity" },
-
-  { group: "Scanning & Integrations", label: "Connectors", to: "/integrations", keywords: "integrations connectors api qualys nessus defender" },
-  { group: "Scanning & Integrations", label: "Import Jobs", to: "/imports", keywords: "import upload csv xlsx jobs" },
-  { group: "Scanning & Integrations", label: "Web Scan Uploads", to: "/admin/web-scans", keywords: "web scan upload" },
-  { group: "Scanning & Integrations", label: "Nmap Scan Uploads", to: "/admin/nmap-scans", keywords: "nmap port scan network" },
-  { group: "Scanning & Integrations", label: "Web App Scans (Nikto)", to: "/admin/nikto-scans", keywords: "nikto web app scanner" },
-  { group: "Scanning & Integrations", label: "Recon & OSINT", to: "/admin/recon-osint", keywords: "recon-ng osint reconnaissance" },
-  { group: "Scanning & Integrations", label: "CTI & OSINT Hub", to: "/admin/cti", keywords: "cti threat intel opencti articles feeds osint" },
-  { group: "Scanning & Integrations", label: "Attack Telemetry", to: "/attack-telemetry", keywords: "cloudflare telemetry waf edge traffic" },
-  { group: "Scanning & Integrations", label: "Criticality Scoring", to: "/admin/criticality-scoring", keywords: "criticality asset importance scoring" },
-  { group: "Scanning & Integrations", label: "SBOM / Dependencies", to: "/admin/sbom", keywords: "sbom dependencies cyclonedx spdx components" },
-  { group: "Scanning & Integrations", label: "YARA Scanning", to: "/admin/yara", keywords: "yara malware rules" },
-  { group: "Scanning & Integrations", label: "Scan Schedule", to: "/admin/scan-schedule", keywords: "schedule cron scan timing" },
-  { group: "Scanning & Integrations", label: "Splunk", to: "/admin/splunk", keywords: "splunk saved search siem" },
-  { group: "Scanning & Integrations", label: "Wazuh", to: "/admin/wazuh", keywords: "wazuh indexer siem edr" },
-  { group: "Scanning & Integrations", label: "Ticketing / SOAR", to: "/admin/ticketing", keywords: "jira servicenow soar webhook ticketing" },
-
-  { group: "Reports & Compliance", label: "Reports", to: "/reports", keywords: "report export pdf docx executive" },
-  { group: "Reports & Compliance", label: "Compliance", to: "/compliance", keywords: "soc2 iso27001 pci nist cis framework compliance" },
-  { group: "Reports & Compliance", label: "Risk Register", to: "/risk-register", keywords: "risk register enterprise risk" },
-  { group: "Reports & Compliance", label: "Security Reviews", to: "/security-reviews", keywords: "vendor review assessment questionnaire security review" },
-  { group: "Reports & Compliance", label: "Threat Modeling", to: "/threat-modeling", keywords: "stride threat model dfd" },
-  { group: "Reports & Compliance", label: "Vendor & Third-Party Risk", to: "/vendors", keywords: "vendor third party supplier tprm" },
-
-  { group: "Administration", label: "Admin", to: "/admin", keywords: "administration settings" },
-  { group: "Administration", label: "Settings", to: "/admin/settings", keywords: "settings preferences feature flags configuration" },
-  { group: "Administration", label: "Users", to: "/admin/users", keywords: "users accounts people access" },
-  { group: "Administration", label: "Teams", to: "/admin/teams", keywords: "teams groups org" },
-  { group: "Administration", label: "Notifications", to: "/admin/notifications", keywords: "notifications email alerts digest" },
-  { group: "Administration", label: "ChatOps", to: "/admin/chatops", keywords: "slack teams chatops chat" },
-  { group: "Administration", label: "System Health", to: "/admin/health", keywords: "health status loops connectors observability uptime" },
-  { group: "Administration", label: "Backups", to: "/admin/backups", keywords: "backup restore export database" },
-  { group: "Administration", label: "Data Retention", to: "/admin/retention", keywords: "retention purge data lifecycle" },
-  { group: "Administration", label: "Audit Log", to: "/admin/audit-log", keywords: "audit log activity history" },
-  { group: "Administration", label: "Assignment Rules", to: "/admin/assignment-rules", keywords: "assignment ownership routing rules" },
-  { group: "Administration", label: "Ownership Map", to: "/admin/ownership", keywords: "ownership team mapping" },
-  { group: "Administration", label: "SLA Policies", to: "/admin/sla-policies", keywords: "sla policy due date deadline" },
-  { group: "Administration", label: "Approval Routing", to: "/admin/approval-routing", keywords: "approval routing workflow authorization" },
-  { group: "Administration", label: "Role Access", to: "/admin/rbac", keywords: "rbac role access permissions" },
+export const SECTIONS = [
+  { key: "dashboards", label: "Dashboards", icon: ChartLineUp, items: [
+    { label: "Dashboard", to: "/", icon: ChartLineUp, testid: "nav-dashboard", keywords: "home overview kpi metrics" },
+    { label: "SOC Overview", to: "/soc", icon: Gauge, testid: "nav-soc", keywords: "soc operations center live" },
+    { label: "Team Dashboards", to: "/operational", icon: Lightning, testid: "nav-operational", keywords: "team operational per-team" },
+  ] },
+  { key: "findings", label: "Findings", icon: ListChecks, items: [
+    { label: "Findings", to: "/findings", icon: ListChecks, testid: "nav-findings", keywords: "vulnerabilities cve qid vulns issues" },
+    { label: "Attack Paths", to: "/attack-paths", icon: ShareNetwork, testid: "nav-attack-paths", keywords: "graph lateral movement crown jewel chokepoint" },
+    { label: "Exposure", to: "/exposure", icon: Globe, testid: "nav-exposure", keywords: "internet facing external exposed" },
+  ] },
+  { key: "remediation", label: "Remediation", icon: Target, items: [
+    { label: "Remediation Campaigns", to: "/remediation-campaigns", icon: Target, testid: "nav-remediation", keywords: "campaign patch tracker remediation burndown" },
+    { label: "Tickets", to: "/tickets", icon: Ticket, testid: "nav-tickets", keywords: "remediation jira servicenow work" },
+    { label: "Exceptions", to: "/exceptions", icon: ShieldCheck, testid: "nav-exceptions", keywords: "risk accepted exception waiver" },
+    { label: "Automation", to: "/automation", icon: Robot, testid: "nav-automation", keywords: "rules automation soar workflow" },
+    { label: "Playbooks", to: "/admin/playbooks", icon: BookOpen, testid: "nav-playbooks", keywords: "runbook procedure response steps" },
+  ] },
+  { key: "surface", label: "Attack Surface", icon: Globe, items: [
+    { label: "Attack Surface", to: "/easm", icon: MagnifyingGlass, testid: "nav-easm", keywords: "easm subdomain discovery crt.sh external" },
+    { label: "TLS Certificates", to: "/admin/tls-certs", icon: Certificate, testid: "nav-tls-certs", keywords: "ssl cert expiry certificate https" },
+    { label: "Email Authentication", to: "/admin/email-auth", icon: At, testid: "nav-email-auth", keywords: "spf dkim dmarc email spoofing" },
+    { label: "Attack Telemetry", to: "/attack-telemetry", icon: Lightning, testid: "nav-attack-telemetry", keywords: "cloudflare telemetry waf edge traffic" },
+    { label: "Recon & OSINT", to: "/admin/recon-osint", icon: MagnifyingGlass, testid: "nav-recon-osint", keywords: "recon-ng osint reconnaissance" },
+  ] },
+  { key: "detection", label: "Detection & Response", icon: Siren, items: [
+    { label: "Security Alerts", to: "/alerts", icon: Siren, testid: "nav-alerts", keywords: "alerts events detections siem" },
+    { label: "IR Cases", to: "/ir/cases", icon: Siren, testid: "nav-ir-cases", keywords: "incident response case investigation" },
+    { label: "Triage Wizard", to: "/ir/wizard", icon: FirstAidKit, testid: "nav-ir-wizard", keywords: "incident triage wizard classify" },
+    { label: "Albert Network Monitoring", to: "/admin/albert", icon: Broadcast, testid: "nav-albert", keywords: "albert ids ms-isac network sensor" },
+    { label: "IR Setup", to: "/admin/ir-setup", icon: SlidersHorizontal, testid: "nav-ir-setup", keywords: "incident response configuration playbook" },
+  ] },
+  { key: "intel", label: "Threat Intelligence", icon: Virus, items: [
+    { label: "CTI & OSINT Hub", to: "/admin/cti", icon: Virus, testid: "nav-cti-hub", keywords: "cti threat intel opencti articles feeds osint" },
+    { label: "Threat Intel Watchlist", to: "/admin/threat-intel", icon: Binoculars, testid: "nav-threat-intel", keywords: "ioc indicator threatfox watchlist opencti" },
+    { label: "World Monitor", to: "/world-monitor", icon: Globe, testid: "nav-world-monitor", keywords: "world monitor global events situational awareness ransomware kev news geopolitical board" },
+    { label: "Geo-Forecast (Experimental)", to: "/geo-forecast", icon: Flask, testid: "nav-geo-forecast", keywords: "pythia forecast experimental geo" },
+  ] },
+  { key: "assets", label: "Assets", icon: HardDrives, items: [
+    { label: "Assets", to: "/assets", icon: HardDrives, testid: "nav-assets", keywords: "hosts devices machines inventory endpoints" },
+    { label: "Products", to: "/products", icon: Stack, testid: "nav-products", keywords: "software applications products services" },
+    { label: "Application Inventory", to: "/app-inventory", icon: Cube, testid: "nav-app-inventory", keywords: "saas shadow it applications software inventory oauth" },
+    { label: "Directory", to: "/directory", icon: UsersThree, testid: "nav-directory", keywords: "users groups entra edr defender intune identity" },
+    { label: "End-of-Life Software", to: "/admin/eol-tracking", icon: CalendarX, testid: "nav-eol-tracking", keywords: "eol eos obsolete unsupported end of life" },
+    { label: "SBOM / Dependencies", to: "/admin/sbom", icon: Package, testid: "nav-sbom", keywords: "sbom dependencies cyclonedx spdx components" },
+    { label: "Criticality Scoring", to: "/admin/criticality-scoring", icon: Stack, testid: "nav-criticality-scoring", keywords: "criticality asset importance scoring" },
+  ] },
+  { key: "scanning", label: "Scanning", icon: MagnifyingGlass, items: [
+    { label: "Engagements", to: "/engagements", icon: Lightning, testid: "nav-engagements", keywords: "scans runs imports scan history" },
+    { label: "Import Jobs", to: "/imports", icon: Database, testid: "nav-imports", keywords: "import upload csv xlsx jobs" },
+    { label: "Scan Schedule", to: "/admin/scan-schedule", icon: CalendarBlank, testid: "nav-scan-schedule", keywords: "schedule cron scan timing" },
+    { label: "Web Scan Uploads", to: "/admin/web-scans", icon: Database, testid: "nav-web-scans", keywords: "web scan upload" },
+    { label: "Nmap Scan Uploads", to: "/admin/nmap-scans", icon: Database, testid: "nav-nmap-scans", keywords: "nmap port scan network" },
+    { label: "Web App Scans (Nikto)", to: "/admin/nikto-scans", icon: Globe, testid: "nav-nikto-scans", keywords: "nikto web app scanner" },
+    { label: "Container Image Scanning", to: "/admin/container-scan", icon: Cube, testid: "nav-container-scan", keywords: "docker trivy image container sbom" },
+    { label: "Secrets Scanning", to: "/admin/secrets-scan", icon: Key, testid: "nav-secrets-scan", keywords: "secrets credentials leak git repo detect-secrets" },
+    { label: "YARA Scanning", to: "/admin/yara", icon: Virus, testid: "nav-yara", keywords: "yara malware rules" },
+  ] },
+  { key: "integrations", label: "Integrations", icon: PlugsConnected, items: [
+    { label: "Connectors", to: "/integrations", icon: PlugsConnected, testid: "nav-integrations", keywords: "integrations connectors api qualys nessus defender" },
+    { label: "Splunk", to: "/admin/splunk", icon: Database, testid: "nav-splunk", keywords: "splunk saved search siem" },
+    { label: "Wazuh", to: "/admin/wazuh", icon: ShieldCheck, testid: "nav-wazuh", keywords: "wazuh indexer siem edr" },
+    { label: "Ticketing / SOAR", to: "/admin/ticketing", icon: WebhooksLogo, testid: "nav-ticketing", keywords: "jira servicenow soar webhook ticketing" },
+    { label: "ChatOps", to: "/admin/chatops", icon: SlackLogo, testid: "nav-chatops", keywords: "slack teams chatops chat" },
+  ] },
+  { key: "risk", label: "Risk & Reviews", icon: Warning, items: [
+    { label: "Risk Register", to: "/risk-register", icon: Warning, testid: "nav-risk-register", keywords: "risk register enterprise risk" },
+    { label: "Security Reviews", to: "/security-reviews", icon: ClipboardText, testid: "nav-security-reviews", keywords: "vendor review assessment questionnaire security review" },
+    { label: "Vendor & Third-Party Risk", to: "/vendors", icon: Buildings, testid: "nav-vendors", keywords: "vendor third party supplier tprm" },
+    { label: "Threat Modeling", to: "/threat-modeling", icon: FlowArrow, testid: "nav-threat-modeling", keywords: "stride threat model dfd" },
+  ] },
+  { key: "reports", label: "Reports & Compliance", icon: FileArrowDown, items: [
+    { label: "Reports", to: "/reports", icon: FileArrowDown, testid: "nav-reports", keywords: "report export pdf docx executive" },
+    { label: "Compliance", to: "/compliance", icon: ClipboardText, testid: "nav-compliance", keywords: "soc2 iso27001 pci nist cis framework compliance" },
+    { label: "OWASP WSTG Library", to: "/wstg", icon: ShieldCheck, testid: "nav-wstg", keywords: "owasp wstg web security testing guide methodology test cases pentest" },
+  ] },
+  { key: "admin", label: "Administration", icon: GearSix, items: [
+    { label: "Admin", to: "/admin", icon: GearSix, testid: "nav-admin", keywords: "administration settings" },
+    { label: "Settings", to: "/admin/settings", icon: GearSix, testid: "nav-settings", keywords: "settings preferences feature flags configuration" },
+    { label: "Users", to: "/admin/users", icon: UsersThree, testid: "nav-users", keywords: "users accounts people access" },
+    { label: "Teams", to: "/admin/teams", icon: UsersThree, testid: "nav-teams", keywords: "teams groups org" },
+    { label: "Role Access", to: "/admin/rbac", icon: LockKey, testid: "nav-rbac", keywords: "rbac role access permissions" },
+    { label: "Notifications", to: "/admin/notifications", icon: Bell, testid: "nav-notifications", keywords: "notifications email alerts digest" },
+    { label: "System Health", to: "/admin/health", icon: Heartbeat, testid: "nav-health", keywords: "health status loops connectors observability uptime" },
+    { label: "Backups", to: "/admin/backups", icon: HardDrive, testid: "nav-backups", keywords: "backup restore export database" },
+    { label: "Data Retention", to: "/admin/retention", icon: Archive, testid: "nav-retention", keywords: "retention purge data lifecycle" },
+    { label: "Audit Log", to: "/admin/audit-log", icon: Notepad, testid: "nav-audit-log", keywords: "audit log activity history" },
+    { label: "Assignment Rules", to: "/admin/assignment-rules", icon: GearSix, testid: "nav-rules", keywords: "assignment ownership routing rules" },
+    { label: "Ownership Map", to: "/admin/ownership", icon: GearSix, testid: "nav-ownership", keywords: "ownership team mapping" },
+    { label: "SLA Policies", to: "/admin/sla-policies", icon: ShieldCheck, testid: "nav-sla", keywords: "sla policy due date deadline" },
+    { label: "Approval Routing", to: "/admin/approval-routing", icon: FlowArrow, testid: "nav-approval-routing", keywords: "approval routing workflow authorization" },
+  ] },
 ];
+
+// Flat view for the palette (and anything else that wants "every page").
+export const NAV = SECTIONS.flatMap((s) => s.items.map((i) => ({ ...i, group: s.label, section: s.key })));
+
+// Which section owns a path: exact match first, then the longest matching
+// prefix (so /findings/123 belongs to Findings, /admin/users to Administration).
+export function sectionForPath(path) {
+  let best = null, bestLen = -1;
+  for (const s of SECTIONS) {
+    for (const i of s.items) {
+      if (i.to === path) return s.key;
+      if (i.to !== "/" && path.startsWith(i.to + "/") && i.to.length > bestLen) { best = s.key; bestLen = i.to.length; }
+    }
+  }
+  return best;
+}
 
 // A page can be found by its label, its group, or any of its keywords. Ranking:
 // an exact/prefix hit on the LABEL beats a keyword hit, so typing "find" surfaces

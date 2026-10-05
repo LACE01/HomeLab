@@ -141,6 +141,7 @@ export default function FindingDetail() {
   const [statusVal, setStatusVal] = useState("");
   const [kri, setKri] = useState(null);
   const [mitreCoverage, setMitreCoverage] = useState(null);
+  const [wstgHits, setWstgHits] = useState(null);   // item 44
   const [cweRepairBusy, setCweRepairBusy] = useState(false);
   const [cweRepairMsg, setCweRepairMsg] = useState("");
   const repairCwes = async () => {
@@ -222,6 +223,7 @@ export default function FindingDetail() {
     api.get(`/v1/findings/${id}/comments`).then(r => setComments(r.data.items));
     api.get(`/v1/findings/${id}/kri`).then(r => setKri(r.data));
     api.get("/v1/mitre/coverage").then(r => setMitreCoverage(r.data)).catch(() => {});
+    api.get(`/v1/findings/${id}/wstg`).then(r => setWstgHits(r.data)).catch(() => setWstgHits(null));
     loadPlaybook();
     api.get(`/v1/playbooks`).then(r => setAllPlaybooks(r.data.items || []));
     api.get(`/v1/findings/${id}/patch-group`).then(r => setPatchGroup(r.data));
@@ -466,6 +468,30 @@ export default function FindingDetail() {
               </div>
             )}
           </Section>
+
+          {wstgHits && (
+            <Section title="OWASP WSTG" testid="section-wstg">
+              {wstgHits.tests?.length > 0 ? (
+                <div className="space-y-1.5">
+                  <div className="text-[11px] text-slate-500">Test cases this finding is evidence for — how to confirm and characterise it.</div>
+                  {wstgHits.tests.map(t => (
+                    <div key={t.id} className="flex items-center gap-2 text-[12px]">
+                      <span className="font-mono text-[11px] text-slate-400 w-28 shrink-0">{t.id}</span>
+                      <span className="text-slate-200 flex-1">{t.name}</span>
+                      <span className="text-[10px] text-slate-500">{t.category_name}</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded border ${t.basis === "cwe" ? "border-blue-500/30 text-blue-300" : "border-[#30363D] text-slate-400"}`}
+                        title={t.basis === "cwe" ? "Mapped from the finding's CWE (precise)" : "Matched on the finding's text (inferred)"}>
+                        {t.basis === "cwe" ? "CWE" : "text match"}
+                      </span>
+                    </div>
+                  ))}
+                  <Link to="/wstg" className="text-[11px] text-blue-400 hover:text-blue-300">Open the WSTG library →</Link>
+                </div>
+              ) : (
+                <div className="text-[11.5px] text-slate-500">{wstgHits.note}</div>
+              )}
+            </Section>
+          )}
 
           <Section title="Risk Score Breakdown" testid="section-breakdown">
             <div className="flex items-center gap-3 mb-3">

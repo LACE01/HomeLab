@@ -474,7 +474,8 @@ async def revoke_my_session(session_id: str, user: dict = Depends(get_current_us
 @router.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
     full = await db.users.find_one({"id": user["id"]}, {"_id": 0}) or user
-    return {**user, **(await _gate_flags(full))}
+    from auth_utils import is_super_admin
+    return {**user, **(await _gate_flags(full)), "super_admin": is_super_admin(full)}
 
 
 class GoogleSessionBody(BaseModel):

@@ -66,7 +66,11 @@ def _draw_header_footer(canvas, doc, report_title: str):
     canvas.drawString(0.6 * inch, page_h - 29, "Nightwatch")
     canvas.setFillColor(ACCENT)
     canvas.setFont("Helvetica", 9)
-    canvas.drawString(1.55 * inch, page_h - 28.5, report_title)
+    # Item 17: position the title from the brand's measured width -- the fixed
+    # 1.55in offset made "Nightwatch" run into the report title.
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    title_x = 0.6 * inch + stringWidth("Nightwatch", "Helvetica-Bold", 13) + 12
+    canvas.drawString(title_x, page_h - 28.5, report_title)
     canvas.setFillColor(colors.HexColor("#8B949E"))
     canvas.setFont("Helvetica", 7.5)
     canvas.drawRightString(page_w - 0.6 * inch, page_h - 28, "Vulnerability Operations")
@@ -146,7 +150,33 @@ def styled_table(headers: list, rows: list, col_widths: list | None = None,
                   numeric_cols: tuple = (), width: float = 460) -> Table:
     """Consistent table look: dark header bar, zebra-striped body rows, light grid
     lines instead of reportlab's default heavy black borders."""
-    data = [headers] + [[str(c) for c in r] for r in rows]
+    # Item 17: cells used to be bare strings, which ReportLab never wraps -- a
+    # long control name ran straight across the neighbouring columns (the
+    # Compliance Coverage Report's text-overlap). Text columns are now
+    # Paragraphs, so they wrap inside their column width. Numeric columns stay
+    # plain strings so ALIGN RIGHT still applies.
+    hdr_style = ParagraphStyle("tblhdr", fontName="Helvetica-Bold", fontSize=8.5,
+                               leading=10.5, textColor=colors.white)
+    cell_style = ParagraphStyle("tblcell", fontName="Helvetica", fontSize=8.5,
+                                leading=10.5, textColor=TEXT)
+    from xml.sax.saxutils import escape as _esc
+
+    def _cell(v, col, style):
+        if col in numeric_cols:
+            return str(v)
+        return Paragraph(_esc(str(v)), style)
+
+    data = [[_cell(h, i, hdr_style) for i, h in enumerate(headers)]] + \
+           [[_cell(c, i, cell_style) for i, c in enumerate(r)] for r in rows]
+    if col_widths is None:
+        # Paragraph cells need explicit widths (auto-sizing would collapse them);
+        # split the width evenly, narrower for numeric columns.
+        n = len(headers)
+        num = len([i for i in range(n) if i in numeric_cols])
+        txt = n - num
+        num_w = 48
+        txt_w = (width - num * num_w) / txt if txt else 0
+        col_widths = [num_w if i in numeric_cols else txt_w for i in range(n)]
     t = Table(data, colWidths=col_widths, hAlign="LEFT", repeatRows=1)
     style = [
         ("BACKGROUND", (0, 0), (-1, 0), INK),

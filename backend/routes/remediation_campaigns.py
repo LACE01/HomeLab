@@ -269,7 +269,7 @@ async def get_campaign(campaign_id: str, user: dict = Depends(require_module(MOD
     camp = await rc.campaign_detail(db, campaign_id, for_user=user)
     if not camp:
         raise HTTPException(404, "Campaign not found")
-    return camp
+    return _with_perms(camp, user)
 
 
 class CampaignPatch(BaseModel):
@@ -286,6 +286,23 @@ class CampaignPatch(BaseModel):
     change_ticket: Optional[str] = None
 
 
+_EDIT_LABELS = {"name": "name", "description": "description", "due_date": "due date",
+                "status": "status", "assignees": "assignees",
+                "require_verification": "verification requirement",
+                "maintenance_window": "maintenance window", "change_ticket": "change ticket"}
+
+
+def _short(v):
+    if v is None or v == "":
+        return "—"
+    if isinstance(v, list):
+        return ", ".join(map(str, v)) or "—"
+    if isinstance(v, dict):
+        return ", ".join(f"{k}={v[k]}" for k in v) or "—"
+    s = str(v)
+    return s if len(s) <= 80 else s[:77] + "..."
+
+
 @router.patch("/v1/remediation-campaigns/{campaign_id}")
 async def update_campaign(campaign_id: str, body: CampaignPatch,
                           user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
@@ -294,47 +311,97 @@ async def update_campaign(campaign_id: str, body: CampaignPatch,
         raise HTTPException(404, "Campaign not found")
     actor = user.get("email") or user.get("id")
     patch = {}
+    changes = []
     for fld in ("name", "description", "due_date", "status", "assignees",
                 "require_verification", "maintenance_window", "change_ticket"):
         v = getattr(body, fld)
-        if v is not None:
+        if v is None:
+            continue
+        if fld == "name" and not str(v).strip():
+            raise HTTPException(400, "Campaign name can't be blank")
+        if v != camp.get(fld):
             patch[fld] = v
+            changes.append(f"{_EDIT_LABELS[fld]}: {_short(camp.get(fld))} → {_short(v)}")
     if body.assignees is not None:
         new_people = set(body.assignees) - set(camp.get("assignees") or [])
         if new_people:
             await rc.notify_assignees(db, {**camp, **patch}, list(new_people), "assigned",
                                       f"You've been assigned to remediation campaign '{camp.get('name')}'")
     ids = set(camp.get("finding_ids") or [])
+    base = set(camp.get("baseline_open_ids") or [])
+    base_before = len(base)
     add = set(body.add_finding_ids or [])
     if body.add_findings_filter:
         add |= set(await _ids_from_findings_filter(user, body.add_findings_filter))
+    add -= ids   # #73: re-adding existing members is a no-op, not a double count
     if add:
         ids |= add
         # extend the baseline with the newly-added findings that are OPEN now,
         # so "what we need to patch" grows with them (patched-since-added holds).
         new_open = await rc._open_subset(db, list(add))
-        base = set(camp.get("baseline_open_ids") or [])
         base |= set(new_open)
-        patch["baseline_open_ids"] = sorted(base)
         await rc.log_activity(db, campaign_id, actor, "added_findings",
                               f"Added {len(add)} finding(s) ({len(new_open)} open to patch)")
-    if body.remove_finding_ids:
-        ids -= set(body.remove_finding_ids)
+    removed = set(body.remove_finding_ids or []) & ids
+    if removed:
+        ids -= removed
+        # #73: a removed finding leaves the baseline too -- otherwise "To patch"
+        # keeps counting work that is no longer in this campaign.
+        base -= removed
         await rc.log_activity(db, campaign_id, actor, "removed_findings",
-                              f"Removed {len(body.remove_finding_ids)} finding(s)")
-    if add or body.remove_finding_ids:
+                              f"Removed {len(removed)} finding(s)")
+    if add or removed:
         patch["finding_ids"] = sorted(ids)
+        patch["baseline_open_ids"] = sorted(base)
+        await rc.log_activity(db, campaign_id, actor, "scope_changed",
+                              f"Scope edited: {len(ids)} finding(s); baseline to patch "
+                              f"{base_before} → {len(base)}")
+    if changes:
+        # #73: every field edit is a timeline event with before → after
+        await rc.log_activity(db, campaign_id, actor, "edited", "; ".join(changes))
     if patch:
+        patch["updated_at"] = rc._now_iso()
+        patch["updated_by"] = actor
         await db.remediation_campaigns.update_one({"id": campaign_id}, {"$set": patch})
-    return await rc.campaign_detail(db, campaign_id, for_user=user)
+    out = await rc.campaign_detail(db, campaign_id, for_user=user)
+    return _with_perms(out, user) if out else out
+
+
+def _with_perms(detail: dict, user: dict) -> dict:
+    from auth_utils import is_super_admin
+    detail["viewer_can_delete"] = is_super_admin(user)
+    detail["viewer_can_edit"] = user.get("role") in ("admin", "manager")
+    return detail
 
 
 @router.delete("/v1/remediation-campaigns/{campaign_id}")
-async def delete_campaign(campaign_id: str,
-                          user: dict = Depends(require_module(MODULE_KEY, level="edit"))):
+async def delete_campaign(campaign_id: str, user: dict = Depends(get_current_user)):
+    """#73: super-admin only, and the campaign is a WRAPPER -- deleting it never
+    touches the findings it tracked. The campaign and its timeline are archived
+    (not destroyed) into *_deleted collections and the deletion lands in the
+    global audit log, so a mistaken delete is recoverable and attributable."""
+    from auth_utils import is_super_admin
+    full = await db.users.find_one({"id": user.get("id")}, {"_id": 0}) or user
+    if not is_super_admin(full):
+        raise HTTPException(403, "Only a super-admin can delete a remediation campaign")
+    camp = await db.remediation_campaigns.find_one({"id": campaign_id}, {"_id": 0})
+    if not camp:
+        raise HTTPException(404, "Campaign not found")
+    actor = user.get("email") or user.get("id")
+    when = rc._now_iso()
+    activity = await db.remediation_campaign_activity.find(
+        {"campaign_id": campaign_id}, {"_id": 0}).to_list(100000)
+    await db.remediation_campaigns_deleted.insert_one(
+        {**camp, "deleted_at": when, "deleted_by": actor, "activity": activity})
     await db.remediation_campaigns.delete_one({"id": campaign_id})
     await db.remediation_campaign_activity.delete_many({"campaign_id": campaign_id})
-    return {"ok": True}
+    import uuid as _uuid
+    await db.activity_log.insert_one({
+        "id": str(_uuid.uuid4()), "entity_type": "remediation_campaign", "entity_id": campaign_id,
+        "action": "campaign_deleted", "actor": actor, "timestamp": when,
+        "details": (f"Deleted campaign '{camp.get('name')}' ({len(camp.get('finding_ids') or [])} findings "
+                    f"untouched; archived to remediation_campaigns_deleted)")})
+    return {"ok": True, "archived": True, "findings_untouched": len(camp.get("finding_ids") or [])}
 
 
 class NoteBody(BaseModel):

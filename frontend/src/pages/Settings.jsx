@@ -4,6 +4,7 @@ import { api } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { fmtRel } from "@/lib/utils-fmt";
 import { Warning } from "@phosphor-icons/react";
+import ToggleSwitch from "@/components/ToggleSwitch";
 
 function TunableRow({ item, onSaved }) {
   const [val, setVal] = useState(item.value);
@@ -169,15 +170,14 @@ export default function Settings() {
                     </div>
                   )}
                 </div>
-                <button
-                  data-testid={`flag-${f.key}`}
-                  onClick={() => toggle(f)}
+                <ToggleSwitch
+                  testid={`flag-${f.key}`}
+                  checked={f.enabled}
+                  onChange={() => toggle(f)}
                   disabled={saving === f.key}
-                  className={`shrink-0 h-6 w-11 rounded-full relative transition-colors disabled:opacity-50 ${f.enabled ? "bg-emerald-500/70" : "bg-slate-700"}`}
+                  label={f.key}
                   title={f.enabled ? "Enabled — click to disable" : "Disabled — click to enable"}
-                >
-                  <span className={`absolute left-0 top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${f.enabled ? "translate-x-[22px]" : "translate-x-0.5"}`} />
-                </button>
+                />
               </div>
             ))}
           </div>
