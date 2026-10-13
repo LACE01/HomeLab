@@ -862,43 +862,10 @@ async def mitre_coverage(refresh: bool = False, user: dict = Depends(get_current
 
 @router.post("/v1/mitre/backfill-cwe")
 async def mitre_backfill_cwe(user: dict = Depends(require_role("admin"))):
-    """One-shot repair for findings already stored with a non-canonical CWE
-    (Qualys' bare "89" etc). Rewrites them to canonical form so the ATT&CK
-    mapping resolves. Idempotent -- already-canonical values are untouched."""
-    from mitre_mapping import normalize_cwe
-    updated = 0
-    cursor = db.findings.find({"cwe": {"$nin": [None, ""]}}, {"_id": 0, "id": 1, "cwe": 1})
-    async for f in cursor:
-        canonical = normalize_cwe(f.get("cwe"))
-        if canonical and canonical != f.get("cwe"):
-            await db.findings.update_one({"id": f["id"]}, {"$set": {"cwe": canonical}})
-            updated += 1
-        elif not canonical and f.get("cwe"):
-            # placeholder values like NVD-CWE-noinfo aren't real CWEs
-            await db.findings.update_one({"id": f["id"]}, {"$set": {"cwe": None}})
-            updated += 1
-    # #33 -- propagate a known CWE to CWE-less findings sharing the same CVE.
-    # Until 5424e73 every scanner rescan nulled the NVD-sourced CWE on the rows
-    # it touched, while rows not rescanned kept theirs; this repairs that split
-    # without waiting for (or needing) an NVD key.
-    propagated = 0
-    by_cve = {}
-    async for r in db.findings.aggregate([
-        {"$match": {"cve": {"$nin": [None, ""]}, "cwe": {"$nin": [None, ""]}}},
-        {"$group": {"_id": "$cve", "cwe": {"$first": "$cwe"}}},
-    ]):
-        canonical = normalize_cwe(r.get("cwe"))
-        if canonical:
-            by_cve[r["_id"]] = canonical
-    for cve, cwe in by_cve.items():
-        res = await db.findings.update_many(
-            {"cve": cve, "$or": [{"cwe": None}, {"cwe": ""}, {"cwe": {"$exists": False}}]},
-            {"$set": {"cwe": cwe}})
-        propagated += res.modified_count
-    if updated or propagated:
-        from aggregate_cache import invalidate
-        await invalidate(db, "mitre_coverage")
-    return {"ok": True, "updated": updated, "propagated_by_cve": propagated}
+    """Normalize stored CWEs and propagate known CWEs across same-CVE findings.
+    Also runs once automatically at boot (startup_migrations.repair_cwes_once)."""
+    from cwe_repair import repair_cwes
+    return await repair_cwes(db)
 
 
 @router.get("/v1/attack-paths/cves")

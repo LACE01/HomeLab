@@ -74,7 +74,9 @@ async def set_rbac_config(body: RbacConfigBody, user: dict = Depends(require_rol
                 raise HTTPException(400, f"Unknown access level '{level}' for '{key}' -- must be one of {LEVELS}")
 
     before = await get_access_config(db)
-    await db.rbac_config.update_one({}, {"$set": {"access": body.access, "updated_at": now_iso()}}, upsert=True)
+    await db.rbac_config.update_one({}, {"$set": {"access": body.access, "updated_at": now_iso(),
+                                                 # admin has now seen every module (startup_migrations)
+                                                 "known_modules": list(MODULE_KEYS)}}, upsert=True)
     await db.activity_log.insert_one({
         "id": str(uuid.uuid4()), "entity_type": "rbac_config", "entity_id": "global",
         "action": "rbac_access_updated", "actor": user["email"], "timestamp": now_iso(),
@@ -88,7 +90,9 @@ async def reset_rbac_defaults(user: dict = Depends(require_role("admin"))):
     from rbac import _default_access, get_access_config
     before = await get_access_config(db)
     defaults = _default_access()
-    await db.rbac_config.update_one({}, {"$set": {"access": defaults, "updated_at": now_iso()}}, upsert=True)
+    from rbac import MODULE_KEYS as _MK
+    await db.rbac_config.update_one({}, {"$set": {"access": defaults, "updated_at": now_iso(),
+                                                 "known_modules": list(_MK)}}, upsert=True)
     await db.activity_log.insert_one({
         "id": str(uuid.uuid4()), "entity_type": "rbac_config", "entity_id": "global",
         "action": "rbac_reset_defaults", "actor": user["email"], "timestamp": now_iso(),

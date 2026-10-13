@@ -268,6 +268,13 @@ async def _run_startup():
         logger.info("Seed completed.")
     except Exception as e:
         logger.exception(f"Seed failed: {e}")
+    # One-time/idempotent setup so a deploy needs no manual follow-up: new pages
+    # get default Role Access grants, a super-admin exists, CWEs are repaired.
+    try:
+        from startup_migrations import run_all as _run_migrations
+        await _run_migrations(db)
+    except Exception as e:
+        logger.exception(f"Startup migrations failed: {e}")
     # Backfill score_snapshots on first boot so Manager/Executive trend charts
     # aren't blank before the first nightly run completes.
     try:

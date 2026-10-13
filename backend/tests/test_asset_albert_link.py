@@ -25,21 +25,27 @@ db = db_module.db
 def run(coro):
     return asyncio.get_event_loop().run_until_complete(coro)
 
+from datetime import datetime, timedelta, timezone
+# Relative dates: the fixed July 2026 timestamps aged out of the endpoint's
+# look-back window and turned this into a time-bomb.
+def _ago(days):
+    return (datetime.now(timezone.utc) - timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+
 run(db.assets.insert_many([
     {"id": "a1", "hostname": "ws-01", "ip": "10.0.0.5", "criticality": "medium"},
     {"id": "a2", "hostname": "ws-02", "ip": "10.0.0.9", "criticality": "medium"},
 ]))
 run(db.albert_alerts.insert_many([
-    {"id": "al1", "time_gmt": "2026-07-14T00:00:00+00:00", "device": "s1", "alert_message": "x",
+    {"id": "al1", "time_gmt": _ago(1), "device": "s1", "alert_message": "x",
      "severity": "High", "category": "Lateral Movement", "source_ip": "10.0.0.5", "destination_ip": "10.0.0.9",
      "source_asset_id_override": None, "destination_asset_id_override": None},
-    {"id": "al2", "time_gmt": "2026-07-13T00:00:00+00:00", "device": "s1", "alert_message": "y",
+    {"id": "al2", "time_gmt": _ago(2), "device": "s1", "alert_message": "y",
      "severity": "Low", "category": "Other", "source_ip": "9.9.9.9", "destination_ip": "10.0.0.5",
      "source_asset_id_override": None, "destination_asset_id_override": None},
     # override says this belongs to a2 even though its source_ip matches a1's ip --
     # proves override precedence beats IP matching, same as routes/albert.py's
     # single-alert view.
-    {"id": "al3", "time_gmt": "2026-07-12T00:00:00+00:00", "device": "s1", "alert_message": "z",
+    {"id": "al3", "time_gmt": _ago(3), "device": "s1", "alert_message": "z",
      "severity": "Medium", "category": "Other", "source_ip": "10.0.0.5", "destination_ip": "1.2.3.4",
      "source_asset_id_override": "a2", "destination_asset_id_override": None},
 ]))
